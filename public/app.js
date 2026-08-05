@@ -28,6 +28,17 @@ async function api(path, options = {}) {
   return payload;
 }
 
+async function responsePayload(response) {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: response.ok
+      ? 'El servidor devolvió una respuesta no válida'
+      : 'No se pudo completar la operación' };
+  }
+}
+
 async function bootstrap() {
   const params = new URLSearchParams(location.search);
   const preview = location.hostname === 'localhost' ? params.get('preview') : '';
@@ -47,7 +58,7 @@ async function bootstrap() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ launchCode, parentOrigin: state.parentOrigin }),
     }).then(async (response) => {
-      const value = await response.json();
+      const value = await responsePayload(response);
       if (!response.ok) throw new Error(value.error || 'No se pudo iniciar la sesión');
       return value;
     });

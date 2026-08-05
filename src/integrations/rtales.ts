@@ -21,7 +21,20 @@ async function rtalesRequest(
     },
     body: JSON.stringify(body),
   });
-  const payload = (await response.json().catch(() => ({}))) as RtalesResponse;
+  const contentType = response.headers.get('content-type') || '';
+  const rawPayload = await response.text();
+  let payload: RtalesResponse = {};
+  try {
+    payload = JSON.parse(rawPayload) as RtalesResponse;
+  } catch {
+    if (!response.ok) {
+      console.error('Rtales returned a non-JSON response', {
+        pathname,
+        status: response.status,
+        contentType,
+      });
+    }
+  }
   return { response, payload };
 }
 
@@ -30,7 +43,11 @@ export async function exchangeLaunchCode(env: Env, launchCode: string) {
     launchCode,
   });
   if (!result.response.ok || !result.payload.success) {
-    throw new Error(result.payload.error || 'RTALES_EXCHANGE_FAILED');
+    console.error('Rtales exchange rejected', {
+      status: result.response.status,
+      error: result.payload.error || null,
+    });
+    throw new Error(`RTALES_EXCHANGE_FAILED:${result.response.status}`);
   }
   return result.payload;
 }

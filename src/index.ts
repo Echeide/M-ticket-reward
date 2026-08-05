@@ -864,29 +864,29 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     } else if (url.pathname.startsWith('/api/admin/')) {
       return error('Ruta no encontrada', 404);
     }
-    if (request.method === 'POST' && url.pathname === '/api/session/exchange') return handleExchange(request, env);
-    if (request.method === 'GET' && url.pathname === '/api/stores') return handleStores(request, env);
-    if (request.method === 'POST' && url.pathname === '/api/receipts') return handleUpload(request, env);
+    if (request.method === 'POST' && url.pathname === '/api/session/exchange') return await handleExchange(request, env);
+    if (request.method === 'GET' && url.pathname === '/api/stores') return await handleStores(request, env);
+    if (request.method === 'POST' && url.pathname === '/api/receipts') return await handleUpload(request, env);
     const receiptMatch = url.pathname.match(/^\/api\/receipts\/([^/]+)$/);
-    if (request.method === 'GET' && receiptMatch?.[1]) return handleReceiptStatus(request, env, receiptMatch[1]);
+    if (request.method === 'GET' && receiptMatch?.[1]) return await handleReceiptStatus(request, env, receiptMatch[1]);
     const confirmMatch = url.pathname.match(/^\/api\/receipts\/([^/]+)\/confirm$/);
-    if (request.method === 'POST' && confirmMatch?.[1]) return handleConfirm(request, env, confirmMatch[1]);
-    if (request.method === 'GET' && url.pathname === '/api/admin/receipts') return handleAdminList(request, env);
-    if (request.method === 'GET' && url.pathname === '/api/admin/receipts.csv') return handleAdminCsv(request, env);
+    if (request.method === 'POST' && confirmMatch?.[1]) return await handleConfirm(request, env, confirmMatch[1]);
+    if (request.method === 'GET' && url.pathname === '/api/admin/receipts') return await handleAdminList(request, env);
+    if (request.method === 'GET' && url.pathname === '/api/admin/receipts.csv') return await handleAdminCsv(request, env);
     if (url.pathname === '/api/admin/stores' && ['GET', 'POST'].includes(request.method)) {
-      return handleAdminStores(request, env);
+      return await handleAdminStores(request, env);
     }
     const storeMatch = url.pathname.match(/^\/api\/admin\/stores\/([^/]+)$/);
-    if (request.method === 'PATCH' && storeMatch?.[1]) return handleAdminStoreUpdate(request, env, storeMatch[1]);
+    if (request.method === 'PATCH' && storeMatch?.[1]) return await handleAdminStoreUpdate(request, env, storeMatch[1]);
     if (url.pathname === '/api/admin/reward-tiers' && ['GET', 'POST'].includes(request.method)) {
-      return handleAdminRewardTiers(request, env);
+      return await handleAdminRewardTiers(request, env);
     }
     const tierMatch = url.pathname.match(/^\/api\/admin\/reward-tiers\/([^/]+)$/);
-    if (request.method === 'PATCH' && tierMatch?.[1]) return handleAdminRewardTierUpdate(request, env, tierMatch[1]);
+    if (request.method === 'PATCH' && tierMatch?.[1]) return await handleAdminRewardTierUpdate(request, env, tierMatch[1]);
     const imageMatch = url.pathname.match(/^\/api\/admin\/receipts\/([^/]+)\/image$/);
-    if (request.method === 'GET' && imageMatch?.[1]) return handleAdminImage(request, env, imageMatch[1]);
+    if (request.method === 'GET' && imageMatch?.[1]) return await handleAdminImage(request, env, imageMatch[1]);
     const reviewMatch = url.pathname.match(/^\/api\/admin\/receipts\/([^/]+)\/review$/);
-    if (request.method === 'POST' && reviewMatch?.[1]) return handleAdminReview(request, env, reviewMatch[1]);
+    if (request.method === 'POST' && reviewMatch?.[1]) return await handleAdminReview(request, env, reviewMatch[1]);
     if (url.pathname.startsWith('/api/')) return error('Ruta no encontrada', 404);
 
     const assetResponse = await env.ASSETS.fetch(request);
@@ -899,6 +899,9 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
   } catch (caught) {
     console.error('Request failed', caught);
     const message = caught instanceof Error ? caught.message : 'UNKNOWN_ERROR';
+    if (message.startsWith('RTALES_EXCHANGE_FAILED')) {
+      return error('Rtales no pudo iniciar la sesión del jugador', 502, 'RTALES_EXCHANGE_FAILED');
+    }
     const validationErrors: Record<string, string> = {
       INVALID_JSON: 'JSON no válido',
       STORE_CODE_INVALID: 'El código debe tener entre 2 y 40 caracteres: letras, números, guion o guion bajo',
