@@ -1,6 +1,7 @@
 const state = {
   rows: [], stores: [], tiers: [], selected: null,
   pagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
+  reviewing: false,
   token: sessionStorage.getItem('admin-token') || '',
 };
 const statusLabels = {
@@ -75,6 +76,7 @@ async function load(page = state.pagination.page) {
       <span class="status-chip ${escapeHtml(receipt.status.toLowerCase())}">${escapeHtml(statusLabels[receipt.status] || receipt.status)} · ${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</span>
     </button>`).join('') || '<p class="empty-state">No hay registros con estos filtros.</p>';
   document.querySelectorAll('.receipt-row').forEach((button) => button.addEventListener('click', () => select(button.dataset.id)));
+  highlightSelectedRow();
 }
 
 async function loadStores() {
@@ -249,10 +251,20 @@ function showNotice(message) {
   setTimeout(() => notice.classList.remove('visible'), 3500);
 }
 
+function highlightSelectedRow() {
+  document.querySelectorAll('.receipt-row').forEach((row) => {
+    const selected = row.dataset.id === state.selected?.id;
+    row.classList.toggle('selected', selected);
+    if (selected) row.setAttribute('aria-current', 'true');
+    else row.removeAttribute('aria-current');
+  });
+}
+
 async function select(id, suppliedReceipt = null) {
   state.selected = suppliedReceipt || state.rows.find((row) => row.id === id);
   const receipt = state.selected;
   if (!receipt) return;
+  highlightSelectedRow();
   const reprocessable = canReprocess(receipt);
   const canRevoke = receipt.status === 'REWARDED' && Boolean(receipt.reward.resultId);
   const reasons = Array.isArray(receipt.reasons) ? receipt.reasons : [];
@@ -281,7 +293,11 @@ async function select(id, suppliedReceipt = null) {
       </div>
     </div>`;
   const image = await fetch(`/api/admin/receipts/${id}/image`, { headers: headers() });
-  if (image.ok) document.querySelector('#ticket-image').src = URL.createObjectURL(await image.blob());
+  if (image.ok) {
+    const imageUrl = URL.createObjectURL(await image.blob());
+    if (state.selected?.id === id) document.querySelector('#ticket-image').src = imageUrl;
+    else URL.revokeObjectURL(imageUrl);
+  }
   document.querySelector('#clear-review')?.addEventListener('click', () => review('CLEAR'));
   document.querySelector('#revoke')?.addEventListener('click', () => review('REVOKE'));
   if (reprocessable) document.querySelector('#reprocess-ticket').addEventListener('click', reprocessSelected);
@@ -318,9 +334,11 @@ async function reprocessSelected() {
 }
 
 async function review(action) {
+  if (state.reviewing || !state.selected) return;
   const reason = document.querySelector('#review-reason').value.trim();
   if (action === 'REVOKE' && !reason) return alert('Indica el motivo de la revocación.');
   if (action === 'REVOKE' && !confirm('Se retirarán los puntos concedidos. ¿Continuar?')) return;
+  state.reviewing = true;
   const buttons = [...document.querySelectorAll('.review-actions button')];
   buttons.forEach((button) => { button.disabled = true; });
   try {
@@ -331,6 +349,7 @@ async function review(action) {
     });
     await load();
     state.selected = null;
+    highlightSelectedRow();
     const panel = document.querySelector('#review-panel');
     panel.className = 'review-panel empty';
     panel.innerHTML = '<p>Selecciona un ticket para revisarlo.</p>';
@@ -338,8 +357,37 @@ async function review(action) {
   } catch (error) {
     buttons.forEach((button) => { button.disabled = false; });
     alert(error instanceof Error ? error.message : 'No se pudo completar la revisión');
+  } finally {
+    state.reviewing = false;
   }
 }
+
+document.addEventListener('keydown', (event) => {
+  const target = event.target;
+  const editing = target instanceof HTMLElement && Boolean(target.closest('input, textarea, select'));
+  const unrelatedButton = target instanceof HTMLElement && Boolean(target.closest('button:not(.receipt-row)'));
+  if (editing || unrelatedButton || document.querySelector('dialog[open]')) return;
+
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    const rows = [...document.querySelectorAll('.receipt-row')];
+    if (!rows.length) return;
+    event.preventDefault();
+    const currentIndex = rows.findIndex((row) => row.dataset.id === state.selected?.id);
+    const nextIndex = event.key === 'ArrowDown'
+      ? Math.min(rows.length - 1, currentIndex < 0 ? 0 : currentIndex + 1)
+      : Math.max(0, currentIndex < 0 ? rows.length - 1 : currentIndex - 1);
+    const row = rows[nextIndex];
+    row.focus({ preventScroll: true });
+    row.scrollIntoView({ block: 'nearest' });
+    select(row.dataset.id).catch((error) => alert(error.message));
+    return;
+  }
+
+  if ((event.key === 'Enter' || event.key === ' ') && state.selected?.review.status === 'PENDING') {
+    event.preventDefault();
+    review('CLEAR');
+  }
+});
 
 function updateFilterCount() {
   const params = filterParams();
