@@ -4,7 +4,7 @@ const screens = new Map(
 const state = {
   sessionToken: sessionStorage.getItem('ticket-session') || '',
   parentOrigin: sessionStorage.getItem('ticket-parent-origin') || '',
-  receiptId: '',
+  receiptId: sessionStorage.getItem('ticket-receipt-id') || '',
   receipt: null,
   stores: [],
 };
@@ -81,7 +81,12 @@ async function bootstrap() {
   const select = document.querySelector('#store-select');
   select.innerHTML = '<option value="">Selecciona una tienda</option>' + state.stores
     .map((store) => `<option value="${store.id}">${escapeHtml(store.name)}</option>`).join('');
-  show('welcome');
+  if (state.receiptId) {
+    show('processing');
+    await pollUntilReady();
+  } else {
+    show('welcome');
+  }
 }
 
 function escapeHtml(value) {
@@ -123,12 +128,13 @@ async function upload(file) {
   form.append('ticket', optimizedFile);
   const payload = await api('/api/receipts', { method: 'POST', body: form });
   state.receiptId = payload.receiptId;
+  sessionStorage.setItem('ticket-receipt-id', state.receiptId);
   if (payload.status === 'DUPLICATE') return show('duplicate');
   await pollUntilReady();
 }
 
 async function pollUntilReady() {
-  for (let attempt = 0; attempt < 90; attempt += 1) {
+  for (let attempt = 0; attempt < 180; attempt += 1) {
     const payload = await api(`/api/receipts/${state.receiptId}`);
     state.receipt = payload.receipt;
     if (payload.receipt.status === 'READY_FOR_CONFIRMATION') {
@@ -198,6 +204,7 @@ async function confirmReceipt(event) {
 }
 
 function finish(receipt) {
+  sessionStorage.removeItem('ticket-receipt-id');
   document.querySelector('#points-awarded').textContent = receipt.reward.pointsAwarded;
   document.querySelector('#receipt-reference').textContent = receipt.publicId;
   show('final');
@@ -211,6 +218,7 @@ function finish(receipt) {
 
 function retry() {
   state.receiptId = '';
+  sessionStorage.removeItem('ticket-receipt-id');
   state.receipt = null;
   document.querySelector('#ticket-input').value = '';
   show(state.sessionToken ? 'welcome' : 'connection-error');
