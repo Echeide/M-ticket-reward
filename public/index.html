@@ -133,27 +133,32 @@
       </section>
 
       <section class="screen history-screen" data-screen="ticket-detail">
-        <div class="screen-toolbar">
-          <button class="text-button button-with-icon" data-action="open-history" type="button">
+        <div class="detail-heading">
+          <span class="detail-heading-icon" aria-hidden="true">
             <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
-            Mis tickets
-          </button>
+          </span>
+          <h2>Detalle del ticket</h2>
         </div>
-        <p class="eyebrow">Detalle del ticket</p>
-        <h2 id="detail-title">Ticket</h2>
+        <h3 class="detail-reference" id="detail-title">Ticket</h3>
         <div class="ticket-detail-card">
           <span class="ticket-status" id="detail-status"></span>
           <p id="detail-message"></p>
-          <div class="ocr-data">
-            <div><span>Comercio</span><strong id="detail-store">—</strong></div>
-            <div><span>Número de ticket</span><strong id="detail-number">—</strong></div>
-            <div><span>Fecha de compra</span><strong id="detail-date">—</strong></div>
-            <div><span>Importe</span><strong id="detail-total">—</strong></div>
-            <div><span>Puntos</span><strong id="detail-points">—</strong></div>
-          </div>
-          <p class="reference">Enviado: <strong id="detail-created"></strong></p>
+          <dl class="ticket-detail-data">
+            <div><dt>Comercio</dt><dd id="detail-store">—</dd></div>
+            <div><dt>Número de ticket</dt><dd id="detail-number">—</dd></div>
+            <div><dt>Fecha de compra</dt><dd id="detail-date">—</dd></div>
+            <div><dt>Importe</dt><dd id="detail-total">—</dd></div>
+            <div><dt>Puntos</dt><dd id="detail-points">—</dd></div>
+            <div><dt>Enviado</dt><dd id="detail-created">—</dd></div>
+          </dl>
         </div>
-        <button class="primary-button" id="detail-action" type="button" hidden></button>
+        <div class="detail-actions">
+          <button class="primary-button" id="detail-action" type="button" hidden></button>
+          <button class="secondary-button button-with-icon detail-list-button" data-action="open-history" type="button">
+            <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
+            Volver al listado de tickets
+          </button>
+        </div>
       </section>
 
       <section class="screen" data-screen="error">

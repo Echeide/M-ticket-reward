@@ -411,10 +411,6 @@ function showTicketDetail(receipt) {
     action.textContent = 'Seguir esperando';
     action.hidden = false;
     action.onclick = () => resumeReceipt(receipt).catch(showError);
-  } else if (['AUTO_REJECTED', 'NOT_A_RECEIPT', 'DUPLICATE'].includes(receipt.status)) {
-    action.textContent = 'Escanear otro ticket';
-    action.hidden = false;
-    action.onclick = retry;
   }
   show('ticket-detail');
 }
