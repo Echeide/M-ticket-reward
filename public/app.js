@@ -16,7 +16,7 @@ const RECEIPT_STATUSES = {
   READY_FOR_CONFIRMATION: { label: 'Pendiente de confirmación', tone: 'attention', message: 'Los datos son válidos. Revisa el resultado para obtener los puntos.' },
   NOT_A_RECEIPT: { label: 'No es un ticket', tone: 'rejected', message: 'La imagen no parece un ticket de compra.' },
   DUPLICATE: { label: 'Duplicado', tone: 'rejected', message: 'Este ticket ya se había enviado.' },
-  AUTO_REJECTED: { label: 'Escaneo no válido', tone: 'rejected', message: 'El ticket no ha superado la validación automática.' },
+  AUTO_REJECTED: { label: 'Ticket no autorizado', tone: 'rejected', message: 'Este ticket no cumple las condiciones de la campaña.' },
   REWARD_PENDING: { label: 'Asignando puntos', tone: 'pending', message: 'El ticket es válido y estamos asignando los puntos.' },
   REWARDED: { label: 'Aprobado', tone: 'approved', message: 'Los puntos se han añadido correctamente.' },
   REWARD_FAILED: { label: 'No completado', tone: 'rejected', message: 'No hemos podido completar la asignación de puntos.' },
