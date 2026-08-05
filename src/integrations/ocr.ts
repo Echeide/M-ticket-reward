@@ -11,6 +11,10 @@ function parseJsonObject(value: string): Record<string, unknown> {
 function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
   const confidence = Number(value.confidence);
   const total = Number(value.totalCents);
+  const rawCurrency = String(value.currency || 'EUR').trim().toUpperCase();
+  const currency = ['€', 'EURO', 'EUROS'].includes(rawCurrency) || !/^[A-Z]{3}$/.test(rawCurrency)
+    ? 'EUR'
+    : rawCurrency;
   return {
     isReceipt: value.isReceipt === true,
     confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
@@ -18,7 +22,7 @@ function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
     ticketNumber: String(value.ticketNumber || '').trim(),
     purchaseDate: String(value.purchaseDate || '').trim(),
     totalCents: Number.isInteger(total) ? total : undefined,
-    currency: String(value.currency || 'EUR').trim().toUpperCase(),
+    currency,
     rawText: String(value.rawText || '').slice(0, 8_000),
   };
 }

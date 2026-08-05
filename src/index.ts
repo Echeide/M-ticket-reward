@@ -369,7 +369,7 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
         ticketNumber: receipt.ticket_number || '',
         purchaseDate: receipt.purchase_date || '',
         totalCents: receipt.total_cents || 0,
-        currency: receipt.currency || 'EUR',
+        currency: /^[A-Z]{3}$/.test(receipt.currency || '') ? receipt.currency : 'EUR',
       };
       const fingerprint = buildTicketFingerprint(fields);
       const duplicate = await client.query(

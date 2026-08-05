@@ -167,8 +167,9 @@ function showOcrReview(receipt) {
   document.querySelector('#ocr-store').textContent = store?.name || fields.storeName || 'No reconocido';
   document.querySelector('#ocr-number').textContent = fields.ticketNumber || 'No reconocido';
   document.querySelector('#ocr-date').textContent = fields.purchaseDate || 'No reconocida';
+  const currency = /^[A-Z]{3}$/.test(fields.currency || '') ? fields.currency : 'EUR';
   document.querySelector('#ocr-total').textContent = fields.totalCents
-    ? new Intl.NumberFormat('es-ES', { style: 'currency', currency: fields.currency || 'EUR' }).format(fields.totalCents / 100)
+    ? new Intl.NumberFormat('es-ES', { style: 'currency', currency }).format(fields.totalCents / 100)
     : 'No reconocido';
   document.querySelector('#ocr-validation-title').textContent = valid ? 'Ticket válido' : 'No podemos validar este ticket';
   document.querySelector('#ocr-validation-message').textContent = valid
