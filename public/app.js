@@ -138,7 +138,11 @@ async function pollUntilReady() {
     if (payload.receipt.status === 'NOT_A_RECEIPT') return show('not-receipt');
     if (payload.receipt.status === 'DUPLICATE') return show('duplicate');
     if (payload.receipt.status === 'REWARDED') return finish(payload.receipt);
-    if (payload.receipt.status === 'OCR_FAILED') {
+    if (
+      payload.receipt.status === 'OCR_FAILED' ||
+      (payload.receipt.status === 'REWARD_FAILED' &&
+        payload.receipt.reasons?.includes('OCR_PROCESSING_FAILED'))
+    ) {
       throw new Error('No hemos podido leer este ticket. Comprueba la imagen y vuelve a intentarlo.');
     }
     if (['AUTO_REJECTED', 'REWARD_FAILED'].includes(payload.receipt.status)) {

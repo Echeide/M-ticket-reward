@@ -449,7 +449,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
 async function markOcrFailed(env: Env, receiptId: string): Promise<void> {
   await withDatabase(env, async (client) => {
     await client.query(
-      `UPDATE receipts SET status = 'OCR_FAILED', validation_reasons = $2::jsonb,
+      `UPDATE receipts SET status = 'REWARD_FAILED', validation_reasons = $2::jsonb,
           updated_at = NOW() WHERE id = $1 AND status = 'OCR_PROCESSING'`,
       [receiptId, JSON.stringify(['OCR_PROCESSING_FAILED'])],
     );
