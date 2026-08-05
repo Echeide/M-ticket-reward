@@ -1,4 +1,22 @@
 const state = { rows: [], stores: [], tiers: [], selected: null, token: sessionStorage.getItem('admin-token') || '' };
+const statusLabels = {
+  OCR_QUEUED: 'En espera de lectura',
+  OCR_PROCESSING: 'Leyendo ticket',
+  READY_FOR_CONFIRMATION: 'Pendiente del usuario',
+  NOT_A_RECEIPT: 'No es un ticket',
+  AUTO_REJECTED: 'Ticket no autorizado',
+  REWARD_PENDING: 'Asignando puntos',
+  REWARDED: 'Premiado',
+  REWARD_FAILED: 'Procesamiento fallido',
+  REVOKE_PENDING: 'Anulación en proceso',
+  REVOKED: 'Anulado',
+  DUPLICATE: 'Duplicado',
+};
+const reviewLabels = {
+  PENDING: 'Pendiente de revisión',
+  CLEARED: 'Validado sin fraude',
+  FRAUD: 'Marcado como fraude',
+};
 if (!state.token && location.hostname === 'localhost') {
   state.token = prompt('Token de gestor local') || '';
   if (state.token) sessionStorage.setItem('admin-token', state.token);
@@ -15,9 +33,14 @@ async function request(path, options = {}) {
   return payload;
 }
 
-async function load() {
+function filterParams() {
   const params = new URLSearchParams(new FormData(document.querySelector('#filters')));
   for (const [key, value] of [...params]) if (!value) params.delete(key);
+  return params;
+}
+
+async function load() {
+  const params = filterParams();
   const payload = await request(`/api/admin/receipts?${params}`);
   document.querySelector('#manager-email').textContent = payload.manager || '';
   state.rows = payload.receipts;
@@ -26,7 +49,7 @@ async function load() {
     <button class="receipt-row" data-id="${receipt.id}">
       <span><strong>${escapeHtml(receipt.publicId)}</strong><small>${escapeHtml(receipt.fields.storeName || 'Sin tienda')}</small></span>
       <span><strong>${formatMoney(receipt.fields.totalCents)}</strong><small>${receipt.reward.pointsAwarded} puntos</small></span>
-      <span class="status-chip ${escapeHtml(receipt.status.toLowerCase())}">${escapeHtml(receipt.status)} · ${escapeHtml(receipt.review.status)}</span>
+      <span class="status-chip ${escapeHtml(receipt.status.toLowerCase())}">${escapeHtml(statusLabels[receipt.status] || receipt.status)} · ${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</span>
     </button>`).join('') || '<p class="empty-state">No hay registros con estos filtros.</p>';
   document.querySelectorAll('.receipt-row').forEach((button) => button.addEventListener('click', () => select(button.dataset.id)));
 }
@@ -205,7 +228,7 @@ async function select(id, suppliedReceipt = null) {
     <div class="review-data">
       <p class="eyebrow">${escapeHtml(receipt.publicId)}</p>
       <h2>${escapeHtml(receipt.fields.storeName || 'Sin tienda')}</h2>
-      <dl><div><dt>Usuario</dt><dd>${escapeHtml(receipt.user.displayName || receipt.user.subject)}</dd></div><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Número</dt><dd>${escapeHtml(receipt.fields.ticketNumber || '—')}</dd></div><div><dt>Fecha</dt><dd>${escapeHtml(receipt.fields.purchaseDate || '—')}</dd></div><div><dt>Importe</dt><dd>${formatMoney(receipt.fields.totalCents)}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Estado</dt><dd>${escapeHtml(receipt.status)}</dd></div><div><dt>Revisión</dt><dd>${escapeHtml(receipt.review.status)}</dd></div></dl>
+      <dl><div><dt>Usuario</dt><dd>${escapeHtml(receipt.user.displayName || receipt.user.subject)}</dd></div><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Número</dt><dd>${escapeHtml(receipt.fields.ticketNumber || '—')}</dd></div><div><dt>Fecha</dt><dd>${escapeHtml(receipt.fields.purchaseDate || '—')}</dd></div><div><dt>Importe</dt><dd>${formatMoney(receipt.fields.totalCents)}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Estado</dt><dd>${escapeHtml(statusLabels[receipt.status] || receipt.status)}</dd></div><div><dt>Revisión</dt><dd>${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</dd></div></dl>
       <label>Motivo o nota<textarea id="review-reason" rows="3" placeholder="Obligatorio para revocar"></textarea></label>
       <div class="review-actions"><button class="secondary-button" id="clear-review" ${receipt.review.status !== 'PENDING' ? 'disabled' : ''}>Revisado sin fraude</button><button class="danger-button" id="revoke" ${receipt.status !== 'REWARDED' ? 'disabled' : ''}>Fraude: revocar puntos</button></div>
     </div>`;
@@ -260,8 +283,14 @@ async function review(action) {
 }
 
 document.querySelector('#filters').addEventListener('submit', (event) => { event.preventDefault(); load().catch(alert); });
+document.querySelector('#clear-filters').addEventListener('click', () => {
+  document.querySelector('#filters').reset();
+  document.querySelector('[name="attention"]').checked = false;
+  load().catch((error) => alert(error.message));
+});
+document.querySelector('[name="attention"]').addEventListener('change', () => load().catch((error) => alert(error.message)));
 document.querySelector('#export-csv').addEventListener('click', async () => {
-  const params = new URLSearchParams(new FormData(document.querySelector('#filters')));
+  const params = filterParams();
   const response = await fetch(`/api/admin/receipts.csv?${params}`, { headers: headers() });
   if (!response.ok) return alert('No se pudo exportar');
   const link = document.createElement('a');

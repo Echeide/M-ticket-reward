@@ -18,18 +18,38 @@
     </nav>
     <div id="admin-notice" class="admin-notice" role="status" aria-live="polite"></div>
     <main id="receipts-view" class="admin-layout admin-view active">
-      <aside class="filters-card">
-        <div class="section-heading"><h2>Filtros</h2><button class="text-button" id="export-csv" type="button">Exportar CSV</button></div>
+      <section class="filters-bar" aria-labelledby="filters-title">
+        <div class="filters-heading">
+          <div><p class="eyebrow">Revisión antifraude</p><h2 id="filters-title">Buscar y filtrar tickets</h2></div>
+          <label class="filter-toggle"><input name="attention" value="1" type="checkbox" form="filters" /><span>Solo incidencias</span></label>
+        </div>
         <form id="filters">
-          <label>Usuario<input name="user" /></label>
-          <label>Tienda<input name="store" /></label>
-          <label>Estado<select name="status"><option value="">Todos</option><option>REWARDED</option><option>REVOKE_PENDING</option><option>REVOKED</option><option>DUPLICATE</option><option>AUTO_REJECTED</option></select></label>
-          <label>Revisión<select name="review"><option value="">Todas</option><option value="PENDING">Pendientes</option><option value="CLEARED">Sin fraude</option><option value="FRAUD">Fraude</option></select></label>
-          <label>Desde<input name="from" type="date" /></label>
-          <label>Hasta<input name="to" type="date" /></label>
-          <button class="primary-button">Aplicar filtros</button>
+          <label class="filter-search">Usuario o ticket<input name="user" placeholder="Nombre, correo, referencia o número" /></label>
+          <label>Comercio<input name="store" placeholder="Nombre o alias" /></label>
+          <label>Estado<select name="status">
+            <option value="">Todos los estados</option>
+            <option value="OCR_QUEUED">En espera de lectura</option>
+            <option value="OCR_PROCESSING">Leyendo ticket</option>
+            <option value="READY_FOR_CONFIRMATION">Pendiente del usuario</option>
+            <option value="NOT_A_RECEIPT">No es un ticket</option>
+            <option value="AUTO_REJECTED">Ticket no autorizado</option>
+            <option value="REWARD_PENDING">Asignando puntos</option>
+            <option value="REWARDED">Premiado</option>
+            <option value="REWARD_FAILED">Procesamiento fallido</option>
+            <option value="REVOKE_PENDING">Anulación en proceso</option>
+            <option value="REVOKED">Anulado</option>
+            <option value="DUPLICATE">Duplicado</option>
+          </select></label>
+          <label>Resultado antifraude<select name="review"><option value="">Todos los resultados</option><option value="PENDING">Pendiente de revisión</option><option value="CLEARED">Validado sin fraude</option><option value="FRAUD">Marcado como fraude</option></select></label>
+          <label>Compra desde<input name="from" type="date" /></label>
+          <label>Compra hasta<input name="to" type="date" /></label>
+          <div class="filter-actions">
+            <button class="secondary-button" id="clear-filters" type="button">Limpiar</button>
+            <button class="primary-button" type="submit">Filtrar</button>
+            <button class="text-button" id="export-csv" type="button">Exportar CSV</button>
+          </div>
         </form>
-      </aside>
+      </section>
       <section class="admin-list-panel">
         <div class="list-heading"><h2>Registros</h2><span id="record-count">0</span></div>
         <div id="receipt-list" class="receipt-list"></div>

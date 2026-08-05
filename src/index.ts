@@ -666,19 +666,28 @@ function adminFilters(url: URL) {
   };
   if (url.searchParams.get('user')) {
     const value = `%${url.searchParams.get('user')}%`;
-    values.push(value);
-    const subjectPlaceholder = `$${values.length}`;
-    values.push(value);
-    const displayNamePlaceholder = `$${values.length}`;
-    values.push(value);
-    const emailPlaceholder = `$${values.length}`;
-    conditions.push(`(r.user_ref ILIKE ${subjectPlaceholder} OR s.display_name ILIKE ${displayNamePlaceholder} OR s.user_email ILIKE ${emailPlaceholder})`);
+    const searchableColumns = ['r.user_ref', 's.display_name', 's.user_email', 'r.public_id', 'r.ticket_number'];
+    const clauses = searchableColumns.map((column) => {
+      values.push(value);
+      return `${column} ILIKE $${values.length}`;
+    });
+    conditions.push(`(${clauses.join(' OR ')})`);
   }
-  if (url.searchParams.get('store')) add('r.store_name ILIKE ?', `%${url.searchParams.get('store')}%`);
+  if (url.searchParams.get('store')) {
+    const value = `%${url.searchParams.get('store')}%`;
+    values.push(value);
+    const linkedStorePlaceholder = `$${values.length}`;
+    values.push(value);
+    const ocrStorePlaceholder = `$${values.length}`;
+    conditions.push(`(r.store_name ILIKE ${linkedStorePlaceholder} OR json_extract(r.ocr_payload, '$.storeName') ILIKE ${ocrStorePlaceholder})`);
+  }
   if (url.searchParams.get('status')) add('r.status = ?', url.searchParams.get('status'));
   if (url.searchParams.get('review')) add('r.review_status = ?', url.searchParams.get('review'));
   if (url.searchParams.get('from')) add('r.purchase_date >= ?', url.searchParams.get('from'));
   if (url.searchParams.get('to')) add('r.purchase_date <= ?', url.searchParams.get('to'));
+  if (url.searchParams.get('attention') === '1') {
+    conditions.push(`r.status IN ('AUTO_REJECTED', 'NOT_A_RECEIPT', 'REWARD_FAILED', 'REVOKE_PENDING', 'REVOKED', 'DUPLICATE')`);
+  }
   return { where: conditions.join(' AND '), values };
 }
 
