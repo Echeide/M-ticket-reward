@@ -171,13 +171,37 @@ function escapeHtml(value) {
   })[character]);
 }
 
-async function select(id) {
-  state.selected = state.rows.find((row) => row.id === id);
+function canReprocess(receipt) {
+  if (['AUTO_REJECTED', 'NOT_A_RECEIPT', 'READY_FOR_CONFIRMATION'].includes(receipt.status)) return true;
+  return receipt.status === 'REWARD_FAILED' &&
+    Array.isArray(receipt.reasons) && receipt.reasons.includes('OCR_PROCESSING_FAILED');
+}
+
+function showNotice(message) {
+  const notice = document.querySelector('#admin-notice');
+  notice.textContent = message;
+  notice.classList.add('visible');
+  setTimeout(() => notice.classList.remove('visible'), 3500);
+}
+
+async function select(id, suppliedReceipt = null) {
+  state.selected = suppliedReceipt || state.rows.find((row) => row.id === id);
   const receipt = state.selected;
+  if (!receipt) return;
+  const reprocessable = canReprocess(receipt);
   const panel = document.querySelector('#review-panel');
   panel.className = 'review-panel';
   panel.innerHTML = `
-    <div class="ticket-image-wrap"><img id="ticket-image" alt="Ticket ${receipt.publicId}" /></div>
+    <div class="ticket-image-wrap">
+      <button class="image-reprocess-button" id="reprocess-ticket" type="button"
+        aria-label="Volver a comprobar el ticket" title="${reprocessable ? 'Volver a comprobar el ticket' : 'No disponible para tickets con puntos asignados o duplicados'}"
+        ${reprocessable ? '' : 'disabled'}>
+        <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"></path><path d="M21 3v5h-5"></path>
+        </svg>
+      </button>
+      <img id="ticket-image" alt="Ticket ${receipt.publicId}" />
+    </div>
     <div class="review-data">
       <p class="eyebrow">${escapeHtml(receipt.publicId)}</p>
       <h2>${escapeHtml(receipt.fields.storeName || 'Sin tienda')}</h2>
@@ -189,6 +213,37 @@ async function select(id) {
   if (image.ok) document.querySelector('#ticket-image').src = URL.createObjectURL(await image.blob());
   document.querySelector('#clear-review').addEventListener('click', () => review('CLEAR'));
   document.querySelector('#revoke').addEventListener('click', () => review('REVOKE'));
+  if (reprocessable) document.querySelector('#reprocess-ticket').addEventListener('click', reprocessSelected);
+}
+
+async function reprocessSelected() {
+  const receiptId = state.selected.id;
+  const button = document.querySelector('#reprocess-ticket');
+  button.disabled = true;
+  button.classList.add('loading');
+  button.setAttribute('aria-label', 'Comprobando de nuevo el ticket');
+  try {
+    await request(`/api/admin/receipts/${receiptId}/reprocess`, { method: 'POST' });
+    showNotice('El ticket se está comprobando de nuevo.');
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      const updated = (await request(`/api/admin/receipts/${receiptId}`)).receipt;
+      if (!['OCR_QUEUED', 'OCR_PROCESSING'].includes(updated.status)) {
+        await load();
+        await select(receiptId, updated);
+        showNotice('Comprobación del ticket actualizada.');
+        return;
+      }
+    }
+    const updated = (await request(`/api/admin/receipts/${receiptId}`)).receipt;
+    await load();
+    await select(receiptId, updated);
+    showNotice('El ticket sigue procesándose; consulta de nuevo en unos instantes.');
+  } catch (error) {
+    button.disabled = false;
+    button.classList.remove('loading');
+    alert(error instanceof Error ? error.message : 'No se pudo volver a comprobar el ticket');
+  }
 }
 
 async function review(action) {

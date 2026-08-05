@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildTicketFingerprint } from '../src/domain/deduplication';
-import { receiptStatusAfterOcr, validateReceiptAutomatically } from '../src/domain/receipt';
+import {
+  canReprocessReceipt,
+  receiptStatusAfterOcr,
+  validateReceiptAutomatically,
+} from '../src/domain/receipt';
 import {
   resolveRewardPoints,
   reversalIdempotencyKey,
@@ -70,6 +74,17 @@ test('only fully valid OCR results wait for player confirmation', () => {
   assert.equal(receiptStatusAfterOcr({
     approved: false, riskScore: 0, reasons: ['DUPLICATE'],
   }), 'DUPLICATE');
+});
+
+test('OCR reprocessing is limited to receipts that cannot duplicate rewards', () => {
+  assert.equal(canReprocessReceipt('AUTO_REJECTED'), true);
+  assert.equal(canReprocessReceipt('NOT_A_RECEIPT'), true);
+  assert.equal(canReprocessReceipt('READY_FOR_CONFIRMATION'), true);
+  assert.equal(canReprocessReceipt('REWARD_FAILED', ['OCR_PROCESSING_FAILED']), true);
+  assert.equal(canReprocessReceipt('REWARD_FAILED', ['RTALES_DELIVERY_FAILED']), false);
+  assert.equal(canReprocessReceipt('REWARDED'), false);
+  assert.equal(canReprocessReceipt('REWARD_PENDING'), false);
+  assert.equal(canReprocessReceipt('DUPLICATE'), false);
 });
 
 test('reward tiers select the highest eligible purchase threshold', () => {

@@ -3,6 +3,7 @@ import { buildTicketFingerprint } from './domain/deduplication';
 import {
   type OcrReceipt,
   type ReceiptFields,
+  canReprocessReceipt,
   receiptStatusAfterOcr,
   validateReceiptAutomatically,
 } from './domain/receipt';
@@ -58,6 +59,7 @@ type ReceiptRow = {
   purchase_date: string | null;
   total_cents: number | null;
   currency: string;
+  ticket_fingerprint: string | null;
   ocr_payload: OcrReceipt | null;
   ocr_confidence: number | null;
   risk_score: number;
@@ -701,6 +703,22 @@ async function handleAdminList(request: Request, env: Env): Promise<Response> {
   return json({ success: true, manager, receipts: rows.map((row) => receiptView(row, true)) });
 }
 
+async function handleAdminReceipt(request: Request, env: Env, receiptId: string): Promise<Response> {
+  const manager = managerIdentity(request, env);
+  if (!manager) return error('Acceso de gestor requerido', 401);
+  const receipt = await withDatabase(env, async (client) => {
+    const result = await client.query<ReceiptRow>(
+      `SELECT r.*, s.display_name AS user_display_name, s.user_email
+         FROM receipts r JOIN player_sessions s ON s.id = r.session_id
+        WHERE r.id = $1 LIMIT 1`,
+      [receiptId],
+    );
+    return result.rows[0];
+  });
+  if (!receipt) return error('Ticket no encontrado', 404);
+  return json({ success: true, manager, receipt: receiptView(receipt, true) });
+}
+
 function csvCell(value: unknown): string {
   return `"${String(value ?? '').replaceAll('"', '""')}"`;
 }
@@ -740,6 +758,48 @@ async function handleAdminImage(request: Request, env: Env, receiptId: string): 
       'Content-Disposition': 'inline',
     },
   });
+}
+
+async function handleAdminReprocess(request: Request, env: Env, receiptId: string): Promise<Response> {
+  if (!managerIdentity(request, env)) return error('Acceso de gestor requerido', 401);
+  const receipt = await withDatabase(env, async (client) => {
+    const result = await client.query<ReceiptRow>(
+      'SELECT * FROM receipts WHERE id = $1 LIMIT 1',
+      [receiptId],
+    );
+    return result.rows[0];
+  });
+  if (!receipt) return error('Ticket no encontrado', 404);
+  if (!canReprocessReceipt(receipt.status, receipt.validation_reasons)) {
+    return error('Este ticket no se puede volver a comprobar en su estado actual', 409);
+  }
+
+  const queued = await withDatabase(env, async (client) => client.query(
+    `UPDATE receipts SET status = 'OCR_QUEUED', ticket_fingerprint = NULL,
+        validation_reasons = $3::jsonb, review_status = 'PENDING',
+        reviewed_at = NULL, reviewed_by = NULL, updated_at = NOW()
+      WHERE id = $1 AND status = $2`,
+    [receiptId, receipt.status, JSON.stringify(['OCR_REPROCESS_REQUESTED'])],
+  ));
+  if (!queued.rowCount) return error('El ticket ha cambiado de estado; actualiza la ficha', 409);
+
+  try {
+    await env.JOBS.send({ kind: 'OCR_RECEIPT', receiptId });
+  } catch (caught) {
+    await withDatabase(env, async (client) => {
+      await client.query(
+        `UPDATE receipts SET status = $2, ticket_fingerprint = $3,
+            validation_reasons = $4::jsonb, review_status = $5,
+            reviewed_at = $6, reviewed_by = $7, updated_at = NOW()
+          WHERE id = $1 AND status = 'OCR_QUEUED'`,
+        [receiptId, receipt.status, receipt.ticket_fingerprint,
+          JSON.stringify(receipt.validation_reasons), receipt.review_status,
+          receipt.reviewed_at, receipt.reviewed_by],
+      );
+    });
+    throw caught;
+  }
+  return json({ success: true, status: 'OCR_QUEUED' }, 202);
 }
 
 async function handleAdminReview(
@@ -999,6 +1059,8 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'POST' && confirmMatch?.[1]) return await handleConfirm(request, env, confirmMatch[1]);
     if (request.method === 'GET' && url.pathname === '/api/admin/receipts') return await handleAdminList(request, env);
     if (request.method === 'GET' && url.pathname === '/api/admin/receipts.csv') return await handleAdminCsv(request, env);
+    const adminReceiptMatch = url.pathname.match(/^\/api\/admin\/receipts\/([^/]+)$/);
+    if (request.method === 'GET' && adminReceiptMatch?.[1]) return await handleAdminReceipt(request, env, adminReceiptMatch[1]);
     if (url.pathname === '/api/admin/stores' && ['GET', 'POST'].includes(request.method)) {
       return await handleAdminStores(request, env);
     }
@@ -1011,6 +1073,8 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'PATCH' && tierMatch?.[1]) return await handleAdminRewardTierUpdate(request, env, tierMatch[1]);
     const imageMatch = url.pathname.match(/^\/api\/admin\/receipts\/([^/]+)\/image$/);
     if (request.method === 'GET' && imageMatch?.[1]) return await handleAdminImage(request, env, imageMatch[1]);
+    const reprocessMatch = url.pathname.match(/^\/api\/admin\/receipts\/([^/]+)\/reprocess$/);
+    if (request.method === 'POST' && reprocessMatch?.[1]) return await handleAdminReprocess(request, env, reprocessMatch[1]);
     const reviewMatch = url.pathname.match(/^\/api\/admin\/receipts\/([^/]+)\/review$/);
     if (request.method === 'POST' && reviewMatch?.[1]) return await handleAdminReview(request, env, reviewMatch[1]);
     if (url.pathname.startsWith('/api/')) return error('Ruta no encontrada', 404);
