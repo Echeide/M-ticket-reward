@@ -6,9 +6,9 @@
 2. El Worker intercambia el código desde servidor y crea una sesión local.
 3. El navegador captura la imagen del ticket.
 4. El Worker valida tipo y tamaño, calcula SHA-256, guarda en R2 y publica un trabajo OCR.
-5. El consumidor OCR clasifica la imagen y extrae tienda, número, fecha, importe y moneda.
-6. El usuario revisa los campos reconocidos, sin poder modificarlos, y confirma.
-7. La API comprueba tienda, fechas, importe y duplicidad exacta/lógica.
+5. El consumidor OCR clasifica la imagen, extrae tienda, número, fecha, importe y moneda, y ejecuta la prevalidación automática.
+6. Solo si el comercio, los campos, la fecha y la duplicidad son válidos, el ticket queda pendiente de confirmación.
+7. El usuario revisa los campos reconocidos, sin poder modificarlos, y confirma; la API repite la validación para evitar carreras.
 8. Si pasa la validación automática, calcula puntos y crea una outbox durable.
 9. La outbox entrega el premio a Rtales con una clave idempotente.
 10. El frontend recibe el resultado por consulta, muestra la confirmación y notifica al iframe padre.

@@ -44,7 +44,7 @@
   "triggers": { "crons": ["*/2 * * * *"] },
   "vars": {
     "RTALES_BASE_URL": "https://rtales.app",
-    "RTALES_PARENT_ORIGINS": "https://rtales.app,https://echeide.rtales.app",
+    "RTALES_PARENT_ORIGINS": "https://rtales.app,https://echeide.rtales.app,https://gcx26.rtales.app",
     "OCR_MODEL": "@cf/llava-hf/llava-1.5-7b-hf",
     "OCR_MODE": "workers-ai",
     "ALLOW_DEV_ADMIN": "false",

@@ -13,10 +13,10 @@ const state = {
 const RECEIPT_STATUSES = {
   OCR_QUEUED: { label: 'En espera', tone: 'pending', message: 'El ticket está registrado y esperando a ser leído.' },
   OCR_PROCESSING: { label: 'Leyendo ticket', tone: 'pending', message: 'Estamos reconociendo los datos del ticket.' },
-  READY_FOR_CONFIRMATION: { label: 'Listo para revisar', tone: 'attention', message: 'Revisa los datos reconocidos para continuar.' },
-  NOT_A_RECEIPT: { label: 'No reconocido', tone: 'rejected', message: 'La imagen no parece un ticket de compra.' },
+  READY_FOR_CONFIRMATION: { label: 'Pendiente de confirmación', tone: 'attention', message: 'Los datos son válidos. Revisa el resultado para obtener los puntos.' },
+  NOT_A_RECEIPT: { label: 'No es un ticket', tone: 'rejected', message: 'La imagen no parece un ticket de compra.' },
   DUPLICATE: { label: 'Duplicado', tone: 'rejected', message: 'Este ticket ya se había enviado.' },
-  AUTO_REJECTED: { label: 'No válido', tone: 'rejected', message: 'El ticket no ha superado la validación automática.' },
+  AUTO_REJECTED: { label: 'Escaneo no válido', tone: 'rejected', message: 'El ticket no ha superado la validación automática.' },
   REWARD_PENDING: { label: 'Asignando puntos', tone: 'pending', message: 'El ticket es válido y estamos asignando los puntos.' },
   REWARDED: { label: 'Aprobado', tone: 'approved', message: 'Los puntos se han añadido correctamente.' },
   REWARD_FAILED: { label: 'No completado', tone: 'rejected', message: 'No hemos podido completar la asignación de puntos.' },
@@ -397,6 +397,10 @@ function showTicketDetail(receipt) {
     action.textContent = 'Seguir esperando';
     action.hidden = false;
     action.onclick = () => resumeReceipt(receipt).catch(showError);
+  } else if (['AUTO_REJECTED', 'NOT_A_RECEIPT', 'DUPLICATE'].includes(receipt.status)) {
+    action.textContent = 'Escanear otro ticket';
+    action.hidden = false;
+    action.onclick = retry;
   }
   show('ticket-detail');
 }

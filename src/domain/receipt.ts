@@ -44,6 +44,12 @@ export type AutomaticValidation = {
   reasons: string[];
 };
 
+export function receiptStatusAfterOcr(validation: AutomaticValidation): ReceiptStatus {
+  if (validation.reasons.includes('NOT_A_RECEIPT')) return 'NOT_A_RECEIPT';
+  if (validation.reasons.includes('DUPLICATE')) return 'DUPLICATE';
+  return validation.approved ? 'READY_FOR_CONFIRMATION' : 'AUTO_REJECTED';
+}
+
 export function validateReceiptAutomatically(
   input: AutomaticValidationInput,
 ): AutomaticValidation {

@@ -3,6 +3,7 @@ import { buildTicketFingerprint } from './domain/deduplication';
 import {
   type OcrReceipt,
   type ReceiptFields,
+  receiptStatusAfterOcr,
   validateReceiptAutomatically,
 } from './domain/receipt';
 import {
@@ -454,7 +455,8 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
              validation_reasons = $11::jsonb, updated_at = NOW()
            WHERE id = $1`,
           [receiptId, status, selectedStore?.id || null, fields.storeName, fields.ticketNumber,
-            fields.purchaseDate || null, fields.totalCents, fields.currency, fingerprint,
+            fields.purchaseDate || null, fields.totalCents, fields.currency,
+            status === 'DUPLICATE' ? null : fingerprint,
             validation.riskScore, JSON.stringify(validation.reasons)],
         );
         return { response: json({ success: true, status, reasons: validation.reasons }) };
@@ -498,10 +500,10 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
 
 async function processOcr(env: Env, receiptId: string): Promise<void> {
   const receipt = await withDatabase(env, async (client) => {
-    const result = await client.query<Pick<ReceiptRow, 'id' | 'image_key' | 'image_content_type' | 'status'>>(
+    const result = await client.query<Pick<ReceiptRow, 'id' | 'user_ref' | 'image_key' | 'image_content_type' | 'status'>>(
       `UPDATE receipts SET status = 'OCR_PROCESSING', updated_at = NOW()
         WHERE id = $1 AND status IN ('OCR_QUEUED', 'OCR_PROCESSING')
-        RETURNING id, image_key, image_content_type, status`,
+        RETURNING id, user_ref, image_key, image_content_type, status`,
       [receiptId],
     );
     return result.rows[0];
@@ -515,14 +517,44 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
     : await prepareOcrImage(env, storedBytes);
   const ocr = await readReceipt(env, ocrBytes, 'image/webp');
   await withDatabase(env, async (client) => {
+    const stores = await client.query<StoreRow>(
+      'SELECT * FROM stores WHERE active = TRUE ORDER BY name ASC',
+    );
+    const selectedStore = stores.rows.find((store) => storeMatchesOcr(store, ocr.storeName || ''));
+    const fields: ReceiptFields = {
+      storeId: selectedStore?.id || '',
+      storeName: selectedStore?.name || ocr.storeName || '',
+      ticketNumber: ocr.ticketNumber || '',
+      purchaseDate: ocr.purchaseDate || '',
+      totalCents: ocr.totalCents || 0,
+      currency: /^[A-Z]{3}$/.test(ocr.currency || '') ? ocr.currency! : 'EUR',
+    };
+    const fingerprint = ocr.isReceipt ? buildTicketFingerprint(fields) : null;
+    const duplicate = fingerprint ? await client.query(
+      `SELECT id FROM receipts
+        WHERE user_ref = $1 AND ticket_fingerprint = $2 AND id <> $3
+          AND status = ANY($4::text[])
+        LIMIT 1`,
+      [receipt.user_ref, fingerprint, receiptId, [...ACTIVE_DUPLICATE_STATUSES]],
+    ) : null;
+    const validation = validateReceiptAutomatically({
+      fields,
+      ocr,
+      storeActive: selectedStore?.active === true,
+      duplicate: Boolean(duplicate?.rowCount),
+    });
+    const status = receiptStatusAfterOcr(validation);
     await client.query(
-      `UPDATE receipts SET status = $2, store_name = $3, ticket_number = $4,
-         purchase_date = $5, total_cents = $6, currency = $7,
-         ocr_payload = $8::jsonb, ocr_confidence = $9, updated_at = NOW()
+      `UPDATE receipts SET status = $2, store_id = $3, store_name = $4,
+         ticket_number = $5, purchase_date = $6, total_cents = $7, currency = $8,
+         ticket_fingerprint = $9, ocr_payload = $10::jsonb, ocr_confidence = $11,
+         risk_score = $12, validation_reasons = $13::jsonb, updated_at = NOW()
        WHERE id = $1`,
-      [receiptId, ocr.isReceipt ? 'READY_FOR_CONFIRMATION' : 'NOT_A_RECEIPT',
-        ocr.storeName || null, ocr.ticketNumber || null, ocr.purchaseDate || null,
-        ocr.totalCents || null, ocr.currency || 'EUR', JSON.stringify(ocr), ocr.confidence],
+      [receiptId, status, selectedStore?.id || null, fields.storeName || null,
+        fields.ticketNumber || null, fields.purchaseDate || null, fields.totalCents || null,
+        fields.currency, status === 'DUPLICATE' ? null : fingerprint,
+        JSON.stringify(ocr), ocr.confidence, validation.riskScore,
+        JSON.stringify(validation.reasons)],
     );
   });
 }

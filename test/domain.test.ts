@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildTicketFingerprint } from '../src/domain/deduplication';
-import { validateReceiptAutomatically } from '../src/domain/receipt';
+import { receiptStatusAfterOcr, validateReceiptAutomatically } from '../src/domain/receipt';
 import {
   resolveRewardPoints,
   reversalIdempotencyKey,
@@ -57,6 +57,19 @@ test('automatic validation only accepts receipt dates within three calendar days
   assert.deepEqual(validateDate('2026-08-01').reasons, ['TICKET_TOO_OLD']);
   assert.deepEqual(validateDate('2026-08-09').reasons, ['FUTURE_DATE']);
   assert.deepEqual(validateDate('2026-02-30').reasons, ['INVALID_DATE']);
+});
+
+test('only fully valid OCR results wait for player confirmation', () => {
+  assert.equal(receiptStatusAfterOcr({ approved: true, riskScore: 0, reasons: [] }), 'READY_FOR_CONFIRMATION');
+  assert.equal(receiptStatusAfterOcr({
+    approved: false, riskScore: 0, reasons: ['STORE_NOT_ALLOWED'],
+  }), 'AUTO_REJECTED');
+  assert.equal(receiptStatusAfterOcr({
+    approved: false, riskScore: 0, reasons: ['NOT_A_RECEIPT', 'INVALID_TOTAL'],
+  }), 'NOT_A_RECEIPT');
+  assert.equal(receiptStatusAfterOcr({
+    approved: false, riskScore: 0, reasons: ['DUPLICATE'],
+  }), 'DUPLICATE');
 });
 
 test('reward tiers select the highest eligible purchase threshold', () => {
