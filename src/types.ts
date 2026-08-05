@@ -6,7 +6,7 @@ export interface Env {
   ASSETS: Fetcher;
   TICKETS: R2Bucket;
   JOBS: Queue<JobMessage>;
-  HYPERDRIVE: Hyperdrive;
+  DB: D1Database;
   AI: Ai;
   RTALES_BASE_URL: string;
   RTALES_PARENT_ORIGINS: string;

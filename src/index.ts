@@ -1,4 +1,4 @@
-import type { Client } from 'pg';
+import type { DbClient } from './platform/db';
 import { buildTicketFingerprint } from './domain/deduplication';
 import {
   type OcrReceipt,
@@ -165,12 +165,12 @@ function receiptView(row: ReceiptRow, includeManagerFields = false) {
 async function authenticatedSession(
   request: Request,
   env: Env,
-  client?: Client,
+  client?: DbClient,
 ): Promise<SessionRow | null> {
   const token = bearerToken(request);
   if (!token) return null;
   const tokenHash = await sha256Hex(token);
-  const query = async (database: Client) => {
+  const query = async (database: DbClient) => {
     const result = await database.query<SessionRow>(
       `SELECT id, user_ref, rtales_game_session_id, player_token_encrypted,
               parent_origin, display_name, user_email
@@ -295,7 +295,7 @@ async function handleStores(request: Request, env: Env): Promise<Response> {
 }
 
 async function loadOwnedReceipt(
-  client: Client,
+  client: DbClient,
   receiptId: string,
   session: SessionRow,
   lock = false,

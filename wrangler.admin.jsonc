@@ -19,11 +19,12 @@
       "bucket_name": "rtales-ticket-receipts"
     }
   ],
-  "hyperdrive": [
+  "d1_databases": [
     {
-      "binding": "HYPERDRIVE",
-      "id": "c34172332968420c83fc1dd999064821",
-      "localConnectionString": "postgres://postgres:postgres@localhost:5432/ticket_rewards"
+      "binding": "DB",
+      "database_name": "rtales-ticket-rewards",
+      "database_id": "e2523d3b-c7ba-407e-81a2-6a52646f29bc",
+      "migrations_dir": "migrations-d1"
     }
   ],
   "queues": {

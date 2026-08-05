@@ -14,13 +14,10 @@
     "check": "tsc --noEmit && node --check public/app.js && node --check public/backoffice.js && npm test",
     "test": "node --import tsx --test test/*.test.ts"
   },
-  "dependencies": {
-    "pg": "^8.22.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260804.1",
     "@types/node": "^24.3.0",
-    "@types/pg": "^8.15.5",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
     "wrangler": "^4.118.0"
