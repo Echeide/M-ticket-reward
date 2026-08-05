@@ -8,6 +8,7 @@ import {
   rewardIdempotencyKey,
 } from '../src/domain/rewards';
 import { normalizeStoreInput } from '../src/domain/store';
+import { normalizeRewardTierInput } from '../src/domain/reward-tier';
 
 const fields = {
   storeId: 'store-1',
@@ -74,4 +75,22 @@ test('store input normalizes codes and unique OCR aliases', () => {
 test('store input rejects unsafe or incomplete identifiers', () => {
   assert.throws(() => normalizeStoreInput({ code: '!', name: 'Tienda', aliases: [] }), /STORE_CODE_INVALID/);
   assert.throws(() => normalizeStoreInput({ code: 'OK', name: 'X', aliases: [] }), /STORE_NAME_INVALID/);
+});
+
+test('reward tiers use the highest reached threshold without accumulating', () => {
+  const tiers = [
+    { id: '50', minimumCents: 5_000, points: 10, active: true },
+    { id: '100', minimumCents: 10_000, points: 20, active: true },
+  ];
+  assert.equal(resolveRewardPoints(4_999, tiers), 0);
+  assert.equal(resolveRewardPoints(5_000, tiers), 10);
+  assert.equal(resolveRewardPoints(12_500, tiers), 20);
+});
+
+test('reward tier management accepts integer cents and points only', () => {
+  assert.deepEqual(normalizeRewardTierInput({ minimumCents: 5_000, points: 10, active: true }), {
+    minimumCents: 5_000, points: 10, active: true,
+  });
+  assert.throws(() => normalizeRewardTierInput({ minimumCents: 50.5, points: 10 }), /TIER_MINIMUM_INVALID/);
+  assert.throws(() => normalizeRewardTierInput({ minimumCents: 5_000, points: -1 }), /TIER_POINTS_INVALID/);
 });

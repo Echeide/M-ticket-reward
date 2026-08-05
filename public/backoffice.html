@@ -14,6 +14,7 @@
     <nav class="admin-tabs" aria-label="Áreas de gestión">
       <button class="active" data-admin-view="receipts">Revisión antifraude</button>
       <button data-admin-view="stores">Comercios autorizados</button>
+      <button data-admin-view="tiers">Baremos de puntos</button>
     </nav>
     <div id="admin-notice" class="admin-notice" role="status" aria-live="polite"></div>
     <main id="receipts-view" class="admin-layout admin-view active">
@@ -34,6 +35,17 @@
         <div id="receipt-list" class="receipt-list"></div>
       </section>
       <section id="review-panel" class="review-panel empty"><p>Selecciona un ticket para revisarlo.</p></section>
+    </main>
+    <main id="tiers-view" class="tiers-layout admin-view">
+      <section class="stores-heading">
+        <div><p class="eyebrow">Conversión de compras</p><h2>Baremos de puntos</h2><p>Se aplica el tramo activo más alto alcanzado por el importe total del ticket.</p></div>
+        <button class="primary-button" id="new-tier" type="button">Añadir tramo</button>
+      </section>
+      <section class="tier-explanation"><strong>Ejemplo</strong><span>Con tramos de 50 € → 10 puntos y 100 € → 20 puntos, una compra de 125 € concede 20 puntos.</span></section>
+      <section class="store-list-card">
+        <div class="tier-list-head"><span>Importe mínimo</span><span>Puntos concedidos</span><span>Estado</span><span></span></div>
+        <div id="tier-list"></div>
+      </section>
     </main>
     <main id="stores-view" class="stores-layout admin-view">
       <section class="stores-heading">
@@ -61,6 +73,17 @@
         <label class="switch-row"><span><strong>Comercio activo</strong><small>Sus tickets pueden validarse y recibir puntos.</small></span><input name="active" type="checkbox" checked /></label>
         <p id="store-form-error" class="form-error" role="alert"></p>
         <div class="dialog-actions"><button class="secondary-button" id="cancel-store" type="button">Cancelar</button><button class="primary-button" type="submit">Guardar comercio</button></div>
+      </form>
+    </dialog>
+    <dialog id="tier-dialog">
+      <form id="tier-form" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">Conversión</p><h2 id="tier-dialog-title">Añadir tramo</h2></div><button class="icon-button" id="close-tier-dialog" type="button" aria-label="Cerrar">×</button></div>
+        <input name="id" type="hidden" />
+        <label>Importe mínimo de compra<div class="money-field"><input name="minimum" inputmode="decimal" required placeholder="50,00" /><span>€</span></div></label>
+        <label>Puntos concedidos<input name="points" type="number" min="0" max="1000000" step="1" required placeholder="10" /></label>
+        <label class="switch-row"><span><strong>Tramo activo</strong><small>Participará en el cálculo de próximas compras.</small></span><input name="active" type="checkbox" checked /></label>
+        <p id="tier-form-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button class="secondary-button" id="cancel-tier" type="button">Cancelar</button><button class="primary-button" type="submit">Guardar tramo</button></div>
       </form>
     </dialog>
     <script type="module" src="/backoffice.js"></script>

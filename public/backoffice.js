@@ -1,4 +1,4 @@
-const state = { rows: [], stores: [], selected: null, token: sessionStorage.getItem('admin-token') || '' };
+const state = { rows: [], stores: [], tiers: [], selected: null, token: sessionStorage.getItem('admin-token') || '' };
 if (!state.token && location.hostname === 'localhost') {
   state.token = prompt('Token de gestor local') || '';
   if (state.token) sessionStorage.setItem('admin-token', state.token);
@@ -47,6 +47,66 @@ async function loadStores() {
       <button class="secondary-button edit-store" data-id="${store.id}" type="button">Editar</button>
     </article>`).join('') || '<p class="empty-state">Todavía no hay comercios.</p>';
   document.querySelectorAll('.edit-store').forEach((button) => button.addEventListener('click', () => openStoreDialog(button.dataset.id)));
+}
+
+async function loadTiers() {
+  const payload = await request('/api/admin/reward-tiers');
+  state.tiers = payload.tiers;
+  document.querySelector('#tier-list').innerHTML = state.tiers.map((tier) => `
+    <article class="tier-row ${tier.active ? '' : 'inactive'}">
+      <strong>${formatMoney(tier.minimumCents)}</strong>
+      <span><strong>${tier.points}</strong> puntos</span>
+      <span class="status-chip ${tier.active ? 'rewarded' : 'duplicate'}">${tier.active ? 'ACTIVO' : 'INACTIVO'}</span>
+      <button class="secondary-button edit-tier" data-id="${tier.id}" type="button">Editar</button>
+    </article>`).join('') || '<p class="empty-state">Todavía no hay tramos configurados.</p>';
+  document.querySelectorAll('.edit-tier').forEach((button) => button.addEventListener('click', () => openTierDialog(button.dataset.id)));
+}
+
+function openTierDialog(id = '') {
+  const tier = state.tiers.find((item) => item.id === id);
+  const form = document.querySelector('#tier-form');
+  form.reset();
+  form.elements.id.value = tier?.id || '';
+  form.elements.minimum.value = tier ? (tier.minimumCents / 100).toFixed(2) : '';
+  form.elements.points.value = tier?.points ?? '';
+  form.elements.active.checked = tier?.active ?? true;
+  document.querySelector('#tier-dialog-title').textContent = tier ? 'Editar tramo' : 'Añadir tramo';
+  document.querySelector('#tier-form-error').textContent = '';
+  document.querySelector('#tier-dialog').showModal();
+}
+
+async function saveTier(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const id = form.elements.id.value;
+  const minimumCents = Math.round(Number(String(form.elements.minimum.value).replace(',', '.')) * 100);
+  const points = Number(form.elements.points.value);
+  const errorNode = document.querySelector('#tier-form-error');
+  if (!Number.isInteger(minimumCents) || minimumCents < 0 || !Number.isInteger(points) || points < 0) {
+    errorNode.textContent = 'Revisa el importe mínimo y los puntos.';
+    return;
+  }
+  const submitButton = form.querySelector('[type="submit"]');
+  submitButton.disabled = true;
+  submitButton.textContent = 'Guardando…';
+  try {
+    await request(id ? `/api/admin/reward-tiers/${id}` : '/api/admin/reward-tiers', {
+      method: id ? 'PATCH' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ minimumCents, points, active: form.elements.active.checked }),
+    });
+    document.querySelector('#tier-dialog').close();
+    await loadTiers();
+    const notice = document.querySelector('#admin-notice');
+    notice.textContent = id ? 'Tramo actualizado correctamente.' : 'Tramo creado correctamente.';
+    notice.classList.add('visible');
+    setTimeout(() => notice.classList.remove('visible'), 3500);
+  } catch (error) {
+    errorNode.textContent = error instanceof Error ? error.message : 'No se pudo guardar el tramo';
+  } finally {
+    submitButton.disabled = false;
+    submitButton.textContent = 'Guardar tramo';
+  }
 }
 
 function openStoreDialog(id = '') {
@@ -159,9 +219,14 @@ document.querySelectorAll('[data-admin-view]').forEach((button) => button.addEve
   document.querySelectorAll('[data-admin-view]').forEach((item) => item.classList.toggle('active', item === button));
   document.querySelectorAll('.admin-view').forEach((item) => item.classList.toggle('active', item.id === `${view}-view`));
   if (view === 'stores') await loadStores().catch((error) => alert(error.message));
+  if (view === 'tiers') await loadTiers().catch((error) => alert(error.message));
 }));
 document.querySelector('#new-store').addEventListener('click', () => openStoreDialog());
 document.querySelector('#store-form').addEventListener('submit', saveStore);
 document.querySelector('#close-store-dialog').addEventListener('click', () => document.querySelector('#store-dialog').close());
 document.querySelector('#cancel-store').addEventListener('click', () => document.querySelector('#store-dialog').close());
+document.querySelector('#new-tier').addEventListener('click', () => openTierDialog());
+document.querySelector('#tier-form').addEventListener('submit', saveTier);
+document.querySelector('#close-tier-dialog').addEventListener('click', () => document.querySelector('#tier-dialog').close());
+document.querySelector('#cancel-tier').addEventListener('click', () => document.querySelector('#tier-dialog').close());
 load().catch((error) => alert(error.message));

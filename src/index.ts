@@ -11,6 +11,7 @@ import {
   rewardIdempotencyKey,
 } from './domain/rewards';
 import { normalizeStoreInput } from './domain/store';
+import { normalizeRewardTierInput } from './domain/reward-tier';
 import { readReceipt } from './integrations/ocr';
 import {
   exchangeLaunchCode,
@@ -80,6 +81,15 @@ type StoreRow = {
   created_at: string;
   updated_at: string;
   receipt_count?: string;
+};
+
+type RewardTierRow = {
+  id: string;
+  minimum_cents: number;
+  points: number;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
 };
 
 const ACTIVE_DUPLICATE_STATUSES = [
@@ -765,6 +775,85 @@ async function handleAdminStoreUpdate(
   return json({ success: true, store: storeView(updated.row) });
 }
 
+function rewardTierView(row: RewardTierRow) {
+  return {
+    id: row.id,
+    minimumCents: row.minimum_cents,
+    points: row.points,
+    active: row.active,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+async function handleAdminRewardTiers(request: Request, env: Env): Promise<Response> {
+  const managerEmail = managerIdentity(request, env);
+  if (!managerEmail) return error('Acceso de gestor requerido', 401);
+  if (request.method === 'GET') {
+    const rows = await withDatabase(env, async (client) => {
+      const result = await client.query<RewardTierRow>(
+        'SELECT * FROM reward_tiers ORDER BY minimum_cents ASC',
+      );
+      return result.rows;
+    });
+    return json({ success: true, manager: managerEmail, tiers: rows.map(rewardTierView) });
+  }
+  const input = normalizeRewardTierInput(await readJson(request));
+  const id = uuid();
+  const created = await withDatabase(env, (client) => inTransaction(client, async () => {
+    const duplicate = await client.query('SELECT id FROM reward_tiers WHERE minimum_cents = $1', [input.minimumCents]);
+    if (duplicate.rowCount) return null;
+    const result = await client.query<RewardTierRow>(
+      `INSERT INTO reward_tiers (id, minimum_cents, points, active)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [id, input.minimumCents, input.points, input.active],
+    );
+    await client.query(
+      `INSERT INTO reward_tier_audit_log (id, reward_tier_id, action, manager_email, changes)
+       VALUES ($1, $2, 'CREATED', $3, $4::jsonb)`,
+      [uuid(), id, managerEmail, JSON.stringify(input)],
+    );
+    return result.rows[0];
+  }));
+  if (!created) return error('Ya existe un tramo para ese importe mínimo', 409);
+  return json({ success: true, tier: rewardTierView(created) }, 201);
+}
+
+async function handleAdminRewardTierUpdate(request: Request, env: Env, tierId: string): Promise<Response> {
+  const managerEmail = managerIdentity(request, env);
+  if (!managerEmail) return error('Acceso de gestor requerido', 401);
+  const input = normalizeRewardTierInput(await readJson(request));
+  const updated = await withDatabase(env, (client) => inTransaction(client, async () => {
+    const currentResult = await client.query<RewardTierRow>('SELECT * FROM reward_tiers WHERE id = $1 FOR UPDATE', [tierId]);
+    const current = currentResult.rows[0];
+    if (!current) return { kind: 'missing' as const };
+    const duplicate = await client.query(
+      'SELECT id FROM reward_tiers WHERE minimum_cents = $1 AND id <> $2',
+      [input.minimumCents, tierId],
+    );
+    if (duplicate.rowCount) return { kind: 'duplicate' as const };
+    const action = current.active !== input.active ? (input.active ? 'ACTIVATED' : 'DEACTIVATED') : 'UPDATED';
+    const changes = {
+      before: { minimumCents: current.minimum_cents, points: current.points, active: current.active },
+      after: input,
+    };
+    const result = await client.query<RewardTierRow>(
+      `UPDATE reward_tiers SET minimum_cents = $2, points = $3, active = $4,
+          updated_at = NOW() WHERE id = $1 RETURNING *`,
+      [tierId, input.minimumCents, input.points, input.active],
+    );
+    await client.query(
+      `INSERT INTO reward_tier_audit_log (id, reward_tier_id, action, manager_email, changes)
+       VALUES ($1, $2, $3, $4, $5::jsonb)`,
+      [uuid(), tierId, action, managerEmail, JSON.stringify(changes)],
+    );
+    return { kind: 'updated' as const, row: result.rows[0]! };
+  }));
+  if (updated.kind === 'missing') return error('Tramo no encontrado', 404);
+  if (updated.kind === 'duplicate') return error('Ya existe un tramo para ese importe mínimo', 409);
+  return json({ success: true, tier: rewardTierView(updated.row) });
+}
+
 async function handleFetch(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   try {
@@ -789,6 +878,11 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     }
     const storeMatch = url.pathname.match(/^\/api\/admin\/stores\/([^/]+)$/);
     if (request.method === 'PATCH' && storeMatch?.[1]) return handleAdminStoreUpdate(request, env, storeMatch[1]);
+    if (url.pathname === '/api/admin/reward-tiers' && ['GET', 'POST'].includes(request.method)) {
+      return handleAdminRewardTiers(request, env);
+    }
+    const tierMatch = url.pathname.match(/^\/api\/admin\/reward-tiers\/([^/]+)$/);
+    if (request.method === 'PATCH' && tierMatch?.[1]) return handleAdminRewardTierUpdate(request, env, tierMatch[1]);
     const imageMatch = url.pathname.match(/^\/api\/admin\/receipts\/([^/]+)\/image$/);
     if (request.method === 'GET' && imageMatch?.[1]) return handleAdminImage(request, env, imageMatch[1]);
     const reviewMatch = url.pathname.match(/^\/api\/admin\/receipts\/([^/]+)\/review$/);
@@ -810,6 +904,8 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       STORE_CODE_INVALID: 'El código debe tener entre 2 y 40 caracteres: letras, números, guion o guion bajo',
       STORE_NAME_INVALID: 'El nombre debe tener entre 2 y 160 caracteres',
       STORE_ALIAS_INVALID: 'Los alias no pueden superar 160 caracteres',
+      TIER_MINIMUM_INVALID: 'El importe mínimo debe ser un valor válido en céntimos',
+      TIER_POINTS_INVALID: 'Los puntos deben ser un número entero positivo o cero',
     };
     return error(validationErrors[message] || 'No se pudo completar la operación', validationErrors[message] ? 400 : 500);
   }
