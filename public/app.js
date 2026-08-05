@@ -81,6 +81,13 @@ async function bootstrap() {
   const select = document.querySelector('#store-select');
   select.innerHTML = '<option value="">Selecciona una tienda</option>' + state.stores
     .map((store) => `<option value="${store.id}">${escapeHtml(store.name)}</option>`).join('');
+  if (!state.receiptId) {
+    const latest = await api('/api/receipts/latest');
+    if (latest.receipt) {
+      state.receiptId = latest.receipt.id;
+      sessionStorage.setItem('ticket-receipt-id', state.receiptId);
+    }
+  }
   if (state.receiptId) {
     show('processing');
     await pollUntilReady();

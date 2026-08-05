@@ -321,6 +321,21 @@ async function handleReceiptStatus(request: Request, env: Env, receiptId: string
   });
 }
 
+async function handleLatestPendingReceipt(request: Request, env: Env): Promise<Response> {
+  return withDatabase(env, async (client) => {
+    const session = await authenticatedSession(request, env, client);
+    if (!session) return error('Sesión no válida', 401);
+    const result = await client.query<ReceiptRow>(
+      `SELECT * FROM receipts
+        WHERE session_id = $1
+          AND status IN ('OCR_QUEUED', 'OCR_PROCESSING', 'READY_FOR_CONFIRMATION')
+        ORDER BY created_at DESC LIMIT 1`,
+      [session.id],
+    );
+    return json({ success: true, receipt: result.rows[0] ? receiptView(result.rows[0]) : null });
+  });
+}
+
 function receiptFields(body: Record<string, unknown>): ReceiptFields {
   const totalCents = Number(body.totalCents);
   return {
@@ -881,6 +896,9 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'POST' && url.pathname === '/api/session/exchange') return await handleExchange(request, env);
     if (request.method === 'GET' && url.pathname === '/api/stores') return await handleStores(request, env);
     if (request.method === 'POST' && url.pathname === '/api/receipts') return await handleUpload(request, env);
+    if (request.method === 'GET' && url.pathname === '/api/receipts/latest') {
+      return await handleLatestPendingReceipt(request, env);
+    }
     const receiptMatch = url.pathname.match(/^\/api\/receipts\/([^/]+)$/);
     if (request.method === 'GET' && receiptMatch?.[1]) return await handleReceiptStatus(request, env, receiptMatch[1]);
     const confirmMatch = url.pathname.match(/^\/api\/receipts\/([^/]+)\/confirm$/);
