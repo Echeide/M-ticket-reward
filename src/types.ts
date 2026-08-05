@@ -8,6 +8,7 @@ export interface Env {
   JOBS: Queue<JobMessage>;
   DB: D1Database;
   AI: Ai;
+  IMAGES: ImagesBinding;
   RTALES_BASE_URL: string;
   RTALES_PARENT_ORIGINS: string;
   RTALES_EXTERNAL_GAME_TOKEN: string;

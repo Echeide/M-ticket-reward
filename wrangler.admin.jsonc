@@ -27,6 +27,7 @@
       "migrations_dir": "migrations-d1"
     }
   ],
+  "images": { "binding": "IMAGES" },
   "queues": {
     "producers": [
       { "binding": "JOBS", "queue": "rtales-ticket-jobs" }

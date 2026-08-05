@@ -20,6 +20,7 @@ import {
 } from './integrations/rtales';
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from './platform/crypto';
 import { inTransaction, withDatabase } from './platform/db';
+import { optimizeTicketImage } from './platform/image';
 import {
   allowedParentOrigin,
   bearerToken,
@@ -108,12 +109,6 @@ function uuid(): string {
 
 function publicId(): string {
   return `TKT-${randomToken(8).toUpperCase()}`;
-}
-
-function extension(contentType: string): string {
-  if (contentType === 'image/png') return 'png';
-  if (contentType === 'image/webp') return 'webp';
-  return 'jpg';
 }
 
 function sessionView(row: SessionRow) {
@@ -239,11 +234,12 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
   const maximumBytes = Math.min(15 * 1024 * 1024, Number(env.MAX_TICKET_BYTES) || 10 * 1024 * 1024);
   if (image.size <= 0 || image.size > maximumBytes) return error('La imagen supera el tamaño permitido', 413);
 
-  const bytes = await image.arrayBuffer();
-  const digest = await sha256Hex(bytes);
+  const originalBytes = await image.arrayBuffer();
+  const storedImage = await optimizeTicketImage(env, originalBytes, image.type);
+  const digest = await sha256Hex(storedImage.bytes);
   const receiptId = uuid();
   const ticketPublicId = publicId();
-  const objectKey = `receipts/${session.user_ref}/${new Date().getUTCFullYear()}/${receiptId}/original.${extension(image.type)}`;
+  const objectKey = `receipts/${session.user_ref}/${new Date().getUTCFullYear()}/${receiptId}/optimized.${storedImage.extension}`;
 
   const duplicate = await withDatabase(env, async (client) => {
     const existing = await client.query(
@@ -252,9 +248,16 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
         LIMIT 1`,
       [session.user_ref, digest, [...ACTIVE_DUPLICATE_STATUSES]],
     );
-    await env.TICKETS.put(objectKey, bytes, {
-      httpMetadata: { contentType: image.type },
-      customMetadata: { receiptId, userRef: session.user_ref, sha256: digest },
+    await env.TICKETS.put(objectKey, storedImage.bytes, {
+      httpMetadata: { contentType: storedImage.contentType },
+      customMetadata: {
+        receiptId,
+        userRef: session.user_ref,
+        sha256: digest,
+        originalBytes: String(storedImage.originalBytes),
+        storedBytes: String(storedImage.bytes.byteLength),
+        originalDimensions: `${storedImage.width}x${storedImage.height}`,
+      },
       sha256: digest,
     });
     await client.query(
@@ -269,8 +272,8 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
         session.user_ref,
         objectKey,
         digest,
-        image.type,
-        image.size,
+        storedImage.contentType,
+        storedImage.bytes.byteLength,
         existing.rowCount ? 'DUPLICATE' : 'OCR_QUEUED',
         JSON.stringify(existing.rowCount ? ['DUPLICATE_IMAGE'] : []),
       ],
