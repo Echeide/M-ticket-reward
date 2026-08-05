@@ -57,6 +57,7 @@ async function load() {
 async function loadStores() {
   const payload = await request('/api/admin/stores');
   state.stores = payload.stores;
+  populateStoreFilter();
   document.querySelector('#manager-email').textContent = payload.manager || '';
   document.querySelector('#active-store-count').textContent = state.stores.filter((store) => store.active).length;
   document.querySelector('#inactive-store-count').textContent = state.stores.filter((store) => !store.active).length;
@@ -70,6 +71,24 @@ async function loadStores() {
       <button class="secondary-button edit-store" data-id="${store.id}" type="button">Editar</button>
     </article>`).join('') || '<p class="empty-state">Todavía no hay comercios.</p>';
   document.querySelectorAll('.edit-store').forEach((button) => button.addEventListener('click', () => openStoreDialog(button.dataset.id)));
+}
+
+function populateStoreFilter() {
+  const select = document.querySelector('#store-filter');
+  const selected = select.value;
+  const options = state.stores
+    .filter((store) => store.active)
+    .map((store) => `<option value="${escapeHtml(store.name)}">${escapeHtml(store.name)}</option>`)
+    .join('');
+  select.innerHTML = `<option value="">Todos los comercios</option>${options}`;
+  if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+}
+
+async function loadFilterStores() {
+  const payload = await request('/api/admin/stores');
+  state.stores = payload.stores;
+  document.querySelector('#manager-email').textContent = payload.manager || '';
+  populateStoreFilter();
 }
 
 async function loadTiers() {
@@ -282,13 +301,30 @@ async function review(action) {
   select(state.selected.id);
 }
 
-document.querySelector('#filters').addEventListener('submit', (event) => { event.preventDefault(); load().catch(alert); });
+function updateFilterCount() {
+  const params = filterParams();
+  params.delete('user');
+  const count = [...params].length;
+  const badge = document.querySelector('#filter-count');
+  badge.textContent = count;
+  badge.hidden = count === 0;
+}
+
+document.querySelector('#filters').addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (document.querySelector('#filters-dialog').open) document.querySelector('#filters-dialog').close();
+  updateFilterCount();
+  load().catch((error) => alert(error.message));
+});
+document.querySelector('#open-filters').addEventListener('click', () => document.querySelector('#filters-dialog').showModal());
+document.querySelector('#close-filters-dialog').addEventListener('click', () => document.querySelector('#filters-dialog').close());
 document.querySelector('#clear-filters').addEventListener('click', () => {
   document.querySelector('#filters').reset();
   document.querySelector('[name="attention"]').checked = false;
+  updateFilterCount();
+  document.querySelector('#filters-dialog').close();
   load().catch((error) => alert(error.message));
 });
-document.querySelector('[name="attention"]').addEventListener('change', () => load().catch((error) => alert(error.message)));
 document.querySelector('#export-csv').addEventListener('click', async () => {
   const params = filterParams();
   const response = await fetch(`/api/admin/receipts.csv?${params}`, { headers: headers() });
@@ -314,3 +350,4 @@ document.querySelector('#tier-form').addEventListener('submit', saveTier);
 document.querySelector('#close-tier-dialog').addEventListener('click', () => document.querySelector('#tier-dialog').close());
 document.querySelector('#cancel-tier').addEventListener('click', () => document.querySelector('#tier-dialog').close());
 load().catch((error) => alert(error.message));
+loadFilterStores().catch((error) => alert(error.message));

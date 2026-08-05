@@ -18,36 +18,15 @@
     </nav>
     <div id="admin-notice" class="admin-notice" role="status" aria-live="polite"></div>
     <main id="receipts-view" class="admin-layout admin-view active">
-      <section class="filters-bar" aria-labelledby="filters-title">
-        <div class="filters-heading">
-          <div><p class="eyebrow">Revisión antifraude</p><h2 id="filters-title">Buscar y filtrar tickets</h2></div>
-          <label class="filter-toggle"><input name="attention" value="1" type="checkbox" form="filters" /><span>Solo incidencias</span></label>
-        </div>
-        <form id="filters">
-          <label class="filter-search">Usuario o ticket<input name="user" placeholder="Nombre, correo, referencia o número" /></label>
-          <label>Comercio<input name="store" placeholder="Nombre o alias" /></label>
-          <label>Estado<select name="status">
-            <option value="">Todos los estados</option>
-            <option value="OCR_QUEUED">En espera de lectura</option>
-            <option value="OCR_PROCESSING">Leyendo ticket</option>
-            <option value="READY_FOR_CONFIRMATION">Pendiente del usuario</option>
-            <option value="NOT_A_RECEIPT">No es un ticket</option>
-            <option value="AUTO_REJECTED">Ticket no autorizado</option>
-            <option value="REWARD_PENDING">Asignando puntos</option>
-            <option value="REWARDED">Premiado</option>
-            <option value="REWARD_FAILED">Procesamiento fallido</option>
-            <option value="REVOKE_PENDING">Anulación en proceso</option>
-            <option value="REVOKED">Anulado</option>
-            <option value="DUPLICATE">Duplicado</option>
-          </select></label>
-          <label>Resultado antifraude<select name="review"><option value="">Todos los resultados</option><option value="PENDING">Pendiente de revisión</option><option value="CLEARED">Validado sin fraude</option><option value="FRAUD">Marcado como fraude</option></select></label>
-          <label>Compra desde<input name="from" type="date" /></label>
-          <label>Compra hasta<input name="to" type="date" /></label>
-          <div class="filter-actions">
-            <button class="secondary-button" id="clear-filters" type="button">Limpiar</button>
-            <button class="primary-button" type="submit">Filtrar</button>
-            <button class="text-button" id="export-csv" type="button">Exportar CSV</button>
-          </div>
+      <section class="filters-bar" aria-label="Búsqueda y filtros de tickets">
+        <form id="filters" class="filters-inline">
+          <label class="filter-search"><span class="visually-hidden">Usuario o ticket</span><input name="user" placeholder="Buscar por usuario, correo, referencia o número de ticket" /></label>
+          <button class="secondary-button button-with-icon" id="open-filters" type="button">
+            <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M7 12h10M10 17h4"></path></svg>
+            <span>Filtros</span><span class="filter-count" id="filter-count" hidden>0</span>
+          </button>
+          <button class="primary-button" type="submit">Buscar</button>
+          <button class="text-button" id="export-csv" type="button">Exportar CSV</button>
         </form>
       </section>
       <section class="admin-list-panel">
@@ -105,6 +84,33 @@
         <p id="tier-form-error" class="form-error" role="alert"></p>
         <div class="dialog-actions"><button class="secondary-button" id="cancel-tier" type="button">Cancelar</button><button class="primary-button" type="submit">Guardar tramo</button></div>
       </form>
+    </dialog>
+    <dialog id="filters-dialog" class="filters-dialog">
+      <div class="filter-dialog-content">
+        <div class="dialog-heading"><div><p class="eyebrow">Revisión antifraude</p><h2>Filtrar tickets</h2></div><button class="icon-button" id="close-filters-dialog" type="button" aria-label="Cerrar">×</button></div>
+        <div class="filter-dialog-grid">
+          <label class="filter-store">Comercio autorizado<select id="store-filter" name="store" form="filters"><option value="">Todos los comercios</option></select></label>
+          <label>Estado<select name="status" form="filters">
+            <option value="">Todos los estados</option>
+            <option value="OCR_QUEUED">En espera de lectura</option>
+            <option value="OCR_PROCESSING">Leyendo ticket</option>
+            <option value="READY_FOR_CONFIRMATION">Pendiente del usuario</option>
+            <option value="NOT_A_RECEIPT">No es un ticket</option>
+            <option value="AUTO_REJECTED">Ticket no autorizado</option>
+            <option value="REWARD_PENDING">Asignando puntos</option>
+            <option value="REWARDED">Premiado</option>
+            <option value="REWARD_FAILED">Procesamiento fallido</option>
+            <option value="REVOKE_PENDING">Anulación en proceso</option>
+            <option value="REVOKED">Anulado</option>
+            <option value="DUPLICATE">Duplicado</option>
+          </select></label>
+          <label>Resultado antifraude<select name="review" form="filters"><option value="">Todos los resultados</option><option value="PENDING">Pendiente de revisión</option><option value="CLEARED">Validado sin fraude</option><option value="FRAUD">Marcado como fraude</option></select></label>
+          <label>Compra desde<input name="from" type="date" form="filters" /></label>
+          <label>Compra hasta<input name="to" type="date" form="filters" /></label>
+          <label class="filter-toggle"><input name="attention" value="1" type="checkbox" form="filters" /><span>Mostrar solo tickets con incidencias</span></label>
+        </div>
+        <div class="dialog-actions"><button class="secondary-button" id="clear-filters" type="button">Limpiar filtros</button><button class="primary-button" type="submit" form="filters">Aplicar filtros</button></div>
+      </div>
     </dialog>
     <script type="module" src="/backoffice.js"></script>
   </body>
