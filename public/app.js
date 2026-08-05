@@ -97,7 +97,9 @@ async function optimizeTicketFile(file) {
   if (!('createImageBitmap' in window)) return file;
   const bitmap = await createImageBitmap(file);
   try {
-    const scale = Math.min(1, 2000 / bitmap.width, 3200 / bitmap.height);
+    // Produce the same canonical image consumed by OCR. The server validates it
+    // and only transforms uploads from browsers that cannot create this format.
+    const scale = Math.min(1, 1200 / bitmap.width, 2000 / bitmap.height);
     const width = Math.max(1, Math.round(bitmap.width * scale));
     const height = Math.max(1, Math.round(bitmap.height * scale));
     const canvas = document.createElement('canvas');
@@ -108,7 +110,7 @@ async function optimizeTicketFile(file) {
     context.fillStyle = '#fff';
     context.fillRect(0, 0, width, height);
     context.drawImage(bitmap, 0, 0, width, height);
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', 0.84));
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', 0.76));
     if (!blob || blob.size >= file.size) return file;
     return new File([blob], 'ticket-optimizado.webp', {
       type: 'image/webp',

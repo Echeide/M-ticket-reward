@@ -1,10 +1,10 @@
 import type { Env } from '../types';
 
-const MAX_WIDTH = 2000;
-const MAX_HEIGHT = 3200;
-const TARGET_QUALITY = 82;
-const FALLBACK_QUALITY = 68;
-const TARGET_MAX_BYTES = 3 * 1024 * 1024;
+const MAX_WIDTH = 1200;
+const MAX_HEIGHT = 2000;
+const TARGET_QUALITY = 76;
+const FALLBACK_QUALITY = 64;
+const TARGET_MAX_BYTES = 2 * 1024 * 1024;
 
 export type StoredImage = {
   bytes: ArrayBuffer;
@@ -13,13 +13,8 @@ export type StoredImage = {
   originalBytes: number;
   width: number;
   height: number;
+  ocrReady: true;
 };
-
-function extension(contentType: string): StoredImage['extension'] {
-  if (contentType === 'image/png') return 'png';
-  if (contentType === 'image/webp') return 'webp';
-  return 'jpg';
-}
 
 async function transform(env: Env, bytes: ArrayBuffer, quality: number): Promise<ArrayBuffer> {
   const result = await env.IMAGES
@@ -37,20 +32,28 @@ export async function optimizeTicketImage(
   const info = await env.IMAGES.info(new Blob([original]).stream());
   if (!('width' in info) || info.format === 'image/svg+xml') throw new Error('IMAGE_INVALID');
 
-  let optimized = await transform(env, original, TARGET_QUALITY);
-  if (optimized.byteLength > TARGET_MAX_BYTES) {
-    optimized = await transform(env, original, FALLBACK_QUALITY);
-  }
+  const scale = Math.min(1, MAX_WIDTH / info.width, MAX_HEIGHT / info.height);
+  const width = Math.max(1, Math.round(info.width * scale));
+  const height = Math.max(1, Math.round(info.height * scale));
+  const alreadyCanonical = originalContentType === 'image/webp' && info.format === 'image/webp' &&
+    info.width <= MAX_WIDTH && info.height <= MAX_HEIGHT &&
+    original.byteLength <= TARGET_MAX_BYTES;
 
-  if (optimized.byteLength >= original.byteLength) {
+  if (alreadyCanonical) {
     return {
       bytes: original,
-      contentType: originalContentType,
-      extension: extension(originalContentType),
+      contentType: 'image/webp',
+      extension: 'webp',
       originalBytes: original.byteLength,
       width: info.width,
       height: info.height,
+      ocrReady: true,
     };
+  }
+
+  let optimized = await transform(env, original, TARGET_QUALITY);
+  if (optimized.byteLength > TARGET_MAX_BYTES) {
+    optimized = await transform(env, original, FALLBACK_QUALITY);
   }
 
   return {
@@ -58,11 +61,13 @@ export async function optimizeTicketImage(
     contentType: 'image/webp',
     extension: 'webp',
     originalBytes: original.byteLength,
-    width: info.width,
-    height: info.height,
+    width,
+    height,
+    ocrReady: true,
   };
 }
 
+// Compatibility path for objects stored before canonical OCR images were used.
 export async function prepareOcrImage(env: Env, image: ArrayBuffer): Promise<ArrayBuffer> {
   const result = await env.IMAGES
     .input(new Blob([image]).stream())

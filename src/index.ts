@@ -257,7 +257,8 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
         sha256: digest,
         originalBytes: String(storedImage.originalBytes),
         storedBytes: String(storedImage.bytes.byteLength),
-        originalDimensions: `${storedImage.width}x${storedImage.height}`,
+        storedDimensions: `${storedImage.width}x${storedImage.height}`,
+        ocrReady: String(storedImage.ocrReady),
       },
       sha256: digest,
     });
@@ -449,7 +450,10 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
   if (!receipt) return;
   const image = await env.TICKETS.get(receipt.image_key);
   if (!image) throw new Error('R2_OBJECT_NOT_FOUND');
-  const ocrBytes = await prepareOcrImage(env, await image.arrayBuffer());
+  const storedBytes = await image.arrayBuffer();
+  const ocrBytes = image.customMetadata?.ocrReady === 'true'
+    ? storedBytes
+    : await prepareOcrImage(env, storedBytes);
   const ocr = await readReceipt(env, ocrBytes, 'image/webp');
   await withDatabase(env, async (client) => {
     await client.query(
