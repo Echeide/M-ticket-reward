@@ -45,12 +45,8 @@ export async function readReceipt(
 isReceipt (boolean), confidence (0..1), storeName, ticketNumber, purchaseDate (YYYY-MM-DD),
 totalCents (entero), currency y rawText. No inventes valores ilegibles.`;
   const result = (await (env.AI as unknown as { run: Function }).run(env.OCR_MODEL, {
-    task: 'query',
-    // The production Workers AI binding expects a binary value here. Passing
-    // a number array is coerced by the binding and rejected as a string.
-    image: new Uint8Array(bytes),
-    question: prompt,
-    reasoning: false,
+    image: Array.from(new Uint8Array(bytes)),
+    prompt,
     temperature: 0.1,
     max_tokens: 1_024,
   })) as Record<string, unknown>;
