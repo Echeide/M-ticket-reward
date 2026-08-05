@@ -5,8 +5,9 @@ Aplicación externa para escanear tickets de comercios asociados, extraer sus da
 ## Componentes
 
 - experiencia móvil embebible en Rtales;
-- OCR asíncrono y formulario corregible;
-- PostgreSQL a través de Cloudflare Hyperdrive;
+- OCR asíncrono con revisión de datos no manipulable;
+- historial de tickets por usuario, con recuperación de procesos pendientes;
+- base de datos Cloudflare D1;
 - imágenes privadas en Cloudflare R2, agrupadas por usuario mediante prefijos;
 - outbox y Cloudflare Queue para premios y reintentos;
 - backoffice filtrable y exportable a CSV;
@@ -16,9 +17,9 @@ Aplicación externa para escanear tickets de comercios asociados, extraer sus da
 
 Se necesita Node.js 22 o superior.
 
-1. Crea PostgreSQL y ejecuta, por orden, los SQL de `migrations/`.
+1. Crea la base D1 y ejecuta, por orden, los SQL de `migrations-d1/`.
 2. Copia `.dev.vars.example` a `.dev.vars` y completa los secretos.
-3. Sustituye los IDs de Hyperdrive y los nombres de recursos en `wrangler.jsonc`.
+3. Sustituye los IDs de D1 y los nombres de recursos en `wrangler.jsonc`.
 4. Instala dependencias y arranca:
 
 ```bash
@@ -41,7 +42,7 @@ Antes de desplegar:
 
 - configura Cloudflare Access para `/backoffice.html` y `/api/admin/*`;
 - crea el bucket R2 y las colas principal/DLQ;
-- crea Hyperdrive contra PostgreSQL;
+- crea y vincula la base D1;
 - carga `RTALES_EXTERNAL_GAME_TOKEN` y `DATA_ENCRYPTION_KEY` con `wrangler secret put`;
 - registra el origen HTTPS y CSP del proveedor en Rtales;
 - aplica los cambios de reversión descritos en `docs/ARCHITECTURE.md`.

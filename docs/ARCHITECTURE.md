@@ -7,11 +7,12 @@
 3. El navegador captura la imagen del ticket.
 4. El Worker valida tipo y tamaño, calcula SHA-256, guarda en R2 y publica un trabajo OCR.
 5. El consumidor OCR clasifica la imagen y extrae tienda, número, fecha, importe y moneda.
-6. El usuario corrige esos campos y confirma.
+6. El usuario revisa los campos reconocidos, sin poder modificarlos, y confirma.
 7. La API comprueba tienda, fechas, importe y duplicidad exacta/lógica.
 8. Si pasa la validación automática, calcula puntos y crea una outbox durable.
 9. La outbox entrega el premio a Rtales con una clave idempotente.
 10. El frontend recibe el resultado por consulta, muestra la confirmación y notifica al iframe padre.
+11. El usuario puede consultar hasta sus 50 tickets más recientes y recuperar cualquier proceso pendiente en un lanzamiento posterior gracias a `player.subject`.
 
 La revisión humana es posterior. No forma parte del camino crítico para conceder puntos.
 
@@ -32,10 +33,10 @@ READY_FOR_CONFIRMATION -> DUPLICATE
 ## Cloudflare
 
 - **Workers** sirve API y assets.
-- **R2** es privado. Las claves usan el prefijo `receipts/{userRef}/{año}/{receiptId}/original.ext`; la “carpeta” es un prefijo, no un directorio real.
+- **R2** es privado. Las claves usan el prefijo `receipts/{userRef}/{año}/{receiptId}/optimized.ext`; la “carpeta” es un prefijo, no un directorio real.
 - **Queues** desacopla OCR y entregas/reintentos de premios.
 - **Workers AI** es el adaptador OCR inicial. El dominio no depende del modelo.
-- **Hyperdrive** conecta con PostgreSQL usando `pg` y evita abrir conexiones directas por cada ubicación edge.
+- **D1** conserva sesiones, tickets, comercios, tramos, outbox y auditoría.
 - **Cloudflare Access** protege `/backoffice.html` y `/api/admin/*` en producción.
 
 ## Duplicados y fraude
@@ -65,10 +66,9 @@ Las cartas quedan desactivadas en la primera versión. Antes de habilitarlas Rta
 
 ## Cambios necesarios en Rtales
 
-1. Añadir `player.subject`, estable y seudónimo por proveedor, a `/exchange`.
-2. Añadir un endpoint de reversión autenticado e idempotente asociado a `ExternalGameResult`.
-3. Registrar la compensación en un ledger/auditoría y exponerla en el historial del usuario.
-4. Permitir saldo negativo o una deuda separada y bloquear canjes si no existe saldo disponible.
-5. Añadir el scope `rewards:revoke` a las credenciales que lo necesiten.
-6. Autorizar `player:email` únicamente para servicios que necesiten identificar al usuario.
-7. No habilitar cartas en esta instalación hasta implementar su revocación.
+1. Añadir un endpoint de reversión autenticado e idempotente asociado a `ExternalGameResult`.
+2. Registrar la compensación en un ledger/auditoría y exponerla en el historial general de Rtales.
+3. Permitir saldo negativo o una deuda separada y bloquear canjes si no existe saldo disponible.
+4. Añadir el scope `rewards:revoke` a las credenciales que lo necesiten.
+5. Autorizar `player:email` únicamente para servicios que necesiten identificar al usuario.
+6. No habilitar cartas en esta instalación hasta implementar su revocación.

@@ -20,10 +20,13 @@
         <p class="eyebrow">Premios por tus compras</p>
         <h1>Escanea tus tickets y gana puntos</h1>
         <p class="lead">Escanea los tickets de compra en las tiendas asociadas y gana puntos para canjear en nuestro catálogo de regalos.</p>
-        <label class="primary-button capture-button">
-          <input id="ticket-input" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" />
-          Escanear ticket
-        </label>
+        <div class="welcome-actions">
+          <label class="primary-button capture-button">
+            <input id="ticket-input" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" />
+            Escanear ticket
+          </label>
+          <button class="secondary-button" data-action="open-history" type="button">Mis tickets</button>
+        </div>
         <p class="privacy-note">La imagen se almacena de forma privada y puede ser revisada para prevenir fraude.</p>
       </section>
 
@@ -31,6 +34,15 @@
         <div class="spinner"></div>
         <h2>Estamos leyendo el ticket</h2>
         <p>Buscamos la tienda, el número, la fecha y el importe.</p>
+      </section>
+
+      <section class="screen" data-screen="registered" aria-live="polite">
+        <div class="status-icon success">✓</div>
+        <p class="eyebrow">Ticket registrado</p>
+        <h2>Seguimos procesándolo</h2>
+        <p>No necesitas volver a subirlo. Puedes esperar aquí o consultar el resultado más tarde desde «Mis tickets».</p>
+        <p class="reference">Referencia: <strong id="registered-reference"></strong></p>
+        <button class="primary-button" data-action="open-history" type="button">Ver mis tickets</button>
       </section>
 
       <section class="screen" data-screen="not-receipt">
@@ -75,6 +87,39 @@
         <div class="points-card"><strong id="points-awarded">0</strong><span>puntos</span></div>
         <p>La validación ha sido automática. Nuestro equipo puede revisar posteriormente el ticket y revocar los puntos si detecta fraude.</p>
         <p class="reference">Referencia: <strong id="receipt-reference"></strong></p>
+        <button class="secondary-button" data-action="open-history" type="button">Ver mis tickets</button>
+      </section>
+
+      <section class="screen history-screen" data-screen="ticket-history">
+        <div class="screen-toolbar">
+          <button class="text-button" data-action="history-back" type="button">← Volver</button>
+          <button class="text-button" data-action="refresh-history" type="button">Actualizar</button>
+        </div>
+        <p class="eyebrow">Tu actividad</p>
+        <h2>Mis tickets</h2>
+        <p>Consulta aquí el estado y el resultado de los tickets que has enviado.</p>
+        <div class="ticket-history-list" id="ticket-history-list" aria-live="polite"></div>
+      </section>
+
+      <section class="screen history-screen" data-screen="ticket-detail">
+        <div class="screen-toolbar">
+          <button class="text-button" data-action="open-history" type="button">← Mis tickets</button>
+        </div>
+        <p class="eyebrow">Detalle del ticket</p>
+        <h2 id="detail-title">Ticket</h2>
+        <div class="ticket-detail-card">
+          <span class="ticket-status" id="detail-status"></span>
+          <p id="detail-message"></p>
+          <div class="ocr-data">
+            <div><span>Comercio</span><strong id="detail-store">—</strong></div>
+            <div><span>Número de ticket</span><strong id="detail-number">—</strong></div>
+            <div><span>Fecha de compra</span><strong id="detail-date">—</strong></div>
+            <div><span>Importe</span><strong id="detail-total">—</strong></div>
+            <div><span>Puntos</span><strong id="detail-points">—</strong></div>
+          </div>
+          <p class="reference">Enviado: <strong id="detail-created"></strong></p>
+        </div>
+        <button class="primary-button" id="detail-action" type="button" hidden></button>
       </section>
 
       <section class="screen" data-screen="error">

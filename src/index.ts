@@ -158,6 +158,50 @@ function receiptView(row: ReceiptRow, includeManagerFields = false) {
   };
 }
 
+const PUBLIC_REASON_MESSAGES: Record<string, string> = {
+  OCR_PROCESSING_FAILED: 'No hemos podido leer el ticket. Prueba con una foto más clara.',
+  NOT_A_RECEIPT: 'La imagen no parece un ticket de compra.',
+  DUPLICATE: 'Este ticket ya se había enviado.',
+  DUPLICATE_IMAGE: 'Esta imagen ya se había enviado.',
+  STORE_NOT_ALLOWED: 'El comercio no está autorizado.',
+  TICKET_NUMBER_REQUIRED: 'No se pudo reconocer el número del ticket.',
+  INVALID_TOTAL: 'No se pudo validar el importe del ticket.',
+  INVALID_DATE: 'No se pudo reconocer una fecha válida.',
+  FUTURE_DATE: 'La fecha está fuera del periodo permitido.',
+  TICKET_TOO_OLD: 'La fecha está fuera del periodo permitido.',
+};
+
+function publicReceiptMessage(row: ReceiptRow): string {
+  const reasons = Array.isArray(row.validation_reasons) ? row.validation_reasons : [];
+  const reason = reasons.find((value) => PUBLIC_REASON_MESSAGES[value]);
+  if (reason) return PUBLIC_REASON_MESSAGES[reason]!;
+  if (row.status === 'REVOKED') return 'El ticket fue anulado tras la revisión antifraude.';
+  if (row.status === 'REVOKE_PENDING') return 'La anulación de los puntos está en proceso.';
+  if (row.status === 'REWARD_FAILED') return 'No hemos podido completar la asignación de puntos.';
+  return '';
+}
+
+function publicReceiptView(row: ReceiptRow) {
+  return {
+    id: row.id,
+    publicId: row.public_id,
+    status: row.status,
+    fields: {
+      storeId: row.store_id || '',
+      storeName: row.store_name || '',
+      ticketNumber: row.ticket_number || '',
+      purchaseDate: row.purchase_date || '',
+      totalCents: row.total_cents || 0,
+      currency: row.currency,
+    },
+    reward: { pointsAwarded: row.points_awarded },
+    message: publicReceiptMessage(row),
+    createdAt: row.created_at,
+    rewardedAt: row.rewarded_at,
+    revokedAt: row.revoked_at,
+  };
+}
+
 async function authenticatedSession(
   request: Request,
   env: Env,
@@ -306,8 +350,8 @@ async function loadOwnedReceipt(
   lock = false,
 ): Promise<ReceiptRow | null> {
   const result = await client.query<ReceiptRow>(
-    `SELECT * FROM receipts WHERE id = $1 AND session_id = $2${lock ? ' FOR UPDATE' : ''}`,
-    [receiptId, session.id],
+    `SELECT * FROM receipts WHERE id = $1 AND user_ref = $2${lock ? ' FOR UPDATE' : ''}`,
+    [receiptId, session.user_ref],
   );
   return result.rows[0] ?? null;
 }
@@ -318,7 +362,22 @@ async function handleReceiptStatus(request: Request, env: Env, receiptId: string
     if (!session) return error('Sesión no válida', 401);
     const receipt = await loadOwnedReceipt(client, receiptId, session);
     if (!receipt) return error('Ticket no encontrado', 404);
-    return json({ success: true, receipt: receiptView(receipt), session: sessionView(session) });
+    return json({ success: true, receipt: publicReceiptView(receipt), session: sessionView(session) });
+  });
+}
+
+async function handleReceiptList(request: Request, env: Env): Promise<Response> {
+  return withDatabase(env, async (client) => {
+    const session = await authenticatedSession(request, env, client);
+    if (!session) return error('Sesión no válida', 401);
+    const result = await client.query<ReceiptRow>(
+      `SELECT * FROM receipts
+        WHERE user_ref = $1
+        ORDER BY created_at DESC, id DESC
+        LIMIT 50`,
+      [session.user_ref],
+    );
+    return json({ success: true, receipts: result.rows.map(publicReceiptView) });
   });
 }
 
@@ -328,12 +387,12 @@ async function handleLatestPendingReceipt(request: Request, env: Env): Promise<R
     if (!session) return error('Sesión no válida', 401);
     const result = await client.query<ReceiptRow>(
       `SELECT * FROM receipts
-        WHERE session_id = $1
-          AND status IN ('OCR_QUEUED', 'OCR_PROCESSING', 'READY_FOR_CONFIRMATION')
+        WHERE user_ref = $1
+          AND status IN ('OCR_QUEUED', 'OCR_PROCESSING', 'READY_FOR_CONFIRMATION', 'REWARD_PENDING')
         ORDER BY created_at DESC LIMIT 1`,
-      [session.id],
+      [session.user_ref],
     );
-    return json({ success: true, receipt: result.rows[0] ? receiptView(result.rows[0]) : null });
+    return json({ success: true, receipt: result.rows[0] ? publicReceiptView(result.rows[0]) : null });
   });
 }
 
@@ -415,12 +474,12 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
       );
       outboxId = uuid();
       await client.query(
-        `UPDATE receipts SET status = 'REWARD_PENDING', store_id = $2, store_name = $3,
-           ticket_number = $4, purchase_date = $5, total_cents = $6, currency = $7,
-           ticket_fingerprint = $8, risk_score = $9, validation_reasons = '[]'::jsonb,
-           points_awarded = $10, updated_at = NOW()
+        `UPDATE receipts SET status = 'REWARD_PENDING', session_id = $2,
+           store_id = $3, store_name = $4, ticket_number = $5, purchase_date = $6,
+           total_cents = $7, currency = $8, ticket_fingerprint = $9, risk_score = $10,
+           validation_reasons = '[]'::jsonb, points_awarded = $11, updated_at = NOW()
          WHERE id = $1`,
-        [receiptId, selectedStore!.id, selectedStore!.name, fields.ticketNumber,
+        [receiptId, session.id, selectedStore!.id, selectedStore!.name, fields.ticketNumber,
           fields.purchaseDate, fields.totalCents, fields.currency, fingerprint,
           validation.riskScore, points],
       );
@@ -903,6 +962,7 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'POST' && url.pathname === '/api/session/exchange') return await handleExchange(request, env);
     if (request.method === 'GET' && url.pathname === '/api/stores') return await handleStores(request, env);
     if (request.method === 'POST' && url.pathname === '/api/receipts') return await handleUpload(request, env);
+    if (request.method === 'GET' && url.pathname === '/api/receipts') return await handleReceiptList(request, env);
     if (request.method === 'GET' && url.pathname === '/api/receipts/latest') {
       return await handleLatestPendingReceipt(request, env);
     }

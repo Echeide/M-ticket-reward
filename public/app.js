@@ -7,6 +7,21 @@ const state = {
   receiptId: sessionStorage.getItem('ticket-receipt-id') || '',
   receipt: null,
   stores: [],
+  pollGeneration: 0,
+};
+
+const RECEIPT_STATUSES = {
+  OCR_QUEUED: { label: 'En espera', tone: 'pending', message: 'El ticket está registrado y esperando a ser leído.' },
+  OCR_PROCESSING: { label: 'Leyendo ticket', tone: 'pending', message: 'Estamos reconociendo los datos del ticket.' },
+  READY_FOR_CONFIRMATION: { label: 'Listo para revisar', tone: 'attention', message: 'Revisa los datos reconocidos para continuar.' },
+  NOT_A_RECEIPT: { label: 'No reconocido', tone: 'rejected', message: 'La imagen no parece un ticket de compra.' },
+  DUPLICATE: { label: 'Duplicado', tone: 'rejected', message: 'Este ticket ya se había enviado.' },
+  AUTO_REJECTED: { label: 'No válido', tone: 'rejected', message: 'El ticket no ha superado la validación automática.' },
+  REWARD_PENDING: { label: 'Asignando puntos', tone: 'pending', message: 'El ticket es válido y estamos asignando los puntos.' },
+  REWARDED: { label: 'Aprobado', tone: 'approved', message: 'Los puntos se han añadido correctamente.' },
+  REWARD_FAILED: { label: 'No completado', tone: 'rejected', message: 'No hemos podido completar la asignación de puntos.' },
+  REVOKE_PENDING: { label: 'Anulación en proceso', tone: 'attention', message: 'Estamos retirando los puntos tras la revisión del ticket.' },
+  REVOKED: { label: 'Anulado', tone: 'rejected', message: 'El ticket fue anulado tras la revisión antifraude.' },
 };
 
 function show(name) {
@@ -54,7 +69,9 @@ async function bootstrap() {
   state.parentOrigin = params.get('parent_origin') || '';
   if (launchCode) {
     state.sessionToken = '';
+    state.receiptId = '';
     sessionStorage.removeItem('ticket-session');
+    sessionStorage.removeItem('ticket-receipt-id');
     const payload = await fetch('/api/session/exchange', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -86,8 +103,7 @@ async function bootstrap() {
     }
   }
   if (state.receiptId) {
-    show('processing');
-    await pollUntilReady();
+    await resumeReceipt((await api(`/api/receipts/${state.receiptId}`)).receipt);
   } else {
     show('welcome');
   }
@@ -134,8 +150,10 @@ async function upload(file) {
 }
 
 async function pollUntilReady() {
-  for (let attempt = 0; attempt < 180; attempt += 1) {
+  const generation = ++state.pollGeneration;
+  for (let attempt = 0; attempt < 140; attempt += 1) {
     const payload = await api(`/api/receipts/${state.receiptId}`);
+    if (generation !== state.pollGeneration) return;
     state.receipt = payload.receipt;
     if (payload.receipt.status === 'READY_FOR_CONFIRMATION') {
       showOcrReview(payload.receipt);
@@ -144,19 +162,37 @@ async function pollUntilReady() {
     if (payload.receipt.status === 'NOT_A_RECEIPT') return show('not-receipt');
     if (payload.receipt.status === 'DUPLICATE') return show('duplicate');
     if (payload.receipt.status === 'REWARDED') return finish(payload.receipt);
-    if (
-      payload.receipt.status === 'OCR_FAILED' ||
-      (payload.receipt.status === 'REWARD_FAILED' &&
-        payload.receipt.reasons?.includes('OCR_PROCESSING_FAILED'))
-    ) {
-      throw new Error('No hemos podido leer este ticket. Comprueba la imagen y vuelve a intentarlo.');
+    if (['AUTO_REJECTED', 'REWARD_FAILED', 'REVOKE_PENDING', 'REVOKED'].includes(payload.receipt.status)) {
+      return showTicketDetail(payload.receipt);
     }
-    if (['AUTO_REJECTED', 'REWARD_FAILED'].includes(payload.receipt.status)) {
-      throw new Error('El ticket no ha superado la validación automática');
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1200));
+    if (attempt === 24) showRegistered(payload.receipt);
+    await new Promise((resolve) => setTimeout(resolve, attempt < 24 ? 1200 : 5000));
   }
-  throw new Error('La lectura está tardando más de lo esperado. Inténtalo de nuevo.');
+  if (generation === state.pollGeneration) showRegistered(state.receipt);
+}
+
+async function resumeReceipt(receipt) {
+  state.receipt = receipt;
+  state.receiptId = receipt.id;
+  sessionStorage.setItem('ticket-receipt-id', receipt.id);
+  if (receipt.status === 'READY_FOR_CONFIRMATION') {
+    showOcrReview(receipt);
+    show('ocr-review');
+    return;
+  }
+  if (receipt.status === 'REWARDED') return finish(receipt);
+  if (receipt.status === 'NOT_A_RECEIPT') return show('not-receipt');
+  if (receipt.status === 'DUPLICATE') return show('duplicate');
+  if (['AUTO_REJECTED', 'REWARD_FAILED', 'REVOKE_PENDING', 'REVOKED'].includes(receipt.status)) {
+    return showTicketDetail(receipt);
+  }
+  show(receipt.status === 'REWARD_PENDING' ? 'reward-processing' : 'processing');
+  await pollUntilReady();
+}
+
+function showRegistered(receipt) {
+  document.querySelector('#registered-reference').textContent = receipt?.publicId || '';
+  show('registered');
 }
 
 function showOcrReview(receipt) {
@@ -236,6 +272,7 @@ async function confirmReceipt() {
 }
 
 function finish(receipt) {
+  state.receipt = receipt;
   sessionStorage.removeItem('ticket-receipt-id');
   document.querySelector('#points-awarded').textContent = receipt.reward.pointsAwarded;
   document.querySelector('#receipt-reference').textContent = receipt.publicId;
@@ -248,7 +285,124 @@ function finish(receipt) {
   }
 }
 
+function statusMeta(status) {
+  return RECEIPT_STATUSES[status] || {
+    label: 'En revisión', tone: 'pending', message: 'Consulta de nuevo el estado más tarde.',
+  };
+}
+
+function formatMoney(totalCents, currency = 'EUR') {
+  if (!Number.isInteger(totalCents) || totalCents <= 0) return '—';
+  const safeCurrency = /^[A-Z]{3}$/.test(currency || '') ? currency : 'EUR';
+  try {
+    return new Intl.NumberFormat('es-ES', { style: 'currency', currency: safeCurrency }).format(totalCents / 100);
+  } catch {
+    return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' }).format(totalCents / 100);
+  }
+}
+
+function formatTimestamp(value) {
+  if (!value) return '—';
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(value)
+    ? `${value.replace(' ', 'T')}Z`
+    : value;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('es-ES', {
+    dateStyle: 'medium', timeStyle: 'short', timeZone: 'Atlantic/Canary',
+  }).format(date);
+}
+
+async function openHistory() {
+  state.pollGeneration += 1;
+  show('ticket-history');
+  const list = document.querySelector('#ticket-history-list');
+  list.replaceChildren();
+  const loading = document.createElement('p');
+  loading.className = 'history-empty';
+  loading.textContent = 'Cargando tus tickets…';
+  list.append(loading);
+  const payload = await api('/api/receipts');
+  renderHistory(payload.receipts);
+}
+
+function renderHistory(receipts) {
+  const list = document.querySelector('#ticket-history-list');
+  list.replaceChildren();
+  if (!receipts.length) {
+    const empty = document.createElement('div');
+    empty.className = 'history-empty';
+    empty.textContent = 'Todavía no has enviado ningún ticket.';
+    list.append(empty);
+    return;
+  }
+  for (const receipt of receipts) {
+    const meta = statusMeta(receipt.status);
+    const button = document.createElement('button');
+    button.className = 'ticket-card';
+    button.type = 'button';
+
+    const heading = document.createElement('span');
+    heading.className = 'ticket-card-heading';
+    const reference = document.createElement('strong');
+    reference.textContent = receipt.publicId;
+    const created = document.createElement('small');
+    created.textContent = formatTimestamp(receipt.createdAt);
+    heading.append(reference, created);
+
+    const chip = document.createElement('span');
+    chip.className = `ticket-status ${meta.tone}`;
+    chip.textContent = receipt.status === 'REWARDED'
+      ? `${meta.label} · +${receipt.reward.pointsAwarded} pts`
+      : meta.label;
+
+    const summary = document.createElement('span');
+    summary.className = 'ticket-card-summary';
+    const store = receipt.fields.storeName || 'Comercio pendiente de reconocer';
+    summary.textContent = `${store} · ${formatMoney(receipt.fields.totalCents, receipt.fields.currency)}`;
+
+    button.append(heading, chip, summary);
+    button.addEventListener('click', () => showTicketDetail(receipt));
+    list.append(button);
+  }
+}
+
+function showTicketDetail(receipt) {
+  state.receipt = receipt;
+  const meta = statusMeta(receipt.status);
+  document.querySelector('#detail-title').textContent = receipt.publicId;
+  const status = document.querySelector('#detail-status');
+  status.className = `ticket-status ${meta.tone}`;
+  status.textContent = receipt.status === 'REWARDED'
+    ? `${meta.label} · +${receipt.reward.pointsAwarded} puntos`
+    : meta.label;
+  document.querySelector('#detail-message').textContent = receipt.message || meta.message;
+  document.querySelector('#detail-store').textContent = receipt.fields.storeName || 'Pendiente';
+  document.querySelector('#detail-number').textContent = receipt.fields.ticketNumber || 'Pendiente';
+  document.querySelector('#detail-date').textContent = receipt.fields.purchaseDate || 'Pendiente';
+  document.querySelector('#detail-total').textContent = formatMoney(receipt.fields.totalCents, receipt.fields.currency);
+  document.querySelector('#detail-points').textContent = receipt.status === 'REVOKED'
+    ? `${receipt.reward.pointsAwarded} retirados`
+    : receipt.reward.pointsAwarded > 0 ? String(receipt.reward.pointsAwarded) : '—';
+  document.querySelector('#detail-created').textContent = formatTimestamp(receipt.createdAt);
+
+  const action = document.querySelector('#detail-action');
+  action.hidden = true;
+  action.onclick = null;
+  if (receipt.status === 'READY_FOR_CONFIRMATION') {
+    action.textContent = 'Revisar y continuar';
+    action.hidden = false;
+    action.onclick = () => resumeReceipt(receipt).catch(showError);
+  } else if (['OCR_QUEUED', 'OCR_PROCESSING', 'REWARD_PENDING'].includes(receipt.status)) {
+    action.textContent = 'Seguir esperando';
+    action.hidden = false;
+    action.onclick = () => resumeReceipt(receipt).catch(showError);
+  }
+  show('ticket-detail');
+}
+
 function retry() {
+  state.pollGeneration += 1;
   state.receiptId = '';
   sessionStorage.removeItem('ticket-receipt-id');
   state.receipt = null;
@@ -275,6 +429,11 @@ document.querySelector('#ticket-input').addEventListener('change', (event) => {
 });
 document.querySelector('#confirm-ocr').addEventListener('click', () => confirmReceipt().catch(showError));
 document.querySelectorAll('[data-action="retry"]').forEach((button) => button.addEventListener('click', retry));
+document.querySelectorAll('[data-action="open-history"]').forEach((button) => {
+  button.addEventListener('click', () => openHistory().catch(showError));
+});
+document.querySelector('[data-action="refresh-history"]').addEventListener('click', () => openHistory().catch(showError));
+document.querySelector('[data-action="history-back"]').addEventListener('click', () => show('welcome'));
 document.querySelector('[data-action="close-game"]').addEventListener('click', closeGame);
 document.querySelector('[data-action="retry-connection"]').addEventListener('click', retryConnection);
 
