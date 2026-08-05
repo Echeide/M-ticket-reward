@@ -118,20 +118,17 @@
       </section>
 
       <section class="screen history-screen" data-screen="ticket-history">
-        <div class="screen-toolbar">
-          <label class="primary-button compact-button capture-button button-with-icon">
-            <input id="history-ticket-input" data-ticket-input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" />
-            <svg class="button-icon" aria-hidden="true"><use href="#icon-camera"></use></svg>
-            Escanear ticket
-          </label>
-          <button class="text-button button-with-icon" data-action="refresh-history" type="button">
+        <div class="history-heading">
+          <h2>Mis tickets</h2>
+          <button class="icon-only-button" data-action="refresh-history" type="button" aria-label="Actualizar tickets" title="Actualizar tickets">
             <svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>
-            Actualizar
           </button>
         </div>
-        <p class="eyebrow">Tu actividad</p>
-        <h2>Mis tickets</h2>
         <p>Consulta aquí el estado y el resultado de los tickets que has enviado.</p>
+        <button class="primary-button button-with-icon history-home-button" data-action="history-home" type="button">
+          <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
+          Escanear otro ticket
+        </button>
         <div class="ticket-history-list" id="ticket-history-list" aria-live="polite"></div>
       </section>
 

@@ -452,6 +452,7 @@ document.querySelectorAll('[data-action="retry"]').forEach((button) => button.ad
 document.querySelectorAll('[data-action="open-history"]').forEach((button) => {
   button.addEventListener('click', () => openHistory().catch(showError));
 });
+document.querySelector('[data-action="history-home"]').addEventListener('click', retry);
 document.querySelector('[data-action="refresh-history"]').addEventListener('click', () => openHistory().catch(showError));
 document.querySelector('[data-action="close-game"]').addEventListener('click', closeGame);
 document.querySelector('[data-action="retry-connection"]').addEventListener('click', retryConnection);
