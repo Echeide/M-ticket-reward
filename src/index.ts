@@ -374,6 +374,7 @@ async function handleReceiptList(request: Request, env: Env): Promise<Response> 
     const result = await client.query<ReceiptRow>(
       `SELECT * FROM receipts
         WHERE user_ref = $1
+          AND status <> 'DUPLICATE'
         ORDER BY created_at DESC, id DESC
         LIMIT 50`,
       [session.user_ref],
