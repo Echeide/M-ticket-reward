@@ -26,6 +26,7 @@ export type ReceiptFields = {
 export type OcrReceipt = Partial<ReceiptFields> & {
   isReceipt: boolean;
   confidence: number;
+  headerText?: string;
   rawText?: string;
 };
 

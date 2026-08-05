@@ -11,7 +11,7 @@ import {
   reversalIdempotencyKey,
   rewardIdempotencyKey,
 } from './domain/rewards';
-import { normalizeStoreInput } from './domain/store';
+import { findMatchingStore, normalizeStoreInput } from './domain/store';
 import { normalizeRewardTierInput } from './domain/reward-tier';
 import { readReceipt } from './integrations/ocr';
 import {
@@ -398,19 +398,6 @@ async function handleLatestPendingReceipt(request: Request, env: Env): Promise<R
   });
 }
 
-function normalizedStoreName(value: string): string {
-  return value.toLocaleLowerCase('es').replace(/\s+/g, ' ').trim();
-}
-
-function storeMatchesOcr(store: StoreRow, recognizedName: string): boolean {
-  const recognized = normalizedStoreName(recognizedName);
-  if (!recognized) return false;
-  return [store.name, ...store.aliases].some((candidate) => {
-    const comparable = normalizedStoreName(candidate);
-    return comparable === recognized || comparable.includes(recognized) || recognized.includes(comparable);
-  });
-}
-
 async function handleConfirm(request: Request, env: Env, receiptId: string): Promise<Response> {
   let outboxId = '';
   const result = await withDatabase(env, async (client) =>
@@ -424,7 +411,11 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
       }
 
       const stores = await client.query<StoreRow>('SELECT * FROM stores WHERE active = TRUE');
-      const selectedStore = stores.rows.find((store) => storeMatchesOcr(store, receipt.store_name || ''));
+      const selectedStore = findMatchingStore(stores.rows, {
+        storeName: receipt.store_name || receipt.ocr_payload?.storeName,
+        headerText: receipt.ocr_payload?.headerText,
+        rawText: receipt.ocr_payload?.rawText,
+      });
       const fields: ReceiptFields = {
         storeId: selectedStore?.id || '',
         storeName: selectedStore?.name || receipt.store_name || '',
@@ -516,12 +507,15 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
   const ocrBytes = image.customMetadata?.ocrReady === 'true'
     ? storedBytes
     : await prepareOcrImage(env, storedBytes);
-  const ocr = await readReceipt(env, ocrBytes, 'image/webp');
-  await withDatabase(env, async (client) => {
-    const stores = await client.query<StoreRow>(
+  const stores = await withDatabase(env, async (client) => {
+    const result = await client.query<StoreRow>(
       'SELECT * FROM stores WHERE active = TRUE ORDER BY name ASC',
     );
-    const selectedStore = stores.rows.find((store) => storeMatchesOcr(store, ocr.storeName || ''));
+    return result.rows;
+  });
+  const ocr = await readReceipt(env, ocrBytes, 'image/webp', stores);
+  await withDatabase(env, async (client) => {
+    const selectedStore = findMatchingStore(stores, ocr);
     const fields: ReceiptFields = {
       storeId: selectedStore?.id || '',
       storeName: selectedStore?.name || ocr.storeName || '',

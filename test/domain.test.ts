@@ -7,7 +7,7 @@ import {
   reversalIdempotencyKey,
   rewardIdempotencyKey,
 } from '../src/domain/rewards';
-import { normalizeStoreInput } from '../src/domain/store';
+import { findMatchingStore, normalizeStoreInput } from '../src/domain/store';
 import { normalizeRewardTierInput } from '../src/domain/reward-tier';
 
 const fields = {
@@ -104,6 +104,28 @@ test('store input normalizes codes and unique OCR aliases', () => {
 test('store input rejects unsafe or incomplete identifiers', () => {
   assert.throws(() => normalizeStoreInput({ code: '!', name: 'Tienda', aliases: [] }), /STORE_CODE_INVALID/);
   assert.throws(() => normalizeStoreInput({ code: 'OK', name: 'X', aliases: [] }), /STORE_NAME_INVALID/);
+});
+
+test('store matching recovers an authorized merchant from the fiscal header', () => {
+  const stores = [
+    { id: 'store-1', name: 'Supermercados Atlántico', aliases: ['Atlantico S.L.'] },
+    { id: 'store-2', name: 'Comercial Teide', aliases: ['Teide Market'] },
+  ];
+  const selected = findMatchingStore(stores, {
+    storeName: 'Yogur natural pack 4',
+    headerText: 'ATLANTICO S.L.\nCIF B12345678\nAv. Principal 10',
+    rawText: 'ATLANTICO S.L.\nCIF B12345678\nYogur natural pack 4',
+  });
+  assert.equal(selected?.id, 'store-1');
+});
+
+test('store matching does not search merchant names deep in the item list', () => {
+  const stores = [{ id: 'store-1', name: 'Comercial Teide', aliases: ['Teide Market'] }];
+  const selected = findMatchingStore(stores, {
+    storeName: 'Producto promocional',
+    rawText: `${'CABECERA DESCONOCIDA '.repeat(70)} Teide Market camiseta`,
+  });
+  assert.equal(selected, null);
 });
 
 test('reward tiers use the highest reached threshold without accumulating', () => {
