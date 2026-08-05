@@ -29,6 +29,16 @@ function show(name) {
   window.scrollTo({ top: 0, behavior: 'instant' });
 }
 
+function createIcon(name, className = 'button-icon') {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', className);
+  svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  use.setAttribute('href', `#icon-${name}`);
+  svg.append(use);
+  return svg;
+}
+
 function authHeaders(extra = {}) {
   return { Authorization: `Bearer ${state.sessionToken}`, ...extra };
 }
@@ -342,6 +352,10 @@ function renderHistory(receipts) {
     button.className = 'ticket-card';
     button.type = 'button';
 
+    const icon = document.createElement('span');
+    icon.className = 'ticket-card-icon';
+    icon.append(createIcon('ticket'));
+
     const heading = document.createElement('span');
     heading.className = 'ticket-card-heading';
     const reference = document.createElement('strong');
@@ -361,7 +375,7 @@ function renderHistory(receipts) {
     const store = receipt.fields.storeName || 'Comercio pendiente de reconocer';
     summary.textContent = `${store} · ${formatMoney(receipt.fields.totalCents, receipt.fields.currency)}`;
 
-    button.append(heading, chip, summary);
+    button.append(icon, heading, chip, summary);
     button.addEventListener('click', () => showTicketDetail(receipt));
     list.append(button);
   }
@@ -410,7 +424,7 @@ function retry() {
   state.receiptId = '';
   sessionStorage.removeItem('ticket-receipt-id');
   state.receipt = null;
-  document.querySelector('#ticket-input').value = '';
+  document.querySelectorAll('[data-ticket-input]').forEach((input) => { input.value = ''; });
   show(state.sessionToken ? 'welcome' : 'connection-error');
 }
 
@@ -427,9 +441,11 @@ function retryConnection() {
   bootstrap().catch(showError);
 }
 
-document.querySelector('#ticket-input').addEventListener('change', (event) => {
-  const file = event.target.files?.[0];
-  if (file) upload(file).catch(showError);
+document.querySelectorAll('[data-ticket-input]').forEach((input) => {
+  input.addEventListener('change', (event) => {
+    const file = event.target.files?.[0];
+    if (file) upload(file).catch(showError);
+  });
 });
 document.querySelector('#confirm-ocr').addEventListener('click', () => confirmReceipt().catch(showError));
 document.querySelectorAll('[data-action="retry"]').forEach((button) => button.addEventListener('click', retry));
@@ -437,7 +453,6 @@ document.querySelectorAll('[data-action="open-history"]').forEach((button) => {
   button.addEventListener('click', () => openHistory().catch(showError));
 });
 document.querySelector('[data-action="refresh-history"]').addEventListener('click', () => openHistory().catch(showError));
-document.querySelector('[data-action="history-back"]').addEventListener('click', () => show('welcome'));
 document.querySelector('[data-action="close-game"]').addEventListener('click', closeGame);
 document.querySelector('[data-action="retry-connection"]').addEventListener('click', retryConnection);
 

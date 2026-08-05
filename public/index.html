@@ -9,6 +9,20 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body class="public-body theme-gcx26">
+    <svg class="icon-library" aria-hidden="true">
+      <symbol id="icon-camera" viewBox="0 0 24 24">
+        <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" />
+        <circle cx="12" cy="13" r="3" />
+      </symbol>
+      <symbol id="icon-ticket" viewBox="0 0 24 24">
+        <path d="M2 9a3 3 0 0 0 0 6v4a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-4a3 3 0 0 0 0-6V5a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z" />
+        <path d="M13 5v2m0 4v2m0 4v2" />
+      </symbol>
+      <symbol id="icon-refresh" viewBox="0 0 24 24">
+        <path d="M21 12a9 9 0 1 1-2.64-6.36L21 8" />
+        <path d="M21 3v5h-5" />
+      </symbol>
+    </svg>
     <main class="public-shell">
       <section class="screen active" data-screen="connecting" aria-live="polite">
         <div class="spinner"></div>
@@ -22,11 +36,15 @@
         <h1>Escanea tus tickets y gana puntos</h1>
         <p class="lead">Escanea los tickets de compra en las tiendas asociadas y gana puntos para canjear en nuestro catálogo de regalos.</p>
         <div class="welcome-actions">
-          <label class="primary-button capture-button">
-            <input id="ticket-input" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" />
+          <label class="primary-button capture-button button-with-icon">
+            <input id="ticket-input" data-ticket-input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" />
+            <svg class="button-icon" aria-hidden="true"><use href="#icon-camera"></use></svg>
             Escanear ticket
           </label>
-          <button class="secondary-button" data-action="open-history" type="button">Mis tickets</button>
+          <button class="secondary-button button-with-icon" data-action="open-history" type="button">
+            <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
+            Mis tickets
+          </button>
         </div>
         <p class="privacy-note">La imagen se almacena de forma privada y puede ser revisada para prevenir fraude.</p>
       </section>
@@ -43,7 +61,10 @@
         <h2>Seguimos procesándolo</h2>
         <p>No necesitas volver a subirlo. Puedes esperar aquí o consultar el resultado más tarde desde «Mis tickets».</p>
         <p class="reference">Referencia: <strong id="registered-reference"></strong></p>
-        <button class="primary-button" data-action="open-history" type="button">Ver mis tickets</button>
+        <button class="primary-button button-with-icon" data-action="open-history" type="button">
+          <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
+          Ver mis tickets
+        </button>
       </section>
 
       <section class="screen" data-screen="not-receipt">
@@ -88,13 +109,23 @@
         <div class="points-card"><strong id="points-awarded">0</strong><span>puntos</span></div>
         <p>La validación ha sido automática. Nuestro equipo puede revisar posteriormente el ticket y revocar los puntos si detecta fraude.</p>
         <p class="reference">Referencia: <strong id="receipt-reference"></strong></p>
-        <button class="secondary-button" data-action="open-history" type="button">Ver mis tickets</button>
+        <button class="secondary-button button-with-icon" data-action="open-history" type="button">
+          <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
+          Ver mis tickets
+        </button>
       </section>
 
       <section class="screen history-screen" data-screen="ticket-history">
         <div class="screen-toolbar">
-          <button class="text-button" data-action="history-back" type="button">← Volver</button>
-          <button class="text-button" data-action="refresh-history" type="button">Actualizar</button>
+          <label class="primary-button compact-button capture-button button-with-icon">
+            <input id="history-ticket-input" data-ticket-input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" />
+            <svg class="button-icon" aria-hidden="true"><use href="#icon-camera"></use></svg>
+            Escanear ticket
+          </label>
+          <button class="text-button button-with-icon" data-action="refresh-history" type="button">
+            <svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>
+            Actualizar
+          </button>
         </div>
         <p class="eyebrow">Tu actividad</p>
         <h2>Mis tickets</h2>
@@ -104,7 +135,10 @@
 
       <section class="screen history-screen" data-screen="ticket-detail">
         <div class="screen-toolbar">
-          <button class="text-button" data-action="open-history" type="button">← Mis tickets</button>
+          <button class="text-button button-with-icon" data-action="open-history" type="button">
+            <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
+            Mis tickets
+          </button>
         </div>
         <p class="eyebrow">Detalle del ticket</p>
         <h2 id="detail-title">Ticket</h2>
