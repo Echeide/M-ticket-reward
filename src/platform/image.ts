@@ -62,3 +62,11 @@ export async function optimizeTicketImage(
     height: info.height,
   };
 }
+
+export async function prepareOcrImage(env: Env, image: ArrayBuffer): Promise<ArrayBuffer> {
+  const result = await env.IMAGES
+    .input(new Blob([image]).stream())
+    .transform({ width: 1200, height: 2000, fit: 'scale-down', sharpen: 1 })
+    .output({ format: 'image/webp', quality: 70 });
+  return result.response().arrayBuffer();
+}

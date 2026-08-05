@@ -21,7 +21,7 @@ import {
 } from './integrations/rtales';
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from './platform/crypto';
 import { inTransaction, withDatabase } from './platform/db';
-import { optimizeTicketImage } from './platform/image';
+import { optimizeTicketImage, prepareOcrImage } from './platform/image';
 import {
   allowedParentOrigin,
   bearerToken,
@@ -447,7 +447,8 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
   if (!receipt) return;
   const image = await env.TICKETS.get(receipt.image_key);
   if (!image) throw new Error('R2_OBJECT_NOT_FOUND');
-  const ocr = await readReceipt(env, await image.arrayBuffer(), receipt.image_content_type);
+  const ocrBytes = await prepareOcrImage(env, await image.arrayBuffer());
+  const ocr = await readReceipt(env, ocrBytes, 'image/webp');
   await withDatabase(env, async (client) => {
     await client.query(
       `UPDATE receipts SET status = $2, store_name = $3, ticket_number = $4,
