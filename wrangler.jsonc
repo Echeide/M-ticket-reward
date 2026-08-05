@@ -6,6 +6,9 @@
   "compatibility_date": "2026-08-05",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  "routes": [
+    { "pattern": "tickets-admin.echeide.com", "custom_domain": true }
+  ],
   "assets": {
     "directory": "./public",
     "binding": "ASSETS"
@@ -41,7 +44,7 @@
   "triggers": { "crons": ["*/2 * * * *"] },
   "vars": {
     "RTALES_BASE_URL": "https://rtales.app",
-    "RTALES_PARENT_ORIGINS": "https://rtales.app",
+    "RTALES_PARENT_ORIGINS": "https://rtales.app,https://echeide.rtales.app",
     "OCR_MODEL": "@cf/moondream/moondream3.1-9B-A2B",
     "OCR_MODE": "workers-ai",
     "ALLOW_DEV_ADMIN": "false",
