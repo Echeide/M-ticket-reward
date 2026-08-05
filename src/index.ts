@@ -956,6 +956,24 @@ async function requeueDueOutbox(env: Env): Promise<void> {
   await Promise.all(ids.map((outboxId) => env.JOBS.send({ kind: 'DELIVER_REWARD', outboxId })));
 }
 
+async function requeueStuckOcr(env: Env): Promise<void> {
+  const receipts = await withDatabase(env, async (client) => {
+    const result = await client.query<{ id: string }>(
+      `UPDATE receipts SET status = 'OCR_QUEUED', updated_at = NOW()
+        WHERE id IN (
+          SELECT id FROM receipts
+           WHERE status = 'OCR_PROCESSING'
+             AND updated_at < datetime('now', '-2 minutes')
+           ORDER BY updated_at ASC
+           LIMIT 50
+        )
+        RETURNING id`,
+    );
+    return result.rows;
+  });
+  await Promise.all(receipts.map(({ id }) => env.JOBS.send({ kind: 'OCR_RECEIPT', receiptId: id })));
+}
+
 export default {
   fetch: handleFetch,
   async queue(batch: MessageBatch<JobMessage>, env: Env): Promise<void> {
@@ -976,6 +994,6 @@ export default {
     }
   },
   async scheduled(_controller: ScheduledController, env: Env, context: ExecutionContext): Promise<void> {
-    context.waitUntil(requeueDueOutbox(env));
+    context.waitUntil(Promise.all([requeueDueOutbox(env), requeueStuckOcr(env)]));
   },
 } satisfies ExportedHandler<Env, JobMessage>;
