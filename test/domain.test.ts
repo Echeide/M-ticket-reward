@@ -7,6 +7,7 @@ import {
   reversalIdempotencyKey,
   rewardIdempotencyKey,
 } from '../src/domain/rewards';
+import { normalizeStoreInput } from '../src/domain/store';
 
 const fields = {
   storeId: 'store-1',
@@ -54,4 +55,23 @@ test('fingerprints and Rtales operations are deterministic', () => {
   assert.equal(buildTicketFingerprint(fields), 'STORE-1|A-123|2026-08-01|7500|EUR');
   assert.equal(rewardIdempotencyKey('receipt-1'), 'ticket:receipt-1:grant:v1');
   assert.equal(reversalIdempotencyKey('receipt-1'), 'ticket:receipt-1:revoke:v1');
+});
+
+test('store input normalizes codes and unique OCR aliases', () => {
+  assert.deepEqual(normalizeStoreInput({
+    code: ' tienda-uno ',
+    name: 'Tienda Uno',
+    aliases: ['Tienda Uno SL', 'Tienda Uno SL', ' T. Uno '],
+    active: true,
+  }), {
+    code: 'TIENDA-UNO',
+    name: 'Tienda Uno',
+    aliases: ['Tienda Uno SL', 'T. Uno'],
+    active: true,
+  });
+});
+
+test('store input rejects unsafe or incomplete identifiers', () => {
+  assert.throws(() => normalizeStoreInput({ code: '!', name: 'Tienda', aliases: [] }), /STORE_CODE_INVALID/);
+  assert.throws(() => normalizeStoreInput({ code: 'OK', name: 'X', aliases: [] }), /STORE_NAME_INVALID/);
 });

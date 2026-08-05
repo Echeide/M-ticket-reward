@@ -10,6 +10,7 @@ import {
   reversalIdempotencyKey,
   rewardIdempotencyKey,
 } from './domain/rewards';
+import { normalizeStoreInput } from './domain/store';
 import { readReceipt } from './integrations/ocr';
 import {
   exchangeLaunchCode,
@@ -68,6 +69,17 @@ type ReceiptRow = {
   created_at: string;
   rewarded_at: string | null;
   revoked_at: string | null;
+};
+
+type StoreRow = {
+  id: string;
+  code: string;
+  name: string;
+  aliases: string[];
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+  receipt_count?: string;
 };
 
 const ACTIVE_DUPLICATE_STATUSES = [
@@ -264,8 +276,8 @@ async function handleStores(request: Request, env: Env): Promise<Response> {
   const session = await authenticatedSession(request, env);
   if (!session) return error('Sesión no válida', 401);
   const stores = await withDatabase(env, async (client) => {
-    const result = await client.query<{ id: string; code: string; name: string }>(
-      'SELECT id, code, name FROM stores WHERE active = TRUE ORDER BY name ASC',
+    const result = await client.query<{ id: string; code: string; name: string; aliases: string[] }>(
+      'SELECT id, code, name, aliases FROM stores WHERE active = TRUE ORDER BY name ASC',
     );
     return result.rows;
   });
@@ -659,6 +671,100 @@ async function handleAdminReview(
   return response;
 }
 
+function storeView(row: StoreRow) {
+  return {
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    aliases: Array.isArray(row.aliases) ? row.aliases : [],
+    active: row.active,
+    receiptCount: Number(row.receipt_count || 0),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+async function handleAdminStores(request: Request, env: Env): Promise<Response> {
+  const managerEmail = managerIdentity(request, env);
+  if (!managerEmail) return error('Acceso de gestor requerido', 401);
+
+  if (request.method === 'GET') {
+    const rows = await withDatabase(env, async (client) => {
+      const result = await client.query<StoreRow>(
+        `SELECT s.*, COUNT(r.id)::text AS receipt_count
+           FROM stores s LEFT JOIN receipts r ON r.store_id = s.id
+          GROUP BY s.id ORDER BY s.active DESC, s.name ASC`,
+      );
+      return result.rows;
+    });
+    return json({ success: true, manager: managerEmail, stores: rows.map(storeView) });
+  }
+
+  const input = normalizeStoreInput(await readJson(request));
+  const id = uuid();
+  const created = await withDatabase(env, (client) => inTransaction(client, async () => {
+    const duplicate = await client.query('SELECT id FROM stores WHERE code = $1 LIMIT 1', [input.code]);
+    if (duplicate.rowCount) return null;
+    const result = await client.query<StoreRow>(
+      `INSERT INTO stores (id, code, name, aliases, active)
+       VALUES ($1, $2, $3, $4::jsonb, $5) RETURNING *`,
+      [id, input.code, input.name, JSON.stringify(input.aliases), input.active],
+    );
+    await client.query(
+      `INSERT INTO store_audit_log (id, store_id, action, manager_email, changes)
+       VALUES ($1, $2, 'CREATED', $3, $4::jsonb)`,
+      [uuid(), id, managerEmail, JSON.stringify(input)],
+    );
+    return result.rows[0];
+  }));
+  if (!created) return error('Ya existe un comercio con ese código', 409);
+  return json({ success: true, store: storeView(created) }, 201);
+}
+
+async function handleAdminStoreUpdate(
+  request: Request,
+  env: Env,
+  storeId: string,
+): Promise<Response> {
+  const managerEmail = managerIdentity(request, env);
+  if (!managerEmail) return error('Acceso de gestor requerido', 401);
+  const input = normalizeStoreInput(await readJson(request));
+  const updated = await withDatabase(env, (client) => inTransaction(client, async () => {
+    const currentResult = await client.query<StoreRow>(
+      'SELECT * FROM stores WHERE id = $1 FOR UPDATE',
+      [storeId],
+    );
+    const current = currentResult.rows[0];
+    if (!current) return { kind: 'missing' as const };
+    const duplicate = await client.query(
+      'SELECT id FROM stores WHERE code = $1 AND id <> $2 LIMIT 1',
+      [input.code, storeId],
+    );
+    if (duplicate.rowCount) return { kind: 'duplicate' as const };
+    const changes = {
+      before: { code: current.code, name: current.name, aliases: current.aliases, active: current.active },
+      after: input,
+    };
+    const action = current.active !== input.active
+      ? (input.active ? 'ACTIVATED' : 'DEACTIVATED')
+      : 'UPDATED';
+    const result = await client.query<StoreRow>(
+      `UPDATE stores SET code = $2, name = $3, aliases = $4::jsonb,
+          active = $5, updated_at = NOW() WHERE id = $1 RETURNING *`,
+      [storeId, input.code, input.name, JSON.stringify(input.aliases), input.active],
+    );
+    await client.query(
+      `INSERT INTO store_audit_log (id, store_id, action, manager_email, changes)
+       VALUES ($1, $2, $3, $4, $5::jsonb)`,
+      [uuid(), storeId, action, managerEmail, JSON.stringify(changes)],
+    );
+    return { kind: 'updated' as const, row: result.rows[0]! };
+  }));
+  if (updated.kind === 'missing') return error('Comercio no encontrado', 404);
+  if (updated.kind === 'duplicate') return error('Ya existe un comercio con ese código', 409);
+  return json({ success: true, store: storeView(updated.row) });
+}
+
 async function handleFetch(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   try {
@@ -671,6 +777,11 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'POST' && confirmMatch?.[1]) return handleConfirm(request, env, confirmMatch[1]);
     if (request.method === 'GET' && url.pathname === '/api/admin/receipts') return handleAdminList(request, env);
     if (request.method === 'GET' && url.pathname === '/api/admin/receipts.csv') return handleAdminCsv(request, env);
+    if (url.pathname === '/api/admin/stores' && ['GET', 'POST'].includes(request.method)) {
+      return handleAdminStores(request, env);
+    }
+    const storeMatch = url.pathname.match(/^\/api\/admin\/stores\/([^/]+)$/);
+    if (request.method === 'PATCH' && storeMatch?.[1]) return handleAdminStoreUpdate(request, env, storeMatch[1]);
     const imageMatch = url.pathname.match(/^\/api\/admin\/receipts\/([^/]+)\/image$/);
     if (request.method === 'GET' && imageMatch?.[1]) return handleAdminImage(request, env, imageMatch[1]);
     const reviewMatch = url.pathname.match(/^\/api\/admin\/receipts\/([^/]+)\/review$/);
@@ -686,7 +797,13 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
   } catch (caught) {
     console.error('Request failed', caught);
     const message = caught instanceof Error ? caught.message : 'UNKNOWN_ERROR';
-    return error(message === 'INVALID_JSON' ? 'JSON no válido' : 'No se pudo completar la operación', message === 'INVALID_JSON' ? 400 : 500);
+    const validationErrors: Record<string, string> = {
+      INVALID_JSON: 'JSON no válido',
+      STORE_CODE_INVALID: 'El código debe tener entre 2 y 40 caracteres: letras, números, guion o guion bajo',
+      STORE_NAME_INVALID: 'El nombre debe tener entre 2 y 160 caracteres',
+      STORE_ALIAS_INVALID: 'Los alias no pueden superar 160 caracteres',
+    };
+    return error(validationErrors[message] || 'No se pudo completar la operación', validationErrors[message] ? 400 : 500);
   }
 }
 

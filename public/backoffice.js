@@ -1,4 +1,4 @@
-const state = { rows: [], selected: null, token: sessionStorage.getItem('admin-token') || '' };
+const state = { rows: [], stores: [], selected: null, token: sessionStorage.getItem('admin-token') || '' };
 if (!state.token && location.hostname === 'localhost') {
   state.token = prompt('Token de gestor local') || '';
   if (state.token) sessionStorage.setItem('admin-token', state.token);
@@ -19,6 +19,7 @@ async function load() {
   const params = new URLSearchParams(new FormData(document.querySelector('#filters')));
   for (const [key, value] of [...params]) if (!value) params.delete(key);
   const payload = await request(`/api/admin/receipts?${params}`);
+  document.querySelector('#manager-email').textContent = payload.manager || '';
   state.rows = payload.receipts;
   document.querySelector('#record-count').textContent = state.rows.length;
   document.querySelector('#receipt-list').innerHTML = state.rows.map((receipt) => `
@@ -28,6 +29,66 @@ async function load() {
       <span class="status-chip ${escapeHtml(receipt.status.toLowerCase())}">${escapeHtml(receipt.status)} · ${escapeHtml(receipt.review.status)}</span>
     </button>`).join('') || '<p class="empty-state">No hay registros con estos filtros.</p>';
   document.querySelectorAll('.receipt-row').forEach((button) => button.addEventListener('click', () => select(button.dataset.id)));
+}
+
+async function loadStores() {
+  const payload = await request('/api/admin/stores');
+  state.stores = payload.stores;
+  document.querySelector('#manager-email').textContent = payload.manager || '';
+  document.querySelector('#active-store-count').textContent = state.stores.filter((store) => store.active).length;
+  document.querySelector('#inactive-store-count').textContent = state.stores.filter((store) => !store.active).length;
+  document.querySelector('#linked-receipt-count').textContent = state.stores.reduce((total, store) => total + store.receiptCount, 0);
+  document.querySelector('#store-list').innerHTML = state.stores.map((store) => `
+    <article class="store-row ${store.active ? '' : 'inactive'}">
+      <span><strong>${escapeHtml(store.name)}</strong><small>${escapeHtml(store.code)}</small></span>
+      <span class="alias-list">${store.aliases.length ? store.aliases.map((alias) => `<small>${escapeHtml(alias)}</small>`).join('') : '<small>Sin alias</small>'}</span>
+      <strong>${store.receiptCount}</strong>
+      <span class="status-chip ${store.active ? 'rewarded' : 'duplicate'}">${store.active ? 'ACTIVO' : 'INACTIVO'}</span>
+      <button class="secondary-button edit-store" data-id="${store.id}" type="button">Editar</button>
+    </article>`).join('') || '<p class="empty-state">Todavía no hay comercios.</p>';
+  document.querySelectorAll('.edit-store').forEach((button) => button.addEventListener('click', () => openStoreDialog(button.dataset.id)));
+}
+
+function openStoreDialog(id = '') {
+  const store = state.stores.find((item) => item.id === id);
+  const form = document.querySelector('#store-form');
+  form.reset();
+  form.elements.id.value = store?.id || '';
+  form.elements.name.value = store?.name || '';
+  form.elements.code.value = store?.code || '';
+  form.elements.aliases.value = (store?.aliases || []).join('\n');
+  form.elements.active.checked = store?.active ?? true;
+  document.querySelector('#store-dialog-title').textContent = store ? 'Editar comercio' : 'Añadir comercio';
+  document.querySelector('#store-form-error').textContent = '';
+  document.querySelector('#store-dialog').showModal();
+}
+
+async function saveStore(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const id = form.elements.id.value;
+  const existing = state.stores.find((store) => store.id === id);
+  const active = form.elements.active.checked;
+  if (existing?.active && !active && !confirm('Al desactivar este comercio, sus nuevos tickets no podrán recibir puntos. ¿Continuar?')) return;
+  const body = {
+    name: form.elements.name.value,
+    code: form.elements.code.value,
+    aliases: form.elements.aliases.value.split('\n').map((value) => value.trim()).filter(Boolean),
+    active,
+  };
+  const errorNode = document.querySelector('#store-form-error');
+  errorNode.textContent = '';
+  try {
+    await request(id ? `/api/admin/stores/${id}` : '/api/admin/stores', {
+      method: id ? 'PATCH' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    document.querySelector('#store-dialog').close();
+    await loadStores();
+  } catch (error) {
+    errorNode.textContent = error instanceof Error ? error.message : 'No se pudo guardar el comercio';
+  }
 }
 
 function formatMoney(cents) {
@@ -83,4 +144,14 @@ document.querySelector('#export-csv').addEventListener('click', async () => {
   link.download = 'tickets.csv';
   link.click();
 });
+document.querySelectorAll('[data-admin-view]').forEach((button) => button.addEventListener('click', async () => {
+  const view = button.dataset.adminView;
+  document.querySelectorAll('[data-admin-view]').forEach((item) => item.classList.toggle('active', item === button));
+  document.querySelectorAll('.admin-view').forEach((item) => item.classList.toggle('active', item.id === `${view}-view`));
+  if (view === 'stores') await loadStores().catch((error) => alert(error.message));
+}));
+document.querySelector('#new-store').addEventListener('click', () => openStoreDialog());
+document.querySelector('#store-form').addEventListener('submit', saveStore);
+document.querySelector('#close-store-dialog').addEventListener('click', () => document.querySelector('#store-dialog').close());
+document.querySelector('#cancel-store').addEventListener('click', () => document.querySelector('#store-dialog').close());
 load().catch((error) => alert(error.message));

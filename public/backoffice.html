@@ -8,12 +8,16 @@
   </head>
   <body class="backoffice-body">
     <header class="admin-header">
-      <div><p class="eyebrow">Backoffice</p><h1>Revisión antifraude de tickets</h1></div>
-      <button class="secondary-button" id="export-csv">Exportar CSV</button>
+      <div><p class="eyebrow">Backoffice</p><h1>Gestión de tickets</h1></div>
+      <div class="admin-session"><span id="manager-email"></span><a class="secondary-button" href="/cdn-cgi/access/logout">Cerrar sesión</a></div>
     </header>
-    <main class="admin-layout">
+    <nav class="admin-tabs" aria-label="Áreas de gestión">
+      <button class="active" data-admin-view="receipts">Revisión antifraude</button>
+      <button data-admin-view="stores">Comercios autorizados</button>
+    </nav>
+    <main id="receipts-view" class="admin-layout admin-view active">
       <aside class="filters-card">
-        <h2>Filtros</h2>
+        <div class="section-heading"><h2>Filtros</h2><button class="text-button" id="export-csv" type="button">Exportar CSV</button></div>
         <form id="filters">
           <label>Usuario<input name="user" /></label>
           <label>Tienda<input name="store" /></label>
@@ -30,6 +34,34 @@
       </section>
       <section id="review-panel" class="review-panel empty"><p>Selecciona un ticket para revisarlo.</p></section>
     </main>
+    <main id="stores-view" class="stores-layout admin-view">
+      <section class="stores-heading">
+        <div><p class="eyebrow">Catálogo OCR</p><h2>Comercios autorizados</h2><p>Solo los comercios activos pueden validar tickets y conceder puntos.</p></div>
+        <button class="primary-button" id="new-store" type="button">Añadir comercio</button>
+      </section>
+      <section class="stores-summary" aria-label="Resumen de comercios">
+        <div><strong id="active-store-count">0</strong><span>Activos</span></div>
+        <div><strong id="inactive-store-count">0</strong><span>Inactivos</span></div>
+        <div><strong id="linked-receipt-count">0</strong><span>Tickets vinculados</span></div>
+      </section>
+      <section class="store-list-card">
+        <div class="store-list-head"><span>Comercio</span><span>Alias OCR</span><span>Tickets</span><span>Estado</span><span></span></div>
+        <div id="store-list"></div>
+      </section>
+    </main>
+
+    <dialog id="store-dialog">
+      <form id="store-form" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">Comercio autorizado</p><h2 id="store-dialog-title">Añadir comercio</h2></div><button class="icon-button" id="close-store-dialog" type="button" aria-label="Cerrar">×</button></div>
+        <input name="id" type="hidden" />
+        <label>Nombre comercial<input name="name" maxlength="160" required placeholder="Ej. Librería Atlántica" /></label>
+        <label>Código interno<input name="code" maxlength="40" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{1,39}" placeholder="LIBRERIA_ATLANTICA" /><small>Identificador único; letras, números, guiones y guion bajo.</small></label>
+        <label>Alias reconocibles en el ticket<textarea name="aliases" rows="4" placeholder="Un alias por línea&#10;Librería Atlántica SL&#10;LIB ATLANTICA"></textarea><small>Añade nombres fiscales o abreviaturas que pueda leer el OCR.</small></label>
+        <label class="switch-row"><span><strong>Comercio activo</strong><small>Sus tickets pueden validarse y recibir puntos.</small></span><input name="active" type="checkbox" checked /></label>
+        <p id="store-form-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button class="secondary-button" id="cancel-store" type="button">Cancelar</button><button class="primary-button" type="submit">Guardar comercio</button></div>
+      </form>
+    </dialog>
     <script type="module" src="/backoffice.js"></script>
   </body>
 </html>

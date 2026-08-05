@@ -112,7 +112,10 @@ function fillForm(receipt) {
 function matchStore(name) {
   const normalized = String(name || '').toLocaleLowerCase('es').trim();
   if (!normalized) return null;
-  return state.stores.find((store) => store.name.toLocaleLowerCase('es').includes(normalized));
+  return state.stores.find((store) => [store.name, ...(store.aliases || [])].some((candidate) => {
+    const comparable = String(candidate).toLocaleLowerCase('es').trim();
+    return comparable.includes(normalized) || normalized.includes(comparable);
+  }));
 }
 
 async function confirmReceipt(event) {
