@@ -545,7 +545,9 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
       `UPDATE receipts SET status = $2, store_id = $3, store_name = $4,
          ticket_number = $5, purchase_date = $6, total_cents = $7, currency = $8,
          ticket_fingerprint = $9, ocr_payload = $10::jsonb, ocr_confidence = $11,
-         risk_score = $12, validation_reasons = $13::jsonb, updated_at = NOW()
+         risk_score = $12, validation_reasons = $13::jsonb,
+         review_status = 'CLEARED', reviewed_at = NOW(), reviewed_by = 'SYSTEM',
+         updated_at = NOW()
        WHERE id = $1`,
       [receiptId, status, selectedStore?.id || null, fields.storeName || null,
         fields.ticketNumber || null, fields.purchaseDate || null, fields.totalCents || null,
@@ -560,6 +562,7 @@ async function markOcrFailed(env: Env, receiptId: string): Promise<void> {
   await withDatabase(env, async (client) => {
     await client.query(
       `UPDATE receipts SET status = 'REWARD_FAILED', validation_reasons = $2::jsonb,
+          review_status = 'PENDING', reviewed_at = NULL, reviewed_by = NULL,
           updated_at = NOW() WHERE id = $1 AND status = 'OCR_PROCESSING'`,
       [receiptId, JSON.stringify(['OCR_PROCESSING_FAILED'])],
     );
@@ -628,8 +631,12 @@ async function processOutbox(env: Env, outboxId: string): Promise<void> {
     ).then(() => undefined));
     if (retryable) throw new Error('RTALES_RETRYABLE_DELIVERY');
     await withDatabase(env, (client) => client.query(
-      `UPDATE receipts SET status = $2, updated_at = NOW() WHERE id = $1`,
-      [receipt.id, outbox.operation === 'GRANT' ? 'REWARD_FAILED' : 'REWARDED'],
+      `UPDATE receipts SET status = $2,
+         review_status = CASE WHEN $3 = 'GRANT' THEN 'PENDING' ELSE review_status END,
+         reviewed_at = CASE WHEN $3 = 'GRANT' THEN NULL ELSE reviewed_at END,
+         reviewed_by = CASE WHEN $3 = 'GRANT' THEN NULL ELSE reviewed_by END,
+         updated_at = NOW() WHERE id = $1`,
+      [receipt.id, outbox.operation === 'GRANT' ? 'REWARD_FAILED' : 'REWARDED', outbox.operation],
     ).then(() => undefined));
     return;
   }

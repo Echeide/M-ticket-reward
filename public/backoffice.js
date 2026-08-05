@@ -18,8 +18,21 @@ const statusLabels = {
 };
 const reviewLabels = {
   PENDING: 'Pendiente de revisión',
-  CLEARED: 'Validado sin fraude',
+  CLEARED: 'Resuelto',
   FRAUD: 'Marcado como fraude',
+};
+const reasonLabels = {
+  OCR_PROCESSING_FAILED: 'La lectura automática ha fallado y necesita revisión.',
+  NOT_A_RECEIPT: 'La imagen no parece un ticket de compra.',
+  DUPLICATE: 'El ticket ya había sido utilizado.',
+  DUPLICATE_IMAGE: 'La misma imagen ya había sido enviada.',
+  STORE_NOT_ALLOWED: 'El comercio no está autorizado.',
+  TICKET_NUMBER_REQUIRED: 'No se ha reconocido el número del ticket.',
+  INVALID_TOTAL: 'El importe no es válido.',
+  INVALID_DATE: 'No se ha reconocido una fecha válida.',
+  FUTURE_DATE: 'La fecha está fuera del periodo permitido.',
+  TICKET_TOO_OLD: 'La fecha del ticket supera el periodo permitido.',
+  OCR_REPROCESS_REQUESTED: 'La nueva comprobación está en curso.',
 };
 if (!state.token && location.hostname === 'localhost') {
   state.token = prompt('Token de gestor local') || '';
@@ -241,6 +254,8 @@ async function select(id, suppliedReceipt = null) {
   const receipt = state.selected;
   if (!receipt) return;
   const reprocessable = canReprocess(receipt);
+  const canRevoke = receipt.status === 'REWARDED' && Boolean(receipt.reward.resultId);
+  const reasons = Array.isArray(receipt.reasons) ? receipt.reasons : [];
   const panel = document.querySelector('#review-panel');
   panel.className = 'review-panel';
   panel.innerHTML = `
@@ -258,13 +273,17 @@ async function select(id, suppliedReceipt = null) {
       <p class="eyebrow">${escapeHtml(receipt.publicId)}</p>
       <h2>${escapeHtml(receipt.fields.storeName || 'Sin tienda')}</h2>
       <dl><div><dt>Usuario</dt><dd>${escapeHtml(receipt.user.displayName || receipt.user.subject)}</dd></div><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Número</dt><dd>${escapeHtml(receipt.fields.ticketNumber || '—')}</dd></div><div><dt>Fecha</dt><dd>${escapeHtml(receipt.fields.purchaseDate || '—')}</dd></div><div><dt>Importe</dt><dd>${formatMoney(receipt.fields.totalCents)}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Estado</dt><dd>${escapeHtml(statusLabels[receipt.status] || receipt.status)}</dd></div><div><dt>Revisión</dt><dd>${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</dd></div></dl>
-      <label>Motivo o nota<textarea id="review-reason" rows="3" placeholder="Obligatorio para revocar"></textarea></label>
-      <div class="review-actions"><button class="secondary-button" id="clear-review" ${receipt.review.status !== 'PENDING' ? 'disabled' : ''}>Revisado sin fraude</button><button class="danger-button" id="revoke" ${receipt.status !== 'REWARDED' ? 'disabled' : ''}>Fraude: revocar puntos</button></div>
+      ${reasons.length ? `<div class="review-reasons"><strong>Comprobación automática</strong><ul>${reasons.map((reason) => `<li>${escapeHtml(reasonLabels[reason] || reason)}</li>`).join('')}</ul></div>` : ''}
+      <label>Nota de revisión<textarea id="review-reason" rows="3" placeholder="Opcional al marcar como revisado${canRevoke ? '; obligatoria para retirar puntos' : ''}"></textarea></label>
+      <div class="review-actions">
+        ${receipt.review.status === 'PENDING' ? '<button class="primary-button" id="clear-review">Revisado</button>' : '<span class="review-complete">Este ticket ya está resuelto.</span>'}
+        ${canRevoke ? '<button class="danger-button" id="revoke">Fraude: retirar puntos</button>' : ''}
+      </div>
     </div>`;
   const image = await fetch(`/api/admin/receipts/${id}/image`, { headers: headers() });
   if (image.ok) document.querySelector('#ticket-image').src = URL.createObjectURL(await image.blob());
-  document.querySelector('#clear-review').addEventListener('click', () => review('CLEAR'));
-  document.querySelector('#revoke').addEventListener('click', () => review('REVOKE'));
+  document.querySelector('#clear-review')?.addEventListener('click', () => review('CLEAR'));
+  document.querySelector('#revoke')?.addEventListener('click', () => review('REVOKE'));
   if (reprocessable) document.querySelector('#reprocess-ticket').addEventListener('click', reprocessSelected);
 }
 
@@ -302,13 +321,24 @@ async function review(action) {
   const reason = document.querySelector('#review-reason').value.trim();
   if (action === 'REVOKE' && !reason) return alert('Indica el motivo de la revocación.');
   if (action === 'REVOKE' && !confirm('Se retirarán los puntos concedidos. ¿Continuar?')) return;
-  await request(`/api/admin/receipts/${state.selected.id}/review`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, reason }),
-  });
-  await load();
-  select(state.selected.id);
+  const buttons = [...document.querySelectorAll('.review-actions button')];
+  buttons.forEach((button) => { button.disabled = true; });
+  try {
+    await request(`/api/admin/receipts/${state.selected.id}/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, reason }),
+    });
+    await load();
+    state.selected = null;
+    const panel = document.querySelector('#review-panel');
+    panel.className = 'review-panel empty';
+    panel.innerHTML = '<p>Selecciona un ticket para revisarlo.</p>';
+    showNotice(action === 'CLEAR' ? 'Ticket marcado como revisado.' : 'Fraude registrado; se están retirando los puntos.');
+  } catch (error) {
+    buttons.forEach((button) => { button.disabled = false; });
+    alert(error instanceof Error ? error.message : 'No se pudo completar la revisión');
+  }
 }
 
 function updateFilterCount() {
@@ -365,5 +395,7 @@ document.querySelector('#new-tier').addEventListener('click', () => openTierDial
 document.querySelector('#tier-form').addEventListener('submit', saveTier);
 document.querySelector('#close-tier-dialog').addEventListener('click', () => document.querySelector('#tier-dialog').close());
 document.querySelector('#cancel-tier').addEventListener('click', () => document.querySelector('#tier-dialog').close());
-load().catch((error) => alert(error.message));
+document.querySelector('[name="review"]').value = 'PENDING';
+updateFilterCount();
+load(1).catch((error) => alert(error.message));
 loadFilterStores().catch((error) => alert(error.message));
