@@ -34,8 +34,8 @@
     "consumers": [
       {
         "queue": "rtales-ticket-jobs",
-        "max_batch_size": 5,
-        "max_batch_timeout": 2,
+        "max_batch_size": 1,
+        "max_batch_timeout": 0,
         "max_retries": 8,
         "dead_letter_queue": "rtales-ticket-jobs-dlq"
       }
