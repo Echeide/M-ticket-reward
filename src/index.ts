@@ -613,6 +613,33 @@ async function handleAdminCsv(request: Request, env: Env): Promise<Response> {
   });
 }
 
+async function handleAdminDeleteAllReceipts(request: Request, env: Env): Promise<Response> {
+  const manager = managerIdentity(request, env);
+  if (!manager) return error('Acceso de gestor requerido', 401);
+  const testDataCondition = `id IN (
+    '3ceb21ae-bcdf-4690-a086-265280177fa3',
+    '1a9377ba-6e87-4467-87a1-22ea3df4d473',
+    'e9fbeb27-98b6-40fc-bf33-6a3c99579e5d',
+    '7836ef3c-3dde-46db-8433-925c82836513',
+    '15ab2fa6-d80f-44aa-a535-a44641cf6abe',
+    '673e0192-1bf6-4db6-ba45-31aa1b17fcf9'
+  )`;
+  const receipts = await withDatabase(env, async (client) => {
+    const result = await client.query<Pick<ReceiptRow, 'id' | 'image_key'>>(
+      `SELECT id, image_key FROM receipts WHERE ${testDataCondition}`,
+    );
+    await client.query(`DELETE FROM reward_outbox WHERE receipt_id IN
+      (SELECT id FROM receipts WHERE ${testDataCondition})`);
+    await client.query(`DELETE FROM receipt_reviews WHERE receipt_id IN
+      (SELECT id FROM receipts WHERE ${testDataCondition})`);
+    await client.query(`DELETE FROM receipts WHERE ${testDataCondition}`);
+    return result.rows;
+  });
+  await Promise.all(receipts.map((receipt) => env.TICKETS.delete(receipt.image_key)));
+  console.log('Manager deleted all receipt test data', { manager, count: receipts.length });
+  return json({ success: true, deleted: receipts.length });
+}
+
 async function handleAdminImage(request: Request, env: Env, receiptId: string): Promise<Response> {
   if (!managerIdentity(request, env)) return error('Acceso de gestor requerido', 401);
   const receipt = await withDatabase(env, async (client) => {
@@ -887,6 +914,9 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'POST' && confirmMatch?.[1]) return await handleConfirm(request, env, confirmMatch[1]);
     if (request.method === 'GET' && url.pathname === '/api/admin/receipts') return await handleAdminList(request, env);
     if (request.method === 'GET' && url.pathname === '/api/admin/receipts.csv') return await handleAdminCsv(request, env);
+    if (request.method === 'DELETE' && url.pathname === '/api/admin/receipts') {
+      return await handleAdminDeleteAllReceipts(request, env);
+    }
     if (url.pathname === '/api/admin/stores' && ['GET', 'POST'].includes(request.method)) {
       return await handleAdminStores(request, env);
     }
