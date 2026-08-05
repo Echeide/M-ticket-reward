@@ -46,9 +46,9 @@ isReceipt (boolean), confidence (0..1), storeName, ticketNumber, purchaseDate (Y
 totalCents (entero), currency y rawText. No inventes valores ilegibles.`;
   const result = (await (env.AI as unknown as { run: Function }).run(env.OCR_MODEL, {
     task: 'query',
-    // The Workers AI binding currently validates image input as byte values,
-    // even though the catalog schema also documents data-URI strings.
-    image: Array.from(new Uint8Array(bytes)),
+    // The production Workers AI binding expects a binary value here. Passing
+    // a number array is coerced by the binding and rejected as a string.
+    image: new Uint8Array(bytes),
     question: prompt,
     reasoning: false,
     temperature: 0.1,
