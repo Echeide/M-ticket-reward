@@ -288,7 +288,11 @@ async function select(id, suppliedReceipt = null) {
       ${reasons.length ? `<div class="review-reasons"><strong>Comprobación automática</strong><ul>${reasons.map((reason) => `<li>${escapeHtml(reasonLabels[reason] || reason)}</li>`).join('')}</ul></div>` : ''}
       <label>Nota de revisión<textarea id="review-reason" rows="3" placeholder="Opcional al marcar como revisado${canRevoke ? '; obligatoria para retirar puntos' : ''}"></textarea></label>
       <div class="review-actions">
-        ${receipt.review.status === 'PENDING' ? '<button class="primary-button" id="clear-review">Revisado</button>' : '<span class="review-complete">Este ticket ya está resuelto.</span>'}
+        ${receipt.review.status === 'PENDING'
+          ? '<button class="primary-button" id="clear-review">Revisado</button>'
+          : receipt.review.status === 'CLEARED'
+            ? `<span class="review-complete">Este ticket ya está resuelto.</span><button class="secondary-button reopen-review-button" id="reopen-review" type="button" aria-label="Volver a dejar pendiente" title="Volver a dejar pendiente"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5"></path><path d="M4 12h9a7 7 0 0 1 7 7"></path></svg></button>`
+            : '<span class="review-complete">Este ticket está marcado como fraude.</span>'}
         ${canRevoke ? '<button class="danger-button" id="revoke">Fraude: retirar puntos</button>' : ''}
       </div>
     </div>`;
@@ -299,6 +303,7 @@ async function select(id, suppliedReceipt = null) {
     else URL.revokeObjectURL(imageUrl);
   }
   document.querySelector('#clear-review')?.addEventListener('click', () => review('CLEAR'));
+  document.querySelector('#reopen-review')?.addEventListener('click', () => review('REOPEN'));
   document.querySelector('#revoke')?.addEventListener('click', () => review('REVOKE'));
   if (reprocessable) document.querySelector('#reprocess-ticket').addEventListener('click', reprocessSelected);
 }
@@ -353,7 +358,11 @@ async function review(action) {
     const panel = document.querySelector('#review-panel');
     panel.className = 'review-panel empty';
     panel.innerHTML = '<p>Selecciona un ticket para revisarlo.</p>';
-    showNotice(action === 'CLEAR' ? 'Ticket marcado como revisado.' : 'Fraude registrado; se están retirando los puntos.');
+    showNotice(action === 'CLEAR'
+      ? 'Ticket marcado como revisado.'
+      : action === 'REOPEN'
+        ? 'Ticket devuelto a pendientes.'
+        : 'Fraude registrado; se están retirando los puntos.');
   } catch (error) {
     buttons.forEach((button) => { button.disabled = false; });
     alert(error instanceof Error ? error.message : 'No se pudo completar la revisión');

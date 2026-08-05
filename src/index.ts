@@ -860,7 +860,7 @@ async function handleAdminReview(
   const body = await readJson(request);
   const action = String(body.action || '').toUpperCase();
   const reason = String(body.reason || '').trim().slice(0, 500);
-  if (!['CLEAR', 'REVOKE'].includes(action)) return error('Acción no válida', 400);
+  if (!['CLEAR', 'REOPEN', 'REVOKE'].includes(action)) return error('Acción no válida', 400);
   let outboxId = '';
   const response = await withDatabase(env, (client) => inTransaction(client, async () => {
     const result = await client.query<ReceiptRow>('SELECT * FROM receipts WHERE id = $1 FOR UPDATE', [receiptId]);
@@ -882,6 +882,25 @@ async function handleAdminReview(
         `UPDATE receipts SET review_status = 'CLEARED', reviewed_at = NOW(),
            reviewed_by = $2, updated_at = NOW() WHERE id = $1`,
         [receiptId, managerEmail],
+      );
+      return json({ success: true, status: receipt.status });
+    }
+    if (action === 'REOPEN') {
+      if (receipt.review_status === 'PENDING') {
+        return json({ success: true, status: receipt.status, idempotent: true });
+      }
+      if (receipt.review_status === 'FRAUD' || ['REVOKE_PENDING', 'REVOKED'].includes(receipt.status)) {
+        return error('Un ticket marcado como fraude no puede volver a pendientes', 409);
+      }
+      await client.query(
+        `INSERT INTO receipt_reviews (id, receipt_id, action, manager_email, reason)
+         VALUES ($1, $2, 'REVIEW_REOPENED', $3, $4)`,
+        [uuid(), receiptId, managerEmail, reason || 'Revisión reabierta'],
+      );
+      await client.query(
+        `UPDATE receipts SET review_status = 'PENDING', reviewed_at = NULL,
+           reviewed_by = NULL, updated_at = NOW() WHERE id = $1`,
+        [receiptId],
       );
       return json({ success: true, status: receipt.status });
     }
