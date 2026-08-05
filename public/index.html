@@ -47,17 +47,19 @@
         <button class="primary-button" data-action="retry">Escanear otro ticket</button>
       </section>
 
-      <section class="screen form-screen" data-screen="form">
-        <p class="eyebrow">Comprueba los datos</p>
-        <h2>¿Está todo correcto?</h2>
-        <p>Hemos rellenado el formulario automáticamente. Corrige cualquier dato antes de enviarlo.</p>
-        <form id="receipt-form">
-          <label>Tienda<select name="storeId" id="store-select" required></select></label>
-          <label>Número de ticket<input name="ticketNumber" required maxlength="120" /></label>
-          <label>Fecha de compra<input name="purchaseDate" type="date" required /></label>
-          <label>Importe total<div class="money-field"><input name="total" inputmode="decimal" required /><span>€</span></div></label>
-          <button class="primary-button" type="submit">Confirmar ticket</button>
-        </form>
+      <section class="screen form-screen" data-screen="ocr-review">
+        <p class="eyebrow">Resultado del escaneo</p>
+        <h2 id="ocr-validation-title">Datos reconocidos</h2>
+        <p id="ocr-validation-message">Comprueba la información detectada automáticamente.</p>
+        <div class="ocr-data">
+          <div><span>Comercio</span><strong id="ocr-store">—</strong></div>
+          <div><span>Número de ticket</span><strong id="ocr-number">—</strong></div>
+          <div><span>Fecha de compra</span><strong id="ocr-date">—</strong></div>
+          <div><span>Importe total</span><strong id="ocr-total">—</strong></div>
+        </div>
+        <div class="ocr-validation-badge" id="ocr-validation-badge">Comprobando…</div>
+        <button class="primary-button" id="confirm-ocr" type="button">Continuar y obtener puntos</button>
+        <button class="secondary-button" id="retry-ocr" data-action="retry" type="button">Volver a escanear</button>
       </section>
 
       <section class="screen" data-screen="reward-processing" aria-live="polite">

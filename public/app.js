@@ -78,9 +78,6 @@ async function bootstrap() {
   if (!state.sessionToken) throw new Error('Abre este módulo desde Rtales para comenzar');
   const stores = await api('/api/stores');
   state.stores = stores.stores;
-  const select = document.querySelector('#store-select');
-  select.innerHTML = '<option value="">Selecciona una tienda</option>' + state.stores
-    .map((store) => `<option value="${store.id}">${escapeHtml(store.name)}</option>`).join('');
   if (!state.receiptId) {
     const latest = await api('/api/receipts/latest');
     if (latest.receipt) {
@@ -94,12 +91,6 @@ async function bootstrap() {
   } else {
     show('welcome');
   }
-}
-
-function escapeHtml(value) {
-  const node = document.createElement('span');
-  node.textContent = String(value || '');
-  return node.innerHTML;
 }
 
 async function optimizeTicketFile(file) {
@@ -145,8 +136,8 @@ async function pollUntilReady() {
     const payload = await api(`/api/receipts/${state.receiptId}`);
     state.receipt = payload.receipt;
     if (payload.receipt.status === 'READY_FOR_CONFIRMATION') {
-      fillForm(payload.receipt);
-      return show('form');
+      showOcrReview(payload.receipt);
+      return show('ocr-review');
     }
     if (payload.receipt.status === 'NOT_A_RECEIPT') return show('not-receipt');
     if (payload.receipt.status === 'DUPLICATE') return show('duplicate');
@@ -166,13 +157,28 @@ async function pollUntilReady() {
   throw new Error('La lectura está tardando más de lo esperado. Inténtalo de nuevo.');
 }
 
-function fillForm(receipt) {
-  const form = document.querySelector('#receipt-form');
+function showOcrReview(receipt) {
   const fields = receipt.fields;
-  form.elements.storeId.value = fields.storeId || matchStore(fields.storeName)?.id || '';
-  form.elements.ticketNumber.value = fields.ticketNumber || '';
-  form.elements.purchaseDate.value = fields.purchaseDate || '';
-  form.elements.total.value = fields.totalCents ? (fields.totalCents / 100).toFixed(2) : '';
+  const store = matchStore(fields.storeName);
+  const valid = Boolean(
+    store && fields.ticketNumber && /^\d{4}-\d{2}-\d{2}$/.test(fields.purchaseDate) &&
+    Number.isInteger(fields.totalCents) && fields.totalCents > 0
+  );
+  document.querySelector('#ocr-store').textContent = store?.name || fields.storeName || 'No reconocido';
+  document.querySelector('#ocr-number').textContent = fields.ticketNumber || 'No reconocido';
+  document.querySelector('#ocr-date').textContent = fields.purchaseDate || 'No reconocida';
+  document.querySelector('#ocr-total').textContent = fields.totalCents
+    ? new Intl.NumberFormat('es-ES', { style: 'currency', currency: fields.currency || 'EUR' }).format(fields.totalCents / 100)
+    : 'No reconocido';
+  document.querySelector('#ocr-validation-title').textContent = valid ? 'Ticket válido' : 'No podemos validar este ticket';
+  document.querySelector('#ocr-validation-message').textContent = valid
+    ? 'Los datos necesarios se han reconocido correctamente y no pueden modificarse.'
+    : 'Falta algún dato obligatorio o el comercio no está autorizado. Prueba con una foto más clara.';
+  const badge = document.querySelector('#ocr-validation-badge');
+  badge.textContent = valid ? '✓ Ticket válido' : '! Escaneo no válido';
+  badge.className = `ocr-validation-badge ${valid ? 'valid' : 'invalid'}`;
+  document.querySelector('#confirm-ocr').hidden = !valid;
+  document.querySelector('#retry-ocr').hidden = valid;
 }
 
 function matchStore(name) {
@@ -184,28 +190,20 @@ function matchStore(name) {
   }));
 }
 
-async function confirmReceipt(event) {
-  event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  const store = state.stores.find((item) => item.id === form.get('storeId'));
-  const totalCents = Math.round(Number(String(form.get('total')).replace(',', '.')) * 100);
-  if (!store || !Number.isInteger(totalCents) || totalCents <= 0) return;
+async function confirmReceipt() {
   show('reward-processing');
   const payload = await api(`/api/receipts/${state.receiptId}/confirm`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      storeId: store.id,
-      storeName: store.name,
-      ticketNumber: form.get('ticketNumber'),
-      purchaseDate: form.get('purchaseDate'),
-      totalCents,
-      currency: 'EUR',
-    }),
+    body: '{}',
   });
   if (payload.status === 'DUPLICATE') return show('duplicate');
   if (payload.status === 'AUTO_REJECTED') {
-    throw new Error('El ticket no ha superado la validación automática');
+    document.querySelector('#ocr-validation-title').textContent = 'No podemos validar este ticket';
+    document.querySelector('#ocr-validation-message').textContent = 'La validación automática ha rechazado el ticket. Vuelve a escanearlo con una imagen más clara.';
+    document.querySelector('#confirm-ocr').hidden = true;
+    document.querySelector('#retry-ocr').hidden = false;
+    return show('ocr-review');
   }
   await pollUntilReady();
 }
@@ -248,9 +246,7 @@ document.querySelector('#ticket-input').addEventListener('change', (event) => {
   const file = event.target.files?.[0];
   if (file) upload(file).catch(showError);
 });
-document.querySelector('#receipt-form').addEventListener('submit', (event) => {
-  confirmReceipt(event).catch(showError);
-});
+document.querySelector('#confirm-ocr').addEventListener('click', () => confirmReceipt().catch(showError));
 document.querySelectorAll('[data-action="retry"]').forEach((button) => button.addEventListener('click', retry));
 document.querySelector('[data-action="close-game"]').addEventListener('click', closeGame);
 document.querySelector('[data-action="retry-connection"]').addEventListener('click', retryConnection);

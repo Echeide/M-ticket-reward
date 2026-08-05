@@ -336,21 +336,20 @@ async function handleLatestPendingReceipt(request: Request, env: Env): Promise<R
   });
 }
 
-function receiptFields(body: Record<string, unknown>): ReceiptFields {
-  const totalCents = Number(body.totalCents);
-  return {
-    storeId: String(body.storeId || '').trim(),
-    storeName: String(body.storeName || '').trim().slice(0, 160),
-    ticketNumber: String(body.ticketNumber || '').trim().slice(0, 120),
-    purchaseDate: String(body.purchaseDate || '').trim(),
-    totalCents: Number.isInteger(totalCents) ? totalCents : 0,
-    currency: String(body.currency || 'EUR').trim().toUpperCase().slice(0, 3),
-  };
+function normalizedStoreName(value: string): string {
+  return value.toLocaleLowerCase('es').replace(/\s+/g, ' ').trim();
+}
+
+function storeMatchesOcr(store: StoreRow, recognizedName: string): boolean {
+  const recognized = normalizedStoreName(recognizedName);
+  if (!recognized) return false;
+  return [store.name, ...store.aliases].some((candidate) => {
+    const comparable = normalizedStoreName(candidate);
+    return comparable === recognized || comparable.includes(recognized) || recognized.includes(comparable);
+  });
 }
 
 async function handleConfirm(request: Request, env: Env, receiptId: string): Promise<Response> {
-  const body = await readJson(request);
-  const fields = receiptFields(body);
   let outboxId = '';
   const result = await withDatabase(env, async (client) =>
     inTransaction(client, async () => {
@@ -362,13 +361,16 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
         return { response: error('El ticket no está listo para confirmar', 409) };
       }
 
-      const store = fields.storeId
-        ? await client.query<{ id: string; active: boolean; name: string }>(
-            'SELECT id, active, name FROM stores WHERE id = $1 LIMIT 1',
-            [fields.storeId],
-          )
-        : { rows: [] };
-      const selectedStore = store.rows[0];
+      const stores = await client.query<StoreRow>('SELECT * FROM stores WHERE active = TRUE');
+      const selectedStore = stores.rows.find((store) => storeMatchesOcr(store, receipt.store_name || ''));
+      const fields: ReceiptFields = {
+        storeId: selectedStore?.id || '',
+        storeName: selectedStore?.name || receipt.store_name || '',
+        ticketNumber: receipt.ticket_number || '',
+        purchaseDate: receipt.purchase_date || '',
+        totalCents: receipt.total_cents || 0,
+        currency: receipt.currency || 'EUR',
+      };
       const fingerprint = buildTicketFingerprint(fields);
       const duplicate = await client.query(
         `SELECT id FROM receipts
