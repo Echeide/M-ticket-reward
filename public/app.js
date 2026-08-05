@@ -1,0 +1,177 @@
+const screens = new Map(
+  [...document.querySelectorAll('[data-screen]')].map((node) => [node.dataset.screen, node]),
+);
+const state = {
+  sessionToken: sessionStorage.getItem('ticket-session') || '',
+  parentOrigin: sessionStorage.getItem('ticket-parent-origin') || '',
+  receiptId: '',
+  receipt: null,
+  stores: [],
+};
+
+function show(name) {
+  for (const [screenName, node] of screens) node.classList.toggle('active', screenName === name);
+  window.scrollTo({ top: 0, behavior: 'instant' });
+}
+
+function authHeaders(extra = {}) {
+  return { Authorization: `Bearer ${state.sessionToken}`, ...extra };
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: authHeaders(options.headers || {}),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || 'No se pudo completar la operación');
+  return payload;
+}
+
+async function bootstrap() {
+  const params = new URLSearchParams(location.search);
+  const preview = location.hostname === 'localhost' ? params.get('preview') : '';
+  if (preview && screens.has(preview)) {
+    if (preview === 'final') {
+      document.querySelector('#points-awarded').textContent = '50';
+      document.querySelector('#receipt-reference').textContent = 'TKT-DEMO';
+    }
+    show(preview);
+    return;
+  }
+  const launchCode = params.get('launch_code');
+  state.parentOrigin = params.get('parent_origin') || '';
+  if (launchCode) {
+    const payload = await fetch('/api/session/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ launchCode, parentOrigin: state.parentOrigin }),
+    }).then(async (response) => {
+      const value = await response.json();
+      if (!response.ok) throw new Error(value.error || 'No se pudo iniciar la sesión');
+      return value;
+    });
+    state.sessionToken = payload.sessionToken;
+    state.parentOrigin = payload.parentOrigin || state.parentOrigin;
+    sessionStorage.setItem('ticket-session', state.sessionToken);
+    if (state.parentOrigin) sessionStorage.setItem('ticket-parent-origin', state.parentOrigin);
+    history.replaceState({}, '', location.pathname);
+  }
+  if (!state.sessionToken) throw new Error('Abre este módulo desde Rtales para comenzar');
+  const stores = await api('/api/stores');
+  state.stores = stores.stores;
+  const select = document.querySelector('#store-select');
+  select.innerHTML = '<option value="">Selecciona una tienda</option>' + state.stores
+    .map((store) => `<option value="${store.id}">${escapeHtml(store.name)}</option>`).join('');
+}
+
+function escapeHtml(value) {
+  const node = document.createElement('span');
+  node.textContent = String(value || '');
+  return node.innerHTML;
+}
+
+async function upload(file) {
+  show('processing');
+  const form = new FormData();
+  form.append('ticket', file);
+  const payload = await api('/api/receipts', { method: 'POST', body: form });
+  state.receiptId = payload.receiptId;
+  if (payload.status === 'DUPLICATE') return show('duplicate');
+  await pollUntilReady();
+}
+
+async function pollUntilReady() {
+  for (let attempt = 0; attempt < 90; attempt += 1) {
+    const payload = await api(`/api/receipts/${state.receiptId}`);
+    state.receipt = payload.receipt;
+    if (payload.receipt.status === 'READY_FOR_CONFIRMATION') {
+      fillForm(payload.receipt);
+      return show('form');
+    }
+    if (payload.receipt.status === 'NOT_A_RECEIPT') return show('not-receipt');
+    if (payload.receipt.status === 'DUPLICATE') return show('duplicate');
+    if (payload.receipt.status === 'REWARDED') return finish(payload.receipt);
+    if (['AUTO_REJECTED', 'REWARD_FAILED'].includes(payload.receipt.status)) {
+      throw new Error('El ticket no ha superado la validación automática');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+  }
+  throw new Error('La lectura está tardando más de lo esperado. Inténtalo de nuevo.');
+}
+
+function fillForm(receipt) {
+  const form = document.querySelector('#receipt-form');
+  const fields = receipt.fields;
+  form.elements.storeId.value = fields.storeId || matchStore(fields.storeName)?.id || '';
+  form.elements.ticketNumber.value = fields.ticketNumber || '';
+  form.elements.purchaseDate.value = fields.purchaseDate || '';
+  form.elements.total.value = fields.totalCents ? (fields.totalCents / 100).toFixed(2) : '';
+}
+
+function matchStore(name) {
+  const normalized = String(name || '').toLocaleLowerCase('es').trim();
+  if (!normalized) return null;
+  return state.stores.find((store) => store.name.toLocaleLowerCase('es').includes(normalized));
+}
+
+async function confirmReceipt(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const store = state.stores.find((item) => item.id === form.get('storeId'));
+  const totalCents = Math.round(Number(String(form.get('total')).replace(',', '.')) * 100);
+  if (!store || !Number.isInteger(totalCents) || totalCents <= 0) return;
+  show('reward-processing');
+  const payload = await api(`/api/receipts/${state.receiptId}/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      storeId: store.id,
+      storeName: store.name,
+      ticketNumber: form.get('ticketNumber'),
+      purchaseDate: form.get('purchaseDate'),
+      totalCents,
+      currency: 'EUR',
+    }),
+  });
+  if (payload.status === 'DUPLICATE') return show('duplicate');
+  if (payload.status === 'AUTO_REJECTED') {
+    throw new Error('El ticket no ha superado la validación automática');
+  }
+  await pollUntilReady();
+}
+
+function finish(receipt) {
+  document.querySelector('#points-awarded').textContent = receipt.reward.pointsAwarded;
+  document.querySelector('#receipt-reference').textContent = receipt.publicId;
+  show('final');
+  if (state.parentOrigin && window.parent !== window) {
+    window.parent.postMessage({
+      type: 'EXTERNAL_GAME_COMPLETED',
+      rewards: { pointsAwarded: receipt.reward.pointsAwarded, cards: [] },
+    }, state.parentOrigin);
+  }
+}
+
+function retry() {
+  state.receiptId = '';
+  state.receipt = null;
+  document.querySelector('#ticket-input').value = '';
+  show('welcome');
+}
+
+document.querySelector('#ticket-input').addEventListener('change', (event) => {
+  const file = event.target.files?.[0];
+  if (file) upload(file).catch(showError);
+});
+document.querySelector('#receipt-form').addEventListener('submit', (event) => {
+  confirmReceipt(event).catch(showError);
+});
+document.querySelectorAll('[data-action="retry"]').forEach((button) => button.addEventListener('click', retry));
+
+function showError(caught) {
+  document.querySelector('#error-message').textContent = caught instanceof Error ? caught.message : 'Inténtalo de nuevo.';
+  show('error');
+}
+
+bootstrap().catch(showError);

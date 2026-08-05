@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Tickets con recompensa</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="public-shell">
+      <section class="screen active" data-screen="welcome">
+        <div class="hero-icon" aria-hidden="true">⌁</div>
+        <p class="eyebrow">Premios por tus compras</p>
+        <h1>Escanea tus tickets y gana puntos</h1>
+        <p class="lead">Escanea los tickets de compra en las tiendas asociadas y gana puntos para canjear en nuestro catálogo de regalos.</p>
+        <label class="primary-button capture-button">
+          <input id="ticket-input" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" />
+          Escanear ticket
+        </label>
+        <p class="privacy-note">La imagen se almacena de forma privada y puede ser revisada para prevenir fraude.</p>
+      </section>
+
+      <section class="screen" data-screen="processing" aria-live="polite">
+        <div class="spinner"></div>
+        <h2>Estamos leyendo el ticket</h2>
+        <p>Buscamos la tienda, el número, la fecha y el importe.</p>
+      </section>
+
+      <section class="screen" data-screen="not-receipt">
+        <div class="status-icon danger">!</div>
+        <h2>No parece un ticket de compra</h2>
+        <p>Prueba de nuevo con el ticket completo, bien iluminado y sin reflejos.</p>
+        <button class="primary-button" data-action="retry">Volver a escanear</button>
+      </section>
+
+      <section class="screen" data-screen="duplicate">
+        <div class="status-icon warning">↺</div>
+        <h2>Este ticket ya se ha enviado</h2>
+        <p>No se permiten tickets repetidos para un mismo usuario.</p>
+        <button class="primary-button" data-action="retry">Escanear otro ticket</button>
+      </section>
+
+      <section class="screen form-screen" data-screen="form">
+        <p class="eyebrow">Comprueba los datos</p>
+        <h2>¿Está todo correcto?</h2>
+        <p>Hemos rellenado el formulario automáticamente. Corrige cualquier dato antes de enviarlo.</p>
+        <form id="receipt-form">
+          <label>Tienda<select name="storeId" id="store-select" required></select></label>
+          <label>Número de ticket<input name="ticketNumber" required maxlength="120" /></label>
+          <label>Fecha de compra<input name="purchaseDate" type="date" required /></label>
+          <label>Importe total<div class="money-field"><input name="total" inputmode="decimal" required /><span>€</span></div></label>
+          <button class="primary-button" type="submit">Confirmar ticket</button>
+        </form>
+      </section>
+
+      <section class="screen" data-screen="reward-processing" aria-live="polite">
+        <div class="spinner"></div>
+        <h2>Validando y asignando puntos</h2>
+        <p>No cierres esta pantalla hasta que confirmemos la recompensa.</p>
+      </section>
+
+      <section class="screen" data-screen="final">
+        <div class="status-icon success">✓</div>
+        <p class="eyebrow">Ticket recibido</p>
+        <h2 id="final-title">Puntos concedidos</h2>
+        <div class="points-card"><strong id="points-awarded">0</strong><span>puntos</span></div>
+        <p>La validación ha sido automática. Nuestro equipo puede revisar posteriormente el ticket y revocar los puntos si detecta fraude.</p>
+        <p class="reference">Referencia: <strong id="receipt-reference"></strong></p>
+      </section>
+
+      <section class="screen" data-screen="error">
+        <div class="status-icon danger">!</div>
+        <h2>No hemos podido completar el proceso</h2>
+        <p id="error-message">Inténtalo de nuevo.</p>
+        <button class="primary-button" data-action="retry">Volver a empezar</button>
+      </section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

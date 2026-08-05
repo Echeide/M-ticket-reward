@@ -1,0 +1,49 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "rtales-ticket-rewards",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-05",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "r2_buckets": [
+    {
+      "binding": "TICKETS",
+      "bucket_name": "rtales-ticket-receipts"
+    }
+  ],
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "REPLACE_WITH_HYPERDRIVE_ID",
+      "localConnectionString": "postgres://postgres:postgres@localhost:5432/ticket_rewards"
+    }
+  ],
+  "ai": { "binding": "AI" },
+  "queues": {
+    "producers": [
+      { "binding": "JOBS", "queue": "rtales-ticket-jobs" }
+    ],
+    "consumers": [
+      {
+        "queue": "rtales-ticket-jobs",
+        "max_batch_size": 5,
+        "max_batch_timeout": 2,
+        "max_retries": 8,
+        "dead_letter_queue": "rtales-ticket-jobs-dlq"
+      }
+    ]
+  },
+  "triggers": { "crons": ["*/2 * * * *"] },
+  "vars": {
+    "RTALES_BASE_URL": "http://localhost:5173",
+    "RTALES_PARENT_ORIGINS": "http://localhost:5173",
+    "OCR_MODEL": "@cf/moondream/moondream3.1-9B-A2B",
+    "OCR_MODE": "mock",
+    "ALLOW_DEV_ADMIN": "true",
+    "MAX_TICKET_BYTES": "10485760"
+  }
+}

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Revisión antifraude de tickets</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="backoffice-body">
+    <header class="admin-header">
+      <div><p class="eyebrow">Backoffice</p><h1>Revisión antifraude de tickets</h1></div>
+      <button class="secondary-button" id="export-csv">Exportar CSV</button>
+    </header>
+    <main class="admin-layout">
+      <aside class="filters-card">
+        <h2>Filtros</h2>
+        <form id="filters">
+          <label>Usuario<input name="user" /></label>
+          <label>Tienda<input name="store" /></label>
+          <label>Estado<select name="status"><option value="">Todos</option><option>REWARDED</option><option>REVOKE_PENDING</option><option>REVOKED</option><option>DUPLICATE</option><option>AUTO_REJECTED</option></select></label>
+          <label>Revisión<select name="review"><option value="">Todas</option><option value="PENDING">Pendientes</option><option value="CLEARED">Sin fraude</option><option value="FRAUD">Fraude</option></select></label>
+          <label>Desde<input name="from" type="date" /></label>
+          <label>Hasta<input name="to" type="date" /></label>
+          <button class="primary-button">Aplicar filtros</button>
+        </form>
+      </aside>
+      <section class="admin-list-panel">
+        <div class="list-heading"><h2>Registros</h2><span id="record-count">0</span></div>
+        <div id="receipt-list" class="receipt-list"></div>
+      </section>
+      <section id="review-panel" class="review-panel empty"><p>Selecciona un ticket para revisarlo.</p></section>
+    </main>
+    <script type="module" src="/backoffice.js"></script>
+  </body>
+</html>
