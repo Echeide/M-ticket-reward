@@ -77,7 +77,10 @@ async function saveStore(event) {
     active,
   };
   const errorNode = document.querySelector('#store-form-error');
+  const submitButton = form.querySelector('[type="submit"]');
   errorNode.textContent = '';
+  submitButton.disabled = true;
+  submitButton.textContent = 'Guardando…';
   try {
     await request(id ? `/api/admin/stores/${id}` : '/api/admin/stores', {
       method: id ? 'PATCH' : 'POST',
@@ -86,8 +89,15 @@ async function saveStore(event) {
     });
     document.querySelector('#store-dialog').close();
     await loadStores();
+    const notice = document.querySelector('#admin-notice');
+    notice.textContent = id ? 'Comercio actualizado correctamente.' : 'Comercio creado correctamente.';
+    notice.classList.add('visible');
+    setTimeout(() => notice.classList.remove('visible'), 3500);
   } catch (error) {
     errorNode.textContent = error instanceof Error ? error.message : 'No se pudo guardar el comercio';
+  } finally {
+    submitButton.disabled = false;
+    submitButton.textContent = 'Guardar comercio';
   }
 }
 

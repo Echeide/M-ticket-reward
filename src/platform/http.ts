@@ -25,7 +25,7 @@ export function bearerToken(request: Request): string {
 
 export function managerIdentity(request: Request, env: Env): string | null {
   const accessEmail = request.headers.get('Cf-Access-Authenticated-User-Email')?.trim();
-  if (accessEmail) return accessEmail;
+  if (env.ADMIN_ONLY === 'true' && accessEmail) return accessEmail;
   if (
     env.ALLOW_DEV_ADMIN === 'true' &&
     env.DEV_ADMIN_TOKEN &&
