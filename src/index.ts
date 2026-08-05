@@ -768,6 +768,11 @@ async function handleAdminStoreUpdate(
 async function handleFetch(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   try {
+    if (env.ADMIN_ONLY === 'true') {
+      if (url.pathname === '/') return Response.redirect(`${url.origin}/backoffice`, 302);
+      const adminAsset = ['/backoffice', '/backoffice.html', '/backoffice.js', '/styles.css', '/favicon.ico'].includes(url.pathname);
+      if (!adminAsset && !url.pathname.startsWith('/api/admin/')) return error('Ruta no encontrada', 404);
+    }
     if (request.method === 'POST' && url.pathname === '/api/session/exchange') return handleExchange(request, env);
     if (request.method === 'GET' && url.pathname === '/api/stores') return handleStores(request, env);
     if (request.method === 'POST' && url.pathname === '/api/receipts') return handleUpload(request, env);

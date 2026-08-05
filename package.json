@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:admin": "wrangler deploy --config wrangler.admin.jsonc",
     "types": "wrangler types",
     "check": "tsc --noEmit && node --check public/app.js && node --check public/backoffice.js && npm test",
     "test": "node --import tsx --test test/*.test.ts"

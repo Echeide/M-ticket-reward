@@ -15,6 +15,7 @@ export interface Env {
   OCR_MODEL: string;
   OCR_MODE: string;
   ALLOW_DEV_ADMIN: string;
+  ADMIN_ONLY?: string;
   DEV_ADMIN_TOKEN?: string;
   MAX_TICKET_BYTES: string;
 }
