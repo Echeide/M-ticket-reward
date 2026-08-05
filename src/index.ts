@@ -691,25 +691,57 @@ function adminFilters(url: URL) {
   return { where: conditions.join(' AND '), values };
 }
 
-async function adminRows(env: Env, url: URL): Promise<ReceiptRow[]> {
+async function adminRows(env: Env, url: URL, pagination?: { limit: number; offset: number }): Promise<ReceiptRow[]> {
   const filters = adminFilters(url);
+  const pageClause = pagination ? ` LIMIT ${pagination.limit} OFFSET ${pagination.offset}` : '';
   return withDatabase(env, async (client) => {
     const result = await client.query<ReceiptRow>(
       `SELECT r.*, s.display_name AS user_display_name, s.user_email
          FROM receipts r JOIN player_sessions s ON s.id = r.session_id
         WHERE ${filters.where}
-        ORDER BY r.created_at DESC LIMIT 1000`,
+        ORDER BY r.created_at DESC, r.id DESC${pageClause}`,
       filters.values,
     );
     return result.rows;
   });
 }
 
+async function adminRowCount(env: Env, url: URL): Promise<number> {
+  const filters = adminFilters(url);
+  return withDatabase(env, async (client) => {
+    const result = await client.query<{ total: number }>(
+      `SELECT COUNT(*) AS total
+         FROM receipts r JOIN player_sessions s ON s.id = r.session_id
+        WHERE ${filters.where}`,
+      filters.values,
+    );
+    return Number(result.rows[0]?.total || 0);
+  });
+}
+
 async function handleAdminList(request: Request, env: Env): Promise<Response> {
   const manager = managerIdentity(request, env);
   if (!manager) return error('Acceso de gestor requerido', 401);
-  const rows = await adminRows(env, new URL(request.url));
-  return json({ success: true, manager, receipts: rows.map((row) => receiptView(row, true)) });
+  const url = new URL(request.url);
+  const requestedPage = Math.max(1, Number.parseInt(url.searchParams.get('page') || '1', 10) || 1);
+  const pageSize = 50;
+  const total = await adminRowCount(env, url);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(requestedPage, totalPages);
+  const rows = await adminRows(env, url, { limit: pageSize, offset: (page - 1) * pageSize });
+  return json({
+    success: true,
+    manager,
+    receipts: rows.map((row) => receiptView(row, true)),
+    pagination: {
+      page,
+      pageSize,
+      total,
+      totalPages,
+      hasPrevious: page > 1,
+      hasNext: page < totalPages,
+    },
+  });
 }
 
 async function handleAdminReceipt(request: Request, env: Env, receiptId: string): Promise<Response> {

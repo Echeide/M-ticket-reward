@@ -1,4 +1,8 @@
-const state = { rows: [], stores: [], tiers: [], selected: null, token: sessionStorage.getItem('admin-token') || '' };
+const state = {
+  rows: [], stores: [], tiers: [], selected: null,
+  pagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
+  token: sessionStorage.getItem('admin-token') || '',
+};
 const statusLabels = {
   OCR_QUEUED: 'En espera de lectura',
   OCR_PROCESSING: 'Leyendo ticket',
@@ -39,12 +43,18 @@ function filterParams() {
   return params;
 }
 
-async function load() {
+async function load(page = state.pagination.page) {
   const params = filterParams();
+  params.set('page', String(page));
   const payload = await request(`/api/admin/receipts?${params}`);
   document.querySelector('#manager-email').textContent = payload.manager || '';
   state.rows = payload.receipts;
-  document.querySelector('#record-count').textContent = state.rows.length;
+  state.pagination = payload.pagination;
+  document.querySelector('#record-count').textContent = state.pagination.total;
+  document.querySelector('#page-info').textContent = `Página ${state.pagination.page} de ${state.pagination.totalPages}`;
+  document.querySelector('#previous-page').disabled = !state.pagination.hasPrevious;
+  document.querySelector('#next-page').disabled = !state.pagination.hasNext;
+  document.querySelector('#receipt-pagination').hidden = state.pagination.totalPages <= 1;
   document.querySelector('#receipt-list').innerHTML = state.rows.map((receipt) => `
     <button class="receipt-row" data-id="${receipt.id}">
       <span><strong>${escapeHtml(receipt.publicId)}</strong><small>${escapeHtml(receipt.fields.storeName || 'Sin tienda')}</small></span>
@@ -314,7 +324,7 @@ document.querySelector('#filters').addEventListener('submit', (event) => {
   event.preventDefault();
   if (document.querySelector('#filters-dialog').open) document.querySelector('#filters-dialog').close();
   updateFilterCount();
-  load().catch((error) => alert(error.message));
+  load(1).catch((error) => alert(error.message));
 });
 document.querySelector('#open-filters').addEventListener('click', () => document.querySelector('#filters-dialog').showModal());
 document.querySelector('#close-filters-dialog').addEventListener('click', () => document.querySelector('#filters-dialog').close());
@@ -323,7 +333,13 @@ document.querySelector('#clear-filters').addEventListener('click', () => {
   document.querySelector('[name="attention"]').checked = false;
   updateFilterCount();
   document.querySelector('#filters-dialog').close();
-  load().catch((error) => alert(error.message));
+  load(1).catch((error) => alert(error.message));
+});
+document.querySelector('#previous-page').addEventListener('click', () => {
+  if (state.pagination.hasPrevious) load(state.pagination.page - 1).catch((error) => alert(error.message));
+});
+document.querySelector('#next-page').addEventListener('click', () => {
+  if (state.pagination.hasNext) load(state.pagination.page + 1).catch((error) => alert(error.message));
 });
 document.querySelector('#export-csv').addEventListener('click', async () => {
   const params = filterParams();
