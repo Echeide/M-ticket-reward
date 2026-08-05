@@ -214,26 +214,6 @@ document.querySelector('#export-csv').addEventListener('click', async () => {
   link.download = 'tickets.csv';
   link.click();
 });
-document.querySelector('#delete-test-data').addEventListener('click', async () => {
-  if (!confirm('Se eliminarán todos los tickets y sus imágenes. ¿Continuar?')) return;
-  const button = document.querySelector('#delete-test-data');
-  button.disabled = true;
-  try {
-    const payload = await request('/api/admin/receipts', { method: 'DELETE' });
-    state.selected = null;
-    await load();
-    document.querySelector('#review-panel').className = 'review-panel empty';
-    document.querySelector('#review-panel').innerHTML = '<p>Selecciona un ticket para revisarlo.</p>';
-    const notice = document.querySelector('#admin-notice');
-    notice.textContent = `${payload.deleted} tickets de prueba eliminados.`;
-    notice.classList.add('visible');
-    setTimeout(() => notice.classList.remove('visible'), 3500);
-  } catch (error) {
-    alert(error instanceof Error ? error.message : 'No se pudieron eliminar las pruebas');
-  } finally {
-    button.disabled = false;
-  }
-});
 document.querySelectorAll('[data-admin-view]').forEach((button) => button.addEventListener('click', async () => {
   const view = button.dataset.adminView;
   document.querySelectorAll('[data-admin-view]').forEach((item) => item.classList.toggle('active', item === button));
