@@ -16,6 +16,7 @@ import { readReceipt } from './integrations/ocr';
 import {
   exchangeLaunchCode,
   grantTicketPoints,
+  RtalesApiError,
   revokeTicketPoints,
 } from './integrations/rtales';
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from './platform/crypto';
@@ -901,10 +902,23 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     return response;
   } catch (caught) {
     console.error('Request failed', caught);
-    const message = caught instanceof Error ? caught.message : 'UNKNOWN_ERROR';
-    if (message.startsWith('RTALES_EXCHANGE_FAILED')) {
-      return error('Rtales no pudo iniciar la sesión del jugador', 502, 'RTALES_EXCHANGE_FAILED');
+    if (caught instanceof RtalesApiError) {
+      const status = caught.status >= 400 && caught.status <= 599 ? caught.status : 502;
+      const rtalesErrors: Record<number, { message: string; code: string }> = {
+        400: { message: 'El código de acceso a Rtales no es válido', code: 'RTALES_LAUNCH_INVALID' },
+        401: { message: 'La conexión con Rtales no está configurada correctamente', code: 'RTALES_CONFIGURATION_ERROR' },
+        403: { message: 'La conexión con Rtales no tiene los permisos necesarios', code: 'RTALES_CONFIGURATION_ERROR' },
+        404: { message: 'La sesión de Rtales ya no está disponible', code: 'RTALES_LAUNCH_UNAVAILABLE' },
+        409: { message: 'El código de acceso ya se ha utilizado', code: 'RTALES_LAUNCH_CONFLICT' },
+        410: { message: 'La sesión de acceso ha caducado', code: 'RTALES_LAUNCH_EXPIRED' },
+        429: { message: 'Rtales está recibiendo demasiadas solicitudes', code: 'RTALES_RATE_LIMITED' },
+      };
+      const mapped = rtalesErrors[status] || (status >= 500
+        ? { message: 'Rtales no está disponible temporalmente', code: 'RTALES_UNAVAILABLE' }
+        : { message: 'Rtales no pudo iniciar la sesión del jugador', code: 'RTALES_EXCHANGE_FAILED' });
+      return error(mapped.message, status, mapped.code);
     }
+    const message = caught instanceof Error ? caught.message : 'UNKNOWN_ERROR';
     const validationErrors: Record<string, string> = {
       INVALID_JSON: 'JSON no válido',
       STORE_CODE_INVALID: 'El código debe tener entre 2 y 40 caracteres: letras, números, guion o guion bajo',

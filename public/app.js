@@ -53,13 +53,20 @@ async function bootstrap() {
   const launchCode = params.get('launch_code');
   state.parentOrigin = params.get('parent_origin') || '';
   if (launchCode) {
+    state.sessionToken = '';
+    sessionStorage.removeItem('ticket-session');
     const payload = await fetch('/api/session/exchange', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ launchCode, parentOrigin: state.parentOrigin }),
     }).then(async (response) => {
       const value = await responsePayload(response);
-      if (!response.ok) throw new Error(value.error || 'No se pudo iniciar la sesión');
+      if (!response.ok) {
+        throw Object.assign(new Error(value.error || 'No se pudo iniciar la sesión'), {
+          status: response.status,
+          code: value.code || 'RTALES_EXCHANGE_FAILED',
+        });
+      }
       return value;
     });
     state.sessionToken = payload.sessionToken;
@@ -74,6 +81,7 @@ async function bootstrap() {
   const select = document.querySelector('#store-select');
   select.innerHTML = '<option value="">Selecciona una tienda</option>' + state.stores
     .map((store) => `<option value="${store.id}">${escapeHtml(store.name)}</option>`).join('');
+  show('welcome');
 }
 
 function escapeHtml(value) {
@@ -198,7 +206,20 @@ function retry() {
   state.receiptId = '';
   state.receipt = null;
   document.querySelector('#ticket-input').value = '';
-  show('welcome');
+  show(state.sessionToken ? 'welcome' : 'connection-error');
+}
+
+function closeGame() {
+  if (state.parentOrigin && window.parent !== window) {
+    window.parent.postMessage({ type: 'EXTERNAL_GAME_CLOSE' }, state.parentOrigin);
+    return;
+  }
+  location.reload();
+}
+
+function retryConnection() {
+  show('connecting');
+  bootstrap().catch(showError);
 }
 
 document.querySelector('#ticket-input').addEventListener('change', (event) => {
@@ -209,8 +230,24 @@ document.querySelector('#receipt-form').addEventListener('submit', (event) => {
   confirmReceipt(event).catch(showError);
 });
 document.querySelectorAll('[data-action="retry"]').forEach((button) => button.addEventListener('click', retry));
+document.querySelector('[data-action="close-game"]').addEventListener('click', closeGame);
+document.querySelector('[data-action="retry-connection"]').addEventListener('click', retryConnection);
 
 function showError(caught) {
+  if (!state.sessionToken) {
+    const expired = ['RTALES_LAUNCH_EXPIRED', 'RTALES_LAUNCH_CONFLICT'].includes(caught?.code);
+    const retryable = caught?.status === 429 || caught?.status >= 500;
+    document.querySelector('#connection-error-title').textContent = expired
+      ? 'La conexión con Rtales ha caducado'
+      : 'No se pudo conectar con Rtales';
+    document.querySelector('#connection-error-message').textContent = expired
+      ? 'Vuelve a iniciar el juego desde Rtales para obtener una sesión nueva.'
+      : (caught instanceof Error ? caught.message : 'No hemos podido preparar tu sesión.');
+    document.querySelector('[data-action="retry-connection"]').hidden = !retryable;
+    document.querySelector('[data-action="close-game"]').hidden = retryable;
+    show('connection-error');
+    return;
+  }
   document.querySelector('#error-message').textContent = caught instanceof Error ? caught.message : 'Inténtalo de nuevo.';
   show('error');
 }

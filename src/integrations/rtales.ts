@@ -6,6 +6,16 @@ type RtalesResponse = {
   [key: string]: unknown;
 };
 
+export class RtalesApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly upstreamMessage: string,
+  ) {
+    super(`RTALES_API_ERROR:${status}`);
+    this.name = 'RtalesApiError';
+  }
+}
+
 async function rtalesRequest(
   env: Env,
   pathname: string,
@@ -47,7 +57,10 @@ export async function exchangeLaunchCode(env: Env, launchCode: string) {
       status: result.response.status,
       error: result.payload.error || null,
     });
-    throw new Error(`RTALES_EXCHANGE_FAILED:${result.response.status}`);
+    throw new RtalesApiError(
+      result.response.status,
+      String(result.payload.error || 'Rtales exchange failed'),
+    );
   }
   return result.payload;
 }

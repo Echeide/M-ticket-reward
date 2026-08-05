@@ -9,7 +9,13 @@
   </head>
   <body>
     <main class="public-shell">
-      <section class="screen active" data-screen="welcome">
+      <section class="screen active" data-screen="connecting" aria-live="polite">
+        <div class="spinner"></div>
+        <h2>Conectando con Rtales</h2>
+        <p>Estamos preparando tu sesión de tickets.</p>
+      </section>
+
+      <section class="screen" data-screen="welcome">
         <div class="hero-icon" aria-hidden="true">⌁</div>
         <p class="eyebrow">Premios por tus compras</p>
         <h1>Escanea tus tickets y gana puntos</h1>
@@ -74,6 +80,14 @@
         <h2>No hemos podido completar el proceso</h2>
         <p id="error-message">Inténtalo de nuevo.</p>
         <button class="primary-button" data-action="retry">Volver a empezar</button>
+      </section>
+
+      <section class="screen" data-screen="connection-error" role="alert">
+        <div class="status-icon danger">!</div>
+        <h2 id="connection-error-title">No se pudo conectar con Rtales</h2>
+        <p id="connection-error-message">No hemos podido preparar tu sesión.</p>
+        <button class="primary-button" data-action="retry-connection" hidden>Reintentar conexión</button>
+        <button class="primary-button" data-action="close-game">Volver a Rtales</button>
       </section>
     </main>
     <script type="module" src="/app.js"></script>
