@@ -421,10 +421,10 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
 
 async function processOcr(env: Env, receiptId: string): Promise<void> {
   const receipt = await withDatabase(env, async (client) => {
-    const result = await client.query<Pick<ReceiptRow, 'id' | 'image_key' | 'status'>>(
+    const result = await client.query<Pick<ReceiptRow, 'id' | 'image_key' | 'image_content_type' | 'status'>>(
       `UPDATE receipts SET status = 'OCR_PROCESSING', updated_at = NOW()
         WHERE id = $1 AND status IN ('OCR_QUEUED', 'OCR_PROCESSING')
-        RETURNING id, image_key, status`,
+        RETURNING id, image_key, image_content_type, status`,
       [receiptId],
     );
     return result.rows[0];
@@ -432,7 +432,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
   if (!receipt) return;
   const image = await env.TICKETS.get(receipt.image_key);
   if (!image) throw new Error('R2_OBJECT_NOT_FOUND');
-  const ocr = await readReceipt(env, await image.arrayBuffer());
+  const ocr = await readReceipt(env, await image.arrayBuffer(), receipt.image_content_type);
   await withDatabase(env, async (client) => {
     await client.query(
       `UPDATE receipts SET status = $2, store_name = $3, ticket_number = $4,
@@ -442,6 +442,16 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
       [receiptId, ocr.isReceipt ? 'READY_FOR_CONFIRMATION' : 'NOT_A_RECEIPT',
         ocr.storeName || null, ocr.ticketNumber || null, ocr.purchaseDate || null,
         ocr.totalCents || null, ocr.currency || 'EUR', JSON.stringify(ocr), ocr.confidence],
+    );
+  });
+}
+
+async function markOcrFailed(env: Env, receiptId: string): Promise<void> {
+  await withDatabase(env, async (client) => {
+    await client.query(
+      `UPDATE receipts SET status = 'OCR_FAILED', validation_reasons = $2::jsonb,
+          updated_at = NOW() WHERE id = $1 AND status = 'OCR_PROCESSING'`,
+      [receiptId, JSON.stringify(['OCR_PROCESSING_FAILED'])],
     );
   });
 }
@@ -956,7 +966,12 @@ export default {
         message.ack();
       } catch (caught) {
         console.error('Queue job failed', message.body, caught);
-        message.retry();
+        if (message.body.kind === 'OCR_RECEIPT' && message.attempts >= 8) {
+          await markOcrFailed(env, message.body.receiptId);
+          message.ack();
+        } else {
+          message.retry();
+        }
       }
     }
   },

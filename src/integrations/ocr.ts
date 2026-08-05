@@ -23,7 +23,21 @@ function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
   };
 }
 
-export async function readReceipt(env: Env, bytes: ArrayBuffer): Promise<OcrReceipt> {
+function imageDataUri(bytes: ArrayBuffer, contentType: string): string {
+  const view = new Uint8Array(bytes);
+  let binary = '';
+  const chunkSize = 32_768;
+  for (let offset = 0; offset < view.length; offset += chunkSize) {
+    binary += String.fromCharCode(...view.subarray(offset, offset + chunkSize));
+  }
+  return `data:${contentType};base64,${btoa(binary)}`;
+}
+
+export async function readReceipt(
+  env: Env,
+  bytes: ArrayBuffer,
+  contentType = 'image/jpeg',
+): Promise<OcrReceipt> {
   if (env.OCR_MODE === 'mock') {
     return {
       isReceipt: true,
@@ -41,9 +55,13 @@ export async function readReceipt(env: Env, bytes: ArrayBuffer): Promise<OcrRece
 isReceipt (boolean), confidence (0..1), storeName, ticketNumber, purchaseDate (YYYY-MM-DD),
 totalCents (entero), currency y rawText. No inventes valores ilegibles.`;
   const result = (await (env.AI as unknown as { run: Function }).run(env.OCR_MODEL, {
-    image: Array.from(new Uint8Array(bytes)),
-    prompt,
+    task: 'query',
+    image: imageDataUri(bytes, contentType),
+    question: prompt,
+    reasoning: false,
+    temperature: 0.1,
+    max_tokens: 1_024,
   })) as Record<string, unknown>;
-  const text = String(result.description || result.response || result.result || '');
+  const text = String(result.answer || result.description || result.response || result.result || '');
   return normalizeOcr(parseJsonObject(text));
 }
