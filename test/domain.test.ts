@@ -14,7 +14,7 @@ const fields = {
   storeId: 'store-1',
   storeName: 'Tienda Uno',
   ticketNumber: 'A-123',
-  purchaseDate: '2026-08-01',
+  purchaseDate: '2026-08-02',
   totalCents: 7_500,
   currency: 'EUR',
 };
@@ -43,6 +43,22 @@ test('duplicates and non-receipt images never receive automatic approval', () =>
   assert.deepEqual(result.reasons, ['NOT_A_RECEIPT', 'DUPLICATE']);
 });
 
+test('automatic validation only accepts receipt dates within three calendar days', () => {
+  const validateDate = (purchaseDate: string) => validateReceiptAutomatically({
+    fields: { ...fields, purchaseDate },
+    ocr: { ...fields, purchaseDate, isReceipt: true, confidence: 0.92 },
+    storeActive: true,
+    duplicate: false,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+
+  assert.equal(validateDate('2026-08-02').approved, true);
+  assert.equal(validateDate('2026-08-08').approved, true);
+  assert.deepEqual(validateDate('2026-08-01').reasons, ['TICKET_TOO_OLD']);
+  assert.deepEqual(validateDate('2026-08-09').reasons, ['FUTURE_DATE']);
+  assert.deepEqual(validateDate('2026-02-30').reasons, ['INVALID_DATE']);
+});
+
 test('reward tiers select the highest eligible purchase threshold', () => {
   const points = resolveRewardPoints(7_500, [
     { id: '1', minimumCents: 0, points: 5, active: true },
@@ -53,7 +69,7 @@ test('reward tiers select the highest eligible purchase threshold', () => {
 });
 
 test('fingerprints and Rtales operations are deterministic', () => {
-  assert.equal(buildTicketFingerprint(fields), 'STORE-1|A-123|2026-08-01|7500|EUR');
+  assert.equal(buildTicketFingerprint(fields), 'STORE-1|A-123|2026-08-02|7500|EUR');
   assert.equal(rewardIdempotencyKey('receipt-1'), 'ticket:receipt-1:grant:v1');
   assert.equal(reversalIdempotencyKey('receipt-1'), 'ticket:receipt-1:revoke:v1');
 });

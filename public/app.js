@@ -160,8 +160,9 @@ async function pollUntilReady() {
 function showOcrReview(receipt) {
   const fields = receipt.fields;
   const store = matchStore(fields.storeName);
+  const validDate = isPurchaseDateWithinDays(fields.purchaseDate, 3);
   const valid = Boolean(
-    store && fields.ticketNumber && /^\d{4}-\d{2}-\d{2}$/.test(fields.purchaseDate) &&
+    store && fields.ticketNumber && validDate &&
     Number.isInteger(fields.totalCents) && fields.totalCents > 0
   );
   document.querySelector('#ocr-store').textContent = store?.name || fields.storeName || 'No reconocido';
@@ -174,12 +175,35 @@ function showOcrReview(receipt) {
   document.querySelector('#ocr-validation-title').textContent = valid ? 'Ticket válido' : 'No podemos validar este ticket';
   document.querySelector('#ocr-validation-message').textContent = valid
     ? 'Los datos necesarios se han reconocido correctamente y no pueden modificarse.'
-    : 'Falta algún dato obligatorio o el comercio no está autorizado. Prueba con una foto más clara.';
+    : !validDate
+      ? 'La fecha debe corresponder al día actual, con un margen máximo de 3 días. Vuelve a escanear el ticket.'
+      : 'Falta algún dato obligatorio o el comercio no está autorizado. Prueba con una foto más clara.';
   const badge = document.querySelector('#ocr-validation-badge');
   badge.textContent = valid ? '✓ Ticket válido' : '! Escaneo no válido';
   badge.className = `ocr-validation-badge ${valid ? 'valid' : 'invalid'}`;
   document.querySelector('#confirm-ocr').hidden = !valid;
   document.querySelector('#retry-ocr').hidden = valid;
+}
+
+function isPurchaseDateWithinDays(value, maximumDifferenceDays) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''));
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const purchaseTimestamp = Date.UTC(year, month - 1, day);
+  const purchaseDate = new Date(purchaseTimestamp);
+  if (
+    purchaseDate.getUTCFullYear() !== year ||
+    purchaseDate.getUTCMonth() !== month - 1 ||
+    purchaseDate.getUTCDate() !== day
+  ) return false;
+  const todayParts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Atlantic/Canary', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const todayPart = (type) => Number(todayParts.find((item) => item.type === type)?.value);
+  const todayTimestamp = Date.UTC(todayPart('year'), todayPart('month') - 1, todayPart('day'));
+  return Math.abs(todayTimestamp - purchaseTimestamp) / 86_400_000 <= maximumDifferenceDays;
 }
 
 function matchStore(name) {

@@ -47,7 +47,8 @@ export async function readReceipt(
 
   const prompt = `Analiza la imagen. Decide si es un ticket de compra y devuelve solo JSON con:
 isReceipt (boolean), confidence (0..1), storeName, ticketNumber, purchaseDate (YYYY-MM-DD),
-totalCents (entero), currency y rawText. No inventes valores ilegibles.`;
+totalCents (entero), currency y rawText. Usa exclusivamente la fecha impresa en el ticket;
+no uses la fecha actual si no es legible. No inventes valores ilegibles.`;
   const result = (await (env.AI as unknown as { run: Function }).run(env.OCR_MODEL, {
     image: Array.from(new Uint8Array(bytes)),
     prompt,

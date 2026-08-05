@@ -35,7 +35,7 @@ export type AutomaticValidationInput = {
   storeActive: boolean;
   duplicate: boolean;
   now?: Date;
-  maximumAgeDays?: number;
+  maximumDateDifferenceDays?: number;
 };
 
 export type AutomaticValidation = {
@@ -50,8 +50,9 @@ export function validateReceiptAutomatically(
   const reasons: string[] = [];
   let riskScore = 0;
   const now = input.now ?? new Date();
-  const maximumAgeDays = input.maximumAgeDays ?? 90;
-  const purchaseDate = new Date(`${input.fields.purchaseDate}T12:00:00Z`);
+  const maximumDateDifferenceDays = input.maximumDateDifferenceDays ?? 3;
+  const purchaseDay = isoDateToEpochDay(input.fields.purchaseDate);
+  const currentDay = currentEpochDay(now);
 
   if (!input.ocr.isReceipt) reasons.push('NOT_A_RECEIPT');
   if (input.duplicate) reasons.push('DUPLICATE');
@@ -60,12 +61,12 @@ export function validateReceiptAutomatically(
   if (!Number.isInteger(input.fields.totalCents) || input.fields.totalCents <= 0) {
     reasons.push('INVALID_TOTAL');
   }
-  if (Number.isNaN(purchaseDate.getTime())) {
+  if (purchaseDay === null) {
     reasons.push('INVALID_DATE');
   } else {
-    const ageDays = (now.getTime() - purchaseDate.getTime()) / 86_400_000;
-    if (ageDays < -1) reasons.push('FUTURE_DATE');
-    if (ageDays > maximumAgeDays) reasons.push('TICKET_TOO_OLD');
+    const differenceDays = currentDay - purchaseDay;
+    if (differenceDays < -maximumDateDifferenceDays) reasons.push('FUTURE_DATE');
+    if (differenceDays > maximumDateDifferenceDays) reasons.push('TICKET_TOO_OLD');
   }
 
   if (input.ocr.confidence < 0.55) riskScore += 45;
@@ -85,4 +86,32 @@ export function validateReceiptAutomatically(
     riskScore: Math.min(100, riskScore),
     reasons,
   };
+}
+
+function isoDateToEpochDay(value: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const timestamp = Date.UTC(year, month - 1, day);
+  const date = new Date(timestamp);
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) return null;
+  return Math.floor(timestamp / 86_400_000);
+}
+
+function currentEpochDay(now: Date): number {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Atlantic/Canary',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(now);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((item) => item.type === type)?.value);
+  return Math.floor(Date.UTC(part('year'), part('month') - 1, part('day')) / 86_400_000);
 }
