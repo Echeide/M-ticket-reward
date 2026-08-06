@@ -33,7 +33,14 @@ import {
   type StoreOcrProfile,
 } from './domain/ocr-profile';
 import { normalizeRewardTierInput } from './domain/reward-tier';
-import { normalizeAdminEmail, type AdminRole } from './domain/admin-user';
+import {
+  adminRouteAllowed,
+  canCreateAdminRole,
+  canDeleteAdminRole,
+  normalizeAdminEmail,
+  normalizeAssignableAdminRole,
+  type AdminRole,
+} from './domain/admin-user';
 import { shouldBanUser, userOffenseScore, type UserOffenseCategory } from './domain/user-ban';
 import {
   externalIdentityFromExchange,
@@ -1560,31 +1567,61 @@ type TicketUserSummaryRow = {
   strike_points: number;
   authorized_total_cents: number;
   last_submission_at: string;
+  rtales_lookup_code_normalized: string;
+  ban_id: string | null;
+  ban_status: 'ACTIVE' | 'LIFTING' | null;
+  ban_threshold: number | null;
+  banned_at: string | null;
+  ban_reason: string | null;
+  non_receipt_count: number;
+  confirmed_fraud_count: number;
 };
 
-function ticketUserSummaryQuery(url: URL, pagination?: { limit: number; offset: number }) {
+function ticketUserSummaryQuery(url: URL, configuredThreshold: number, pagination?: { limit: number; offset: number }) {
   const search = String(url.searchParams.get('q') || '').trim();
   const normalized = normalizeLookupCode(search);
+  const status = String(url.searchParams.get('status') || '').toUpperCase();
+  const strikes = String(url.searchParams.get('strikes') || '').toUpperCase();
+  const activity = String(url.searchParams.get('activity') || '').toUpperCase();
+  const space = String(url.searchParams.get('space') || '').trim();
+  const from = String(url.searchParams.get('from') || '').trim();
+  const to = String(url.searchParams.get('to') || '').trim();
   const pageClause = pagination ? ` LIMIT ${pagination.limit} OFFSET ${pagination.offset}` : '';
   return {
-    values: [normalized, `%${search}%`],
-    sql: `SELECT u.id AS external_user_id, u.rtales_lookup_code, u.display_name, u.email,
-        u.space_code, u.installation_id,
+    values: [normalized, `%${search}%`, configuredThreshold, status, strikes, activity, space, from, to],
+    sql: `SELECT * FROM (SELECT u.id AS external_user_id, u.rtales_lookup_code,
+        u.rtales_lookup_code_normalized, u.display_name, u.email, u.space_code, u.installation_id,
         COUNT(r.id) AS tickets_submitted,
         SUM(CASE WHEN r.status = 'REWARDED' THEN 1 ELSE 0 END) AS tickets_validated,
         SUM(CASE WHEN r.status <> 'REWARDED' THEN 1 ELSE 0 END) AS tickets_unvalidated,
         COALESCE((SELECT SUM(o.score) FROM user_offenses o
           WHERE o.external_user_id = u.id AND o.active = TRUE), 0) AS strike_points,
         COALESCE(SUM(CASE WHEN r.status = 'REWARDED' THEN r.total_cents ELSE 0 END), 0) AS authorized_total_cents,
-        MAX(r.created_at) AS last_submission_at
+        MAX(r.created_at) AS last_submission_at,
+        b.id AS ban_id, b.status AS ban_status, COALESCE(b.ban_threshold, $3) AS ban_threshold,
+        b.banned_at, b.reason AS ban_reason,
+        COALESCE((SELECT COUNT(*) FROM user_offenses o
+          WHERE o.external_user_id = u.id AND o.active = TRUE AND o.category = 'NOT_A_RECEIPT'), 0) AS non_receipt_count,
+        COALESCE((SELECT COUNT(*) FROM user_offenses o
+          WHERE o.external_user_id = u.id AND o.active = TRUE AND o.category = 'CONFIRMED_FRAUD'), 0) AS confirmed_fraud_count
       FROM receipts r JOIN player_sessions s ON s.id = r.session_id
       JOIN external_users u ON u.id = COALESCE(r.external_user_id, s.external_user_id)
+      LEFT JOIN user_bans b ON b.external_user_id = u.id AND b.status IN ('ACTIVE', 'LIFTING')
       WHERE ($1 = '' OR u.rtales_lookup_code_normalized = $1
         OR u.display_name ILIKE $2 OR COALESCE(u.email, '') ILIKE $2)
       GROUP BY u.id, u.rtales_lookup_code, u.rtales_lookup_code_normalized, u.display_name,
-        u.email, u.space_code, u.installation_id
-      ORDER BY CASE WHEN u.rtales_lookup_code_normalized = $1 THEN 0 ELSE 1 END,
-        last_submission_at DESC, u.id DESC${pageClause}`,
+        u.email, u.space_code, u.installation_id, b.id, b.status, b.ban_threshold, b.banned_at, b.reason
+      ) ticket_user_summary
+      WHERE ($4 = '' OR ($4 = 'ALLOWED' AND ban_status IS NULL)
+        OR ($4 = 'BANNED' AND ban_status = 'ACTIVE') OR ($4 = 'LIFTING' AND ban_status = 'LIFTING'))
+        AND ($5 = '' OR ($5 = 'NONE' AND strike_points = 0) OR ($5 = 'ANY' AND strike_points > 0)
+          OR ($5 = 'NEAR' AND $3 > 0 AND strike_points > 0 AND strike_points < $3 AND strike_points >= $3 - 2))
+        AND ($6 = '' OR ($6 = 'VALIDATED' AND tickets_validated > 0)
+          OR ($6 = 'UNVALIDATED' AND tickets_unvalidated > 0) OR ($6 = 'NO_VALIDATED' AND tickets_validated = 0))
+        AND ($7 = '' OR installation_id ILIKE $7 OR space_code ILIKE $7)
+        AND ($8 = '' OR last_submission_at >= $8) AND ($9 = '' OR last_submission_at < $9 || 'T23:59:59')
+      ORDER BY CASE WHEN rtales_lookup_code_normalized = $1 THEN 0 ELSE 1 END,
+        last_submission_at DESC, external_user_id DESC${pageClause}`,
   };
 }
 
@@ -1599,6 +1636,13 @@ function ticketUserView(row: TicketUserSummaryRow) {
     ticketsValidated: Number(row.tickets_validated),
     ticketsUnvalidated: Number(row.tickets_unvalidated),
     strikePoints: Number(row.strike_points),
+    banThreshold: Number(row.ban_threshold || 0),
+    banId: row.ban_id,
+    banStatus: row.ban_status === 'ACTIVE' ? 'BANNED' : row.ban_status,
+    bannedAt: row.banned_at,
+    banReason: row.ban_reason,
+    nonReceiptCount: Number(row.non_receipt_count),
+    confirmedFraudCount: Number(row.confirmed_fraud_count),
     authorizedTotalCents: Number(row.authorized_total_cents),
     lastSubmissionAt: row.last_submission_at,
   };
@@ -1610,16 +1654,18 @@ async function handleAdminTicketUsers(request: Request, env: Env): Promise<Respo
   const url = new URL(request.url);
   const requestedPage = Math.max(1, Number.parseInt(url.searchParams.get('page') || '1', 10) || 1);
   const pageSize = 50;
-  const baseQuery = ticketUserSummaryQuery(url);
-  const total = await withDatabase(env, async (client) => {
+  const { total, configuredThreshold } = await withDatabase(env, async (client) => {
+    const settings = await loadAppSettings(client);
+    const threshold = numericAppSetting(settings, 'limits.banScoreThreshold');
+    const baseQuery = ticketUserSummaryQuery(url, threshold);
     const result = await client.query<{ total: number }>(
       `SELECT COUNT(*) AS total FROM (${baseQuery.sql}) ticket_users`, baseQuery.values,
     );
-    return Number(result.rows[0]?.total || 0);
+    return { total: Number(result.rows[0]?.total || 0), configuredThreshold: threshold };
   });
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const page = Math.min(requestedPage, totalPages);
-  const query = ticketUserSummaryQuery(url, { limit: pageSize, offset: (page - 1) * pageSize });
+  const query = ticketUserSummaryQuery(url, configuredThreshold, { limit: pageSize, offset: (page - 1) * pageSize });
   const users = await withDatabase(env, async (client) => {
     const result = await client.query<TicketUserSummaryRow>(query.sql, query.values);
     return result.rows;
@@ -1637,17 +1683,21 @@ async function handleAdminTicketUsers(request: Request, env: Env): Promise<Respo
 async function handleAdminTicketUsersCsv(request: Request, env: Env): Promise<Response> {
   const manager = managerIdentity(request, env);
   if (!manager) return error('Acceso de gestor requerido', 401);
-  const query = ticketUserSummaryQuery(new URL(request.url));
   const users = await withDatabase(env, async (client) => {
+    const settings = await loadAppSettings(client);
+    const query = ticketUserSummaryQuery(new URL(request.url), numericAppSetting(settings, 'limits.banScoreThreshold'));
     const result = await client.query<TicketUserSummaryRow>(query.sql, query.values);
     return result.rows;
   });
   const header = ['ID usuario', 'Nombre', 'Correo', 'Espacio', 'Instalación', 'Tickets subidos',
-    'Tickets validados', 'Tickets sin validar', 'Strikes', 'Compras autorizadas EUR', 'Última subida'];
+    'Tickets validados', 'Tickets sin validar', 'Strikes', 'Umbral', 'No-tickets', 'Fraudes confirmados',
+    'Estado', 'Motivo baneo', 'Fecha baneo', 'Compras autorizadas EUR', 'Última subida'];
   const lines = users.map((user) => [
     user.rtales_lookup_code, user.display_name, user.email || '', user.space_code, user.installation_id,
     user.tickets_submitted, user.tickets_validated, user.tickets_unvalidated, user.strike_points,
-    (Number(user.authorized_total_cents) / 100).toFixed(2), user.last_submission_at,
+    user.ban_threshold, user.non_receipt_count, user.confirmed_fraud_count,
+    user.ban_status === 'ACTIVE' ? 'BANEADO' : user.ban_status === 'LIFTING' ? 'DESBLOQUEO EN PROCESO' : 'PERMITIDO',
+    user.ban_reason || '', user.banned_at || '', (Number(user.authorized_total_cents) / 100).toFixed(2), user.last_submission_at,
   ].map(csvCell).join(','));
   return new Response(`\uFEFF${header.map(csvCell).join(',')}\n${lines.join('\n')}`, {
     headers: {
@@ -1655,6 +1705,49 @@ async function handleAdminTicketUsersCsv(request: Request, env: Env): Promise<Re
       'Content-Disposition': `attachment; filename="usuarios-tickets-${new Date().toISOString().slice(0, 10)}.csv"`,
       'Cache-Control': 'no-store',
     },
+  });
+}
+
+async function handleAdminTicketUserDetail(request: Request, env: Env, lookupCode: string): Promise<Response> {
+  const manager = managerIdentity(request, env);
+  if (!manager) return error('Acceso de gestor requerido', 401);
+  const normalized = normalizeLookupCode(lookupCode);
+  const detail = await withDatabase(env, async (client) => {
+    const identity = await client.query<{ id: string; rtales_lookup_code: string }>(
+      'SELECT id, rtales_lookup_code FROM external_users WHERE rtales_lookup_code_normalized = $1 LIMIT 1',
+      [normalized],
+    );
+    const externalUser = identity.rows[0];
+    if (!externalUser) return null;
+    const settings = await loadAppSettings(client);
+    const detailUrl = new URL(request.url);
+    detailUrl.searchParams.set('q', externalUser.rtales_lookup_code);
+    const summaryQuery = ticketUserSummaryQuery(
+      detailUrl, numericAppSetting(settings, 'limits.banScoreThreshold'), { limit: 1, offset: 0 },
+    );
+    const summary = await client.query<TicketUserSummaryRow>(summaryQuery.sql, summaryQuery.values);
+    const offenses = await client.query<{
+      receipt_id: string; receipt_public_id: string; category: UserOffenseCategory; score: number;
+      source: string; created_at: string;
+    }>(
+      `SELECT receipt_id, receipt_public_id, category, score, source, created_at FROM user_offenses
+        WHERE external_user_id = $1 AND active = TRUE ORDER BY created_at DESC`,
+      [externalUser.id],
+    );
+    return { summary: summary.rows[0], offenses: offenses.rows };
+  });
+  if (!detail?.summary) return error('Usuario no encontrado', 404);
+  return json({
+    success: true,
+    user: ticketUserView(detail.summary),
+    offenses: detail.offenses.map((offense) => ({
+      receiptPublicId: offense.receipt_public_id,
+      receiptId: offense.receipt_id,
+      category: offense.category,
+      score: Number(offense.score),
+      source: offense.source,
+      createdAt: offense.created_at,
+    })),
   });
 }
 
@@ -2764,6 +2857,12 @@ async function handleAdminSettings(request: Request, env: Env): Promise<Response
   });
 }
 
+async function handleAdminSession(request: Request, env: Env): Promise<Response> {
+  const current = await authorizedAdmin(request, env);
+  if (!current) return error('Acceso de administrador requerido', 403);
+  return json({ success: true, current: adminUserView(current) });
+}
+
 async function authorizedAdmin(request: Request, env: Env): Promise<AdminUserRow | null> {
   const email = managerIdentity(request, env);
   if (!email) return null;
@@ -2826,22 +2925,31 @@ async function handleAdminUsers(request: Request, env: Env): Promise<Response> {
     });
     return json({ success: true, current: adminUserView(current), users: users.map(adminUserView), accessConfigured, mailConfigured, backofficeUrl });
   }
-  if (current.role !== 'SUPERADMIN') return error('Solo el superadministrador puede crear usuarios', 403);
   const body = await readJson(request);
   const email = normalizeAdminEmail(body.email);
+  const role = normalizeAssignableAdminRole(body.role);
+  if (!canCreateAdminRole(current.role, role)) {
+    return error('No tienes permiso para crear usuarios con este rol', 403);
+  }
+  const existingUser = await withDatabase(env, async (client) => {
+    const result = await client.query<AdminUserRow>('SELECT * FROM admin_users WHERE email = $1 LIMIT 1', [email]);
+    return result.rows[0] || null;
+  });
+  if (existingUser && current.role !== 'SUPERADMIN' && existingUser.role !== 'OPERATOR') {
+    return error('No tienes permiso para modificar este usuario', 403);
+  }
   const created = await withDatabase(env, async (client) => {
-    const existing = await client.query<AdminUserRow>('SELECT * FROM admin_users WHERE email = $1 LIMIT 1', [email]);
-    if (existing.rows[0]) {
+    if (existingUser) {
       const updated = await client.query<AdminUserRow>(
-        `UPDATE admin_users SET active = TRUE, role = 'ADMIN', updated_at = NOW(), created_by = $2
-          WHERE id = $1 RETURNING *`, [existing.rows[0].id, current.email],
+        `UPDATE admin_users SET active = TRUE, role = $3, updated_at = NOW(), created_by = $2
+          WHERE id = $1 RETURNING *`, [existingUser.id, current.email, role],
       );
       return updated.rows[0]!;
     }
     const id = uuid();
     const inserted = await client.query<AdminUserRow>(
       `INSERT INTO admin_users (id, email, role, created_by)
-       VALUES ($1, $2, 'ADMIN', $3) RETURNING *`, [id, email, current.email],
+       VALUES ($1, $2, $3, $4) RETURNING *`, [id, email, role, current.email],
     );
     await client.query(
       `INSERT INTO admin_user_audit_log (id, admin_user_id, action, manager_email)
@@ -2852,7 +2960,7 @@ async function handleAdminUsers(request: Request, env: Env): Promise<Response> {
   const accessSynced = await syncAdminAccessEmails(env, await activeAdminEmails(env));
   let invitationSent = false;
   try {
-    invitationSent = await sendAdminInvitation(env, { email, backofficeUrl, invitedBy: current.email });
+    invitationSent = await sendAdminInvitation(env, { email, role, backofficeUrl, invitedBy: current.email });
   } catch {
     invitationSent = false;
   }
@@ -2862,12 +2970,13 @@ async function handleAdminUsers(request: Request, env: Env): Promise<Response> {
 async function handleAdminUserDelete(request: Request, env: Env, userId: string): Promise<Response> {
   const current = await authorizedAdmin(request, env);
   if (!current) return error('Acceso de administrador requerido', 403);
-  if (current.role !== 'SUPERADMIN') return error('Solo el superadministrador puede eliminar usuarios', 403);
-  const deleted = await withDatabase(env, async (client) => {
+  const deleted = await withDatabase(env, async (client): Promise<AdminUserRow | 'FORBIDDEN' | null> => {
     const result = await client.query<AdminUserRow>('SELECT * FROM admin_users WHERE id = $1 AND active = TRUE LIMIT 1', [userId]);
     const target = result.rows[0];
     if (!target) return null;
-    if (target.id === current.id || target.role === 'SUPERADMIN') throw new Error('SUPERADMIN_DELETE_FORBIDDEN');
+    if (target.id === current.id || !canDeleteAdminRole(current.role, target.role)) {
+      return 'FORBIDDEN';
+    }
     await client.query('UPDATE admin_users SET active = FALSE, updated_at = NOW() WHERE id = $1', [userId]);
     await client.query(
       `INSERT INTO admin_user_audit_log (id, admin_user_id, action, manager_email)
@@ -2875,6 +2984,7 @@ async function handleAdminUserDelete(request: Request, env: Env, userId: string)
     );
     return target;
   });
+  if (deleted === 'FORBIDDEN') return error('No tienes permiso para eliminar este usuario', 403);
   if (!deleted) return error('Administrador no encontrado', 404);
   const accessSynced = await syncAdminAccessEmails(env, await activeAdminEmails(env));
   return json({ success: true, accessSynced });
@@ -3084,8 +3194,12 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       if (url.pathname === '/') return Response.redirect(`${url.origin}/backoffice`, 302);
       const adminAsset = ['/backoffice', '/backoffice.html', '/backoffice.js', '/styles.css', '/favicon.ico'].includes(url.pathname);
       if (!adminAsset && !url.pathname.startsWith('/api/admin/')) return error('Ruta no encontrada', 404);
-      if (url.pathname.startsWith('/api/admin/') && !await authorizedAdmin(request, env)) {
-        return error('Este correo no tiene acceso al backoffice', 403);
+      if (url.pathname.startsWith('/api/admin/')) {
+        const current = await authorizedAdmin(request, env);
+        if (!current) return error('Este correo no tiene acceso al backoffice', 403);
+        if (!adminRouteAllowed(current.role, request.method, url.pathname)) {
+          return error('Tu rol no permite realizar esta acción', 403);
+        }
       }
     } else if (url.pathname.startsWith('/api/admin/')) {
       return error('Ruta no encontrada', 404);
@@ -3108,10 +3222,15 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'GET' && receiptImageMatch?.[1]) return await handleReceiptImage(request, env, receiptImageMatch[1]);
     const confirmMatch = url.pathname.match(/^\/api\/receipts\/([^/]+)\/confirm$/);
     if (request.method === 'POST' && confirmMatch?.[1]) return await handleConfirm(request, env, confirmMatch[1]);
+    if (request.method === 'GET' && url.pathname === '/api/admin/session') return await handleAdminSession(request, env);
     if (request.method === 'GET' && url.pathname === '/api/admin/receipts') return await handleAdminList(request, env);
     if (request.method === 'GET' && url.pathname === '/api/admin/receipts.csv') return await handleAdminCsv(request, env);
     if (request.method === 'GET' && url.pathname === '/api/admin/ticket-users.csv') return await handleAdminTicketUsersCsv(request, env);
     if (request.method === 'GET' && url.pathname === '/api/admin/ticket-users') return await handleAdminTicketUsers(request, env);
+    const adminTicketUserMatch = url.pathname.match(/^\/api\/admin\/ticket-users\/([^/]+)$/);
+    if (request.method === 'GET' && adminTicketUserMatch?.[1]) {
+      return await handleAdminTicketUserDetail(request, env, decodeURIComponent(adminTicketUserMatch[1]));
+    }
     const adminReceiptMatch = url.pathname.match(/^\/api\/admin\/receipts\/([^/]+)$/);
     if (request.method === 'GET' && adminReceiptMatch?.[1]) return await handleAdminReceipt(request, env, adminReceiptMatch[1]);
     if (request.method === 'DELETE' && adminReceiptMatch?.[1]) return await handleAdminReceiptDelete(request, env, adminReceiptMatch[1]);
@@ -3251,7 +3370,7 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       APP_SETTING_PERIOD_INVALID: 'La fecha de inicio debe ser anterior a la fecha de fin',
       APP_SETTING_INTEGER_INVALID: 'El límite debe ser un número entero dentro del rango permitido',
       ADMIN_EMAIL_INVALID: 'Introduce un correo electrónico válido',
-      SUPERADMIN_DELETE_FORBIDDEN: 'El superadministrador actual no se puede eliminar',
+      ADMIN_ROLE_INVALID: 'Selecciona un rol válido para el usuario',
     };
     return error(validationErrors[message] || 'No se pudo completar la operación', validationErrors[message] ? 400 : 500);
   }

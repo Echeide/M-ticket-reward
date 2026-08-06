@@ -9,14 +9,13 @@
   <body class="backoffice-body">
     <header class="admin-header">
       <div><p class="eyebrow">Backoffice</p><h1>Gestión de tickets</h1></div>
-      <div class="admin-session"><span id="manager-email"></span><a class="secondary-button" href="/cdn-cgi/access/logout">Cerrar sesión</a></div>
+      <div class="admin-session"><span><strong id="manager-email"></strong><small id="manager-role"></small></span><a class="secondary-button" href="/cdn-cgi/access/logout">Cerrar sesión</a></div>
     </header>
     <nav class="admin-tabs" aria-label="Áreas de gestión">
       <button class="active" data-admin-view="receipts">Revisión antifraude</button>
-      <button data-admin-view="users">Usuarios</button>
-      <button data-admin-view="bans">Baneos</button>
+      <button data-admin-view="users" data-operator-hidden>Usuarios</button>
       <button data-admin-view="stores">Comercios autorizados</button>
-      <button data-admin-view="tiers">Baremos de puntos</button>
+      <button data-admin-view="tiers" data-operator-hidden>Baremos de puntos</button>
       <button data-admin-view="settings">Ajustes</button>
     </nav>
     <div id="admin-notice" class="admin-notice" role="status" aria-live="polite"></div>
@@ -47,30 +46,22 @@
       <section class="filters-bar" aria-label="Búsqueda de usuarios">
         <form id="ticket-user-search" class="filters-inline">
           <label class="filter-search"><span class="visually-hidden">Buscar usuario</span><input name="q" placeholder="Buscar por ID de usuario, nombre o correo" /></label>
+          <button class="secondary-button button-with-icon" id="open-ticket-user-filters" type="button">
+            <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M7 12h10M10 17h4"></path></svg>
+            <span>Filtros</span><span class="filter-count" id="ticket-user-filter-count" hidden>0</span>
+          </button>
           <button class="primary-button" type="submit">Buscar</button>
           <button class="text-button" id="export-ticket-users" type="button">Exportar CSV</button>
         </form>
       </section>
       <section class="ticket-users-card">
-        <div class="ticket-user-list-head"><span>Usuario</span><span>Subidos</span><span>Validados</span><span>Sin validar</span><span>Strikes</span><span>Compras autorizadas</span></div>
+        <div class="ticket-user-list-head"><span>Usuario</span><span>Subidos</span><span>Validados</span><span>Sin validar</span><span>Strikes</span><span>Compras autorizadas</span><span>Estado</span><span></span></div>
         <div id="ticket-user-list"></div>
         <nav class="receipt-pagination" id="ticket-user-pagination" aria-label="Paginación de usuarios" hidden>
           <button class="secondary-button" id="previous-ticket-users" type="button">Anterior</button>
           <span id="ticket-user-page-info">Página 1 de 1</span>
           <button class="secondary-button" id="next-ticket-users" type="button">Siguiente</button>
         </nav>
-      </section>
-    </main>
-    <main id="bans-view" class="bans-layout admin-view">
-      <section class="filters-bar" aria-label="Búsqueda de usuarios baneados">
-        <form id="ban-search" class="filters-inline">
-          <label class="filter-search"><span class="visually-hidden">Código o nombre del usuario</span><input name="q" placeholder="Buscar por código o nombre del usuario" /></label>
-          <button class="primary-button" type="submit">Buscar</button>
-        </form>
-      </section>
-      <section class="store-list-card">
-        <div class="ban-list-head"><span>Usuario</span><span>Contexto</span><span>Infracciones</span><span>Estado</span><span></span></div>
-        <div id="ban-list"></div>
       </section>
     </main>
     <main id="tiers-view" class="tiers-layout admin-view">
@@ -89,6 +80,7 @@
         <div><p class="eyebrow">Catálogo OCR</p><h2>Comercios autorizados</h2><p>Solo los comercios activos pueden validar tickets y conceder puntos.</p></div>
         <button class="primary-button" id="new-store" type="button">Añadir comercio</button>
       </section>
+      <p class="read-only-notice" id="stores-read-only" hidden>Vista de consulta: el rol operador no puede modificar los comercios.</p>
       <section class="stores-summary" aria-label="Resumen de comercios">
         <div><strong id="active-store-count">0</strong><span>Activos</span></div>
         <div><strong id="inactive-store-count">0</strong><span>Inactivos</span></div>
@@ -103,6 +95,7 @@
       <section class="stores-heading">
         <div><p class="eyebrow">Configuración</p><h2>Ajustes</h2><p>Gestiona el periodo de campaña, los textos públicos y los accesos al backoffice.</p></div>
       </section>
+      <p class="read-only-notice" id="settings-read-only" hidden>Vista de consulta: el rol operador no puede modificar los ajustes.</p>
       <section class="settings-card settings-period-card">
         <div class="settings-section-heading"><p class="eyebrow">Campaña</p><h3>Periodo de validación</h3><p>Horario de Canarias. Los límites pueden dejarse vacíos.</p></div>
         <form id="validation-period-form" class="period-form">
@@ -150,8 +143,9 @@
         <div id="access-sync-warning" class="access-sync-warning" hidden>La sincronización automática con la lista de Cloudflare Access no está configurada. Podrás copiar el enlace, pero el correo debe estar permitido también en Access.</div>
         <div id="invite-mail-warning" class="access-sync-warning" hidden>El envío automático de invitaciones por Mailjet no está configurado.</div>
         <form id="admin-user-form" class="admin-user-form">
-          <label>Correo del nuevo administrador<input id="admin-user-email" type="email" autocomplete="off" placeholder="persona@empresa.com" required /></label>
-          <button class="primary-button" type="submit">Añadir administrador</button>
+          <label>Correo del nuevo usuario<input id="admin-user-email" type="email" autocomplete="off" placeholder="persona@empresa.com" required /></label>
+          <label>Rol<select id="admin-user-role" required><option value="OPERATOR">Operador</option><option value="ADMIN">Administrador</option></select></label>
+          <button class="primary-button" type="submit">Añadir usuario</button>
           <p id="admin-user-error" class="form-error" role="alert"></p>
         </form>
         <div id="admin-user-list" class="admin-user-list"></div>
@@ -283,6 +277,26 @@
           <label class="filter-toggle"><input name="attention" value="1" type="checkbox" form="filters" /><span>Mostrar solo tickets con incidencias</span></label>
         </div>
         <div class="dialog-actions"><button class="secondary-button" id="clear-filters" type="button">Limpiar filtros</button><button class="primary-button" type="submit" form="filters">Aplicar filtros</button></div>
+      </div>
+    </dialog>
+    <dialog id="ticket-user-filters-dialog" class="filters-dialog">
+      <div class="filter-dialog-content">
+        <div class="dialog-heading"><div><p class="eyebrow">Usuarios</p><h2>Filtrar usuarios</h2></div><button class="icon-button" id="close-ticket-user-filters" type="button" aria-label="Cerrar">×</button></div>
+        <div class="filter-dialog-grid">
+          <label>Estado<select name="status" form="ticket-user-search"><option value="">Todos</option><option value="ALLOWED">Permitidos</option><option value="BANNED">Baneados</option><option value="LIFTING">Desbaneo en proceso</option></select></label>
+          <label>Strikes<select name="strikes" form="ticket-user-search"><option value="">Cualquier puntuación</option><option value="NONE">Sin strikes</option><option value="ANY">Con strikes</option><option value="NEAR">Próximos al baneo</option></select></label>
+          <label>Actividad<select name="activity" form="ticket-user-search"><option value="">Cualquier actividad</option><option value="VALIDATED">Con tickets validados</option><option value="UNVALIDATED">Con tickets sin validar</option><option value="NO_VALIDATED">Sin tickets validados</option></select></label>
+          <label>Espacio o instalación<input name="space" form="ticket-user-search" placeholder="GCX26" /></label>
+          <label>Última subida desde<input name="from" type="date" form="ticket-user-search" /></label>
+          <label>Última subida hasta<input name="to" type="date" form="ticket-user-search" /></label>
+        </div>
+        <div class="dialog-actions"><button class="secondary-button" id="clear-ticket-user-filters" type="button">Limpiar filtros</button><button class="primary-button" type="submit" form="ticket-user-search">Aplicar filtros</button></div>
+      </div>
+    </dialog>
+    <dialog id="ticket-user-detail-dialog" class="ticket-user-detail-dialog">
+      <div class="ticket-user-detail-content">
+        <div class="dialog-heading"><div><p class="eyebrow">Actividad y fraude</p><h2 id="ticket-user-detail-title">Usuario</h2></div><button class="icon-button" id="close-ticket-user-detail" type="button" aria-label="Cerrar">×</button></div>
+        <div id="ticket-user-detail-body"></div>
       </div>
     </dialog>
     <script type="module" src="/backoffice.js"></script>

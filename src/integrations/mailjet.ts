@@ -15,10 +15,11 @@ export function adminInvitationMailConfigured(env: Env): boolean {
 
 export async function sendAdminInvitation(
   env: Env,
-  input: { email: string; backofficeUrl: string; invitedBy: string },
+  input: { email: string; role: 'ADMIN' | 'OPERATOR'; backofficeUrl: string; invitedBy: string },
 ): Promise<boolean> {
   if (!adminInvitationMailConfigured(env)) return false;
   const safeUrl = escapeHtml(input.backofficeUrl);
+  const roleName = input.role === 'OPERATOR' ? 'operador' : 'administrador';
   const response = await fetch('https://api.mailjet.com/v3.1/send', {
     method: 'POST',
     headers: {
@@ -30,8 +31,8 @@ export async function sendAdminInvitation(
         From: { Email: env.MAILJET_FROM_EMAIL, Name: env.MAILJET_FROM_NAME || 'Rtales' },
         To: [{ Email: input.email }],
         Subject: 'Acceso al backoffice de tickets',
-        TextPart: `Has sido invitado a administrar el backoffice de tickets. Accede desde: ${input.backofficeUrl}\n\nCloudflare Access verificará tu correo antes de permitir el acceso.`,
-        HTMLPart: `<p>Has sido invitado a administrar el backoffice de tickets.</p><p><a href="${safeUrl}">Acceder al backoffice</a></p><p>Cloudflare Access verificará tu correo antes de permitir el acceso.</p>`,
+        TextPart: `Has sido invitado al backoffice de tickets con el rol de ${roleName}. Accede desde: ${input.backofficeUrl}\n\nCloudflare Access verificará tu correo antes de permitir el acceso.`,
+        HTMLPart: `<p>Has sido invitado al backoffice de tickets con el rol de <strong>${roleName}</strong>.</p><p><a href="${safeUrl}">Acceder al backoffice</a></p><p>Cloudflare Access verificará tu correo antes de permitir el acceso.</p>`,
         CustomID: 'admin-backoffice-invitation',
       }],
     }),

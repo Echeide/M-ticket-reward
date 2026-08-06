@@ -22,7 +22,7 @@ export async function syncAdminAccessEmails(env: Env, emails: string[]): Promise
       body: JSON.stringify({
         name: env.CLOUDFLARE_ACCESS_EMAIL_LIST_NAME || 'Ticket rewards administrators',
         description: 'Managed by the ticket rewards backoffice',
-        items: emails.map((value) => ({ value, description: 'Backoffice administrator' })),
+        items: emails.map((value) => ({ value, description: 'Backoffice user' })),
       }),
     },
   );

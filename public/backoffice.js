@@ -1,5 +1,6 @@
 const state = {
-  rows: [], stores: [], tiers: [], bans: [], ticketUsers: [], settings: [], adminUsers: [], trainingSamples: [], trainingProfile: null, selected: null,
+  rows: [], stores: [], tiers: [], ticketUsers: [], settings: [], adminUsers: [], trainingSamples: [], trainingProfile: null, selected: null,
+  currentAdmin: null,
   pagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
   ticketUserPagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
   reviewing: false,
@@ -31,6 +32,11 @@ const reviewLabels = {
   CLEARED: 'Resuelto',
   FRAUD: 'Marcado como fraude',
 };
+const adminRoleLabels = {
+  SUPERADMIN: 'Superadministrador',
+  ADMIN: 'Administrador',
+  OPERATOR: 'Operador',
+};
 const reasonLabels = {
   OCR_PROCESSING_FAILED: 'La lectura automática ha fallado y necesita revisión.',
   OCR_VERIFICATION_REQUIRED: 'El OCR no ha podido verificar todos los datos. No se ha rechazado automáticamente.',
@@ -59,6 +65,10 @@ function receiptStatusLabel(receipt) {
   if (receipt.verificationRequired) return 'Lectura pendiente de revisión';
   return statusLabels[receipt.status] || receipt.status;
 }
+
+function isOperator() {
+  return state.currentAdmin?.role === 'OPERATOR';
+}
 if (!state.token && location.hostname === 'localhost') {
   state.token = prompt('Token de gestor local') || '';
   if (state.token) sessionStorage.setItem('admin-token', state.token);
@@ -73,6 +83,30 @@ async function request(path, options = {}) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || 'Error de backoffice');
   return payload;
+}
+
+function applyRolePermissions() {
+  const operator = isOperator();
+  document.body.dataset.adminRole = state.currentAdmin?.role || '';
+  document.querySelector('#manager-email').textContent = state.currentAdmin?.email || '';
+  document.querySelector('#manager-role').textContent = adminRoleLabels[state.currentAdmin?.role] || '';
+  document.querySelectorAll('[data-operator-hidden]').forEach((element) => { element.hidden = operator; });
+  document.querySelector('#new-store').hidden = operator;
+  document.querySelector('#stores-read-only').hidden = !operator;
+  document.querySelector('#settings-read-only').hidden = !operator;
+  document.querySelector('.admin-users-card').hidden = operator;
+  document.querySelectorAll('#settings-view input, #settings-view textarea').forEach((control) => {
+    control.disabled = operator;
+  });
+  document.querySelectorAll('#settings-view form button[type="submit"]').forEach((button) => {
+    button.hidden = operator;
+  });
+}
+
+async function loadAdminSession() {
+  const payload = await request('/api/admin/session');
+  state.currentAdmin = payload.current;
+  applyRolePermissions();
 }
 
 function closeDialogOnBackdrop(dialog, beforeClose) {
@@ -162,7 +196,7 @@ async function loadStores() {
       <span class="alias-list">${store.aliases.length ? store.aliases.map((alias) => `<small>${escapeHtml(alias)}</small>`).join('') : '<small>Sin alias</small>'}</span>
       <strong>${store.receiptCount}</strong>
       <span class="status-chip ${store.active ? 'rewarded' : 'duplicate'}">${store.active ? 'ACTIVO' : 'INACTIVO'}</span>
-      <button class="secondary-button edit-store" data-id="${store.id}" type="button">Editar</button>
+      <button class="secondary-button edit-store" data-id="${store.id}" type="button">${isOperator() ? 'Consultar' : 'Editar'}</button>
     </article>`).join('') || '<p class="empty-state">Todavía no hay comercios.</p>';
   document.querySelectorAll('.edit-store').forEach((button) => button.addEventListener('click', () => openStoreDialog(button.dataset.id)));
 }
@@ -198,29 +232,6 @@ async function loadTiers() {
   document.querySelectorAll('.edit-tier').forEach((button) => button.addEventListener('click', () => openTierDialog(button.dataset.id)));
 }
 
-async function loadBans() {
-  const query = new URLSearchParams(new FormData(document.querySelector('#ban-search')));
-  const payload = await request(`/api/admin/bans?${query}`);
-  state.bans = payload.bans;
-  document.querySelector('#manager-email').textContent = payload.manager || '';
-  document.querySelector('#ban-list').innerHTML = state.bans.map((ban) => `
-    <article class="ban-row">
-      <span><strong class="ban-lookup-code">${escapeHtml(ban.lookupCode)}</strong><small>${escapeHtml(ban.displayName || 'Sin nombre')}${ban.email ? ` · ${escapeHtml(ban.email)}` : ''}</small></span>
-      <span><strong>${escapeHtml(ban.spaceCode || '—')}</strong><small>${escapeHtml(ban.installationId || '—')}</small></span>
-      <span><strong>${ban.offenseScore}/${ban.banThreshold || '—'} puntos</strong><small>${ban.offenseCount} registro(s)</small></span>
-      <span class="status-chip ${ban.status === 'LIFTING' ? 'reward_pending' : 'revoked'}">${ban.status === 'LIFTING' ? 'Limpiando' : 'Baneado'}</span>
-      <button class="secondary-button lift-ban" data-id="${escapeHtml(ban.id)}" type="button" ${ban.status === 'LIFTING' ? 'disabled' : ''}>Desbanear</button>
-    </article>`).join('') || '<p class="empty-state">No hay usuarios baneados.</p>';
-  document.querySelectorAll('.lift-ban').forEach((button) => button.addEventListener('click', () => liftBan(button.dataset.id)));
-}
-
-async function liftBan(id) {
-  if (!confirm('Se eliminarán las imágenes infractoras. Si hay puntos concedidos, primero se anularán. ¿Desbanear al usuario?')) return;
-  const result = await request(`/api/admin/bans/${id}/lift`, { method: 'POST' });
-  await loadBans();
-  showNotice(result.completed ? 'Usuario desbaneado e imágenes eliminadas.' : 'La anulación y limpieza están en proceso.');
-}
-
 function ticketUserParams(page = state.ticketUserPagination.page) {
   const params = new URLSearchParams(new FormData(document.querySelector('#ticket-user-search')));
   for (const [key, value] of [...params]) if (!value) params.delete(key);
@@ -232,20 +243,73 @@ async function loadTicketUsers(page = state.ticketUserPagination.page) {
   const payload = await request(`/api/admin/ticket-users?${ticketUserParams(page)}`);
   state.ticketUsers = payload.users;
   state.ticketUserPagination = payload.pagination;
-  document.querySelector('#ticket-user-list').innerHTML = state.ticketUsers.map((user) => `
+  document.querySelector('#ticket-user-list').innerHTML = state.ticketUsers.map((user) => {
+    const status = user.banStatus === 'BANNED' ? 'Baneado' : user.banStatus === 'LIFTING' ? 'Limpiando' : 'Permitido';
+    const statusClass = user.banStatus === 'BANNED' ? 'revoked' : user.banStatus === 'LIFTING' ? 'reward_pending' : 'rewarded';
+    return `
     <article class="ticket-user-row">
       <span><strong class="ban-lookup-code">${escapeHtml(user.lookupCode)}</strong><small>${escapeHtml(user.displayName || 'Sin nombre')}${user.email ? ` · ${escapeHtml(user.email)}` : ''}</small><small>${escapeHtml(user.spaceCode || '—')} · ${escapeHtml(user.installationId || '—')}</small></span>
       <strong>${user.ticketsSubmitted}</strong>
       <strong class="validated-count">${user.ticketsValidated}</strong>
       <strong>${user.ticketsUnvalidated}</strong>
-      <strong class="${user.strikePoints ? 'strike-count' : ''}">${user.strikePoints}</strong>
+      <strong class="${user.strikePoints ? 'strike-count' : ''}">${user.strikePoints}/${user.banThreshold || '—'}</strong>
       <strong>${formatMoney(user.authorizedTotalCents)}</strong>
-    </article>`).join('') || '<p class="empty-state">No hay usuarios con tickets para esta búsqueda.</p>';
+      <span class="status-chip ${statusClass}">${status}</span>
+      <span class="ticket-user-actions"><button class="secondary-button view-ticket-user" data-code="${escapeHtml(user.lookupCode)}" type="button">Ver</button>${user.banStatus === 'BANNED' ? `<button class="danger-button lift-ticket-user" data-id="${escapeHtml(user.banId)}" type="button">Desbanear</button>` : ''}</span>
+    </article>`;
+  }).join('') || '<p class="empty-state">No hay usuarios con tickets para esta búsqueda.</p>';
+  document.querySelectorAll('.view-ticket-user').forEach((button) => button.addEventListener('click', () => openTicketUserDetail(button.dataset.code)));
+  document.querySelectorAll('.lift-ticket-user').forEach((button) => button.addEventListener('click', () => liftTicketUserBan(button.dataset.id)));
   const pagination = state.ticketUserPagination;
   document.querySelector('#ticket-user-page-info').textContent = `Página ${pagination.page} de ${pagination.totalPages}`;
   document.querySelector('#previous-ticket-users').disabled = !pagination.hasPrevious;
   document.querySelector('#next-ticket-users').disabled = !pagination.hasNext;
   document.querySelector('#ticket-user-pagination').hidden = pagination.totalPages <= 1;
+}
+
+async function liftTicketUserBan(id) {
+  if (!confirm('Se eliminarán las imágenes infractoras. Si hay puntos concedidos, primero se anularán. ¿Desbanear al usuario?')) return;
+  const result = await request(`/api/admin/bans/${id}/lift`, { method: 'POST' });
+  document.querySelector('#ticket-user-detail-dialog').close();
+  await loadTicketUsers();
+  showNotice(result.completed ? 'Usuario desbaneado e imágenes eliminadas.' : 'La anulación y limpieza están en proceso.');
+}
+
+async function openTicketUserDetail(lookupCode) {
+  const dialog = document.querySelector('#ticket-user-detail-dialog');
+  const body = document.querySelector('#ticket-user-detail-body');
+  document.querySelector('#ticket-user-detail-title').textContent = lookupCode;
+  body.innerHTML = '<p class="empty-state">Cargando…</p>';
+  dialog.showModal();
+  try {
+    const payload = await request(`/api/admin/ticket-users/${encodeURIComponent(lookupCode)}`);
+    const user = payload.user;
+    const status = user.banStatus === 'BANNED' ? 'Baneado' : user.banStatus === 'LIFTING' ? 'Desbaneo en proceso' : 'Permitido';
+    body.innerHTML = `<div class="ticket-user-detail-summary">
+      <div><span>Nombre</span><strong>${escapeHtml(user.displayName || 'Sin nombre')}</strong><small>${escapeHtml(user.email || 'Correo no compartido')}</small></div>
+      <div><span>Contexto</span><strong>${escapeHtml(user.spaceCode || '—')}</strong><small>${escapeHtml(user.installationId || '—')}</small></div>
+      <div><span>Estado</span><strong>${status}</strong><small>${user.strikePoints}/${user.banThreshold || '—'} puntos</small></div>
+      <div><span>Actividad</span><strong>${user.ticketsValidated} validados</strong><small>${user.ticketsSubmitted} subidos · ${user.ticketsUnvalidated} sin validar</small></div>
+      <div><span>Compras autorizadas</span><strong>${formatMoney(user.authorizedTotalCents)}</strong></div>
+    </div>
+    <section class="ticket-user-offenses"><h3>Infracciones activas</h3>
+      <div class="offense-summary"><span>No-tickets: <strong>${user.nonReceiptCount}</strong></span><span>Fraudes confirmados: <strong>${user.confirmedFraudCount}</strong></span></div>
+      ${payload.offenses.length ? payload.offenses.map((offense) => `<article><span><strong>${offense.category === 'CONFIRMED_FRAUD' ? 'Fraude confirmado' : 'Imagen no-ticket'}</strong><small><button class="text-button open-offense-ticket" data-id="${escapeHtml(offense.receiptId)}" type="button">${escapeHtml(offense.receiptPublicId)}</button> · ${escapeHtml(new Date(offense.createdAt).toLocaleString('es-ES'))}</small></span><b>+${offense.score}</b></article>`).join('') : '<p class="empty-state">No tiene infracciones activas.</p>'}
+    </section>
+    ${user.banStatus === 'BANNED' ? `<div class="dialog-actions"><button class="danger-button" id="detail-lift-ticket-user" type="button">Desbanear usuario</button></div>` : ''}`;
+    document.querySelector('#detail-lift-ticket-user')?.addEventListener('click', () => liftTicketUserBan(user.banId));
+    document.querySelectorAll('.open-offense-ticket').forEach((button) => button.addEventListener('click', () => openOffenseTicket(button.dataset.id)));
+  } catch (error) {
+    body.innerHTML = `<p class="form-error">${escapeHtml(error instanceof Error ? error.message : 'No se pudo cargar el usuario')}</p>`;
+  }
+}
+
+async function openOffenseTicket(receiptId) {
+  document.querySelector('#ticket-user-detail-dialog').close();
+  const receiptsTab = document.querySelector('[data-admin-view="receipts"]');
+  document.querySelectorAll('[data-admin-view]').forEach((item) => item.classList.toggle('active', item === receiptsTab));
+  document.querySelectorAll('.admin-view').forEach((item) => item.classList.toggle('active', item.id === 'receipts-view'));
+  await select(receiptId);
 }
 
 async function exportTicketUsers() {
@@ -399,13 +463,17 @@ async function saveParticipationLimits(event) {
 }
 
 function renderAdminUsers(current, backofficeUrl) {
-  const superadmin = current.role === 'SUPERADMIN';
-  document.querySelector('#admin-user-form').hidden = !superadmin;
+  const canCreateUsers = ['SUPERADMIN', 'ADMIN'].includes(current.role);
+  const roleSelect = document.querySelector('#admin-user-role');
+  document.querySelector('#admin-user-form').hidden = !canCreateUsers;
+  roleSelect.querySelector('[value="ADMIN"]').hidden = current.role !== 'SUPERADMIN';
+  if (current.role !== 'SUPERADMIN') roleSelect.value = 'OPERATOR';
   document.querySelector('#admin-user-list').innerHTML = state.adminUsers.map((user) => `
     <article class="admin-user-row">
-      <span><strong>${escapeHtml(user.email)}</strong><small>${user.role === 'SUPERADMIN' ? 'Superadministrador' : 'Administrador'}</small></span>
+      <span><strong>${escapeHtml(user.email)}</strong><small>${escapeHtml(adminRoleLabels[user.role] || user.role)}</small></span>
       <button class="secondary-button copy-admin-link" data-url="${escapeHtml(backofficeUrl)}" type="button">Copiar enlace</button>
-      ${superadmin && user.role !== 'SUPERADMIN' ? `<button class="danger-button delete-admin-user" data-id="${escapeHtml(user.id)}" type="button">Eliminar</button>` : ''}
+      ${(current.role === 'SUPERADMIN' && user.role !== 'SUPERADMIN') || (current.role === 'ADMIN' && user.role === 'OPERATOR')
+        ? `<button class="danger-button delete-admin-user" data-id="${escapeHtml(user.id)}" type="button">Eliminar</button>` : ''}
     </article>`).join('');
   document.querySelectorAll('.copy-admin-link').forEach((button) => button.addEventListener('click', async () => {
     await navigator.clipboard.writeText(button.dataset.url);
@@ -429,19 +497,22 @@ async function saveAdminUser(event) {
   errorNode.textContent = '';
   try {
     const payload = await request('/api/admin/users', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: input.value }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        email: input.value,
+        role: document.querySelector('#admin-user-role').value,
+      }),
     });
     input.value = '';
     await loadAdminUsers();
     await navigator.clipboard.writeText(payload.backofficeUrl).catch(() => undefined);
     showNotice(payload.invitationSent
-      ? 'Administrador añadido; invitación enviada por correo.'
-      : 'Administrador añadido, pero no se pudo enviar la invitación; enlace copiado.');
-  } catch (error) { errorNode.textContent = error instanceof Error ? error.message : 'No se pudo añadir el administrador'; }
+      ? 'Usuario añadido; invitación enviada por correo.'
+      : 'Usuario añadido, pero no se pudo enviar la invitación; enlace copiado.');
+  } catch (error) { errorNode.textContent = error instanceof Error ? error.message : 'No se pudo añadir el usuario'; }
 }
 
 async function deleteAdminUser(id) {
-  if (!confirm('¿Eliminar el acceso de este administrador?')) return;
+  if (!confirm('¿Eliminar el acceso de este usuario?')) return;
   await request(`/api/admin/users/${id}`, { method: 'DELETE' });
   await loadAdminUsers();
   showNotice('Acceso eliminado.');
@@ -524,6 +595,7 @@ async function saveTier(event) {
 
 function openStoreDialog(id = '') {
   const store = state.stores.find((item) => item.id === id);
+  const readOnly = isOperator();
   const form = document.querySelector('#store-form');
   form.reset();
   form.elements.id.value = store?.id || '';
@@ -540,8 +612,18 @@ function openStoreDialog(id = '') {
   document.querySelector('#training-tab-count').textContent = '0';
   document.querySelector('#store-training-tab').disabled = !store;
   setStorePanel('details');
-  document.querySelector('#store-dialog-title').textContent = store ? 'Editar comercio' : 'Añadir comercio';
+  document.querySelector('#store-dialog-title').textContent = readOnly ? 'Consultar comercio' : store ? 'Editar comercio' : 'Añadir comercio';
   document.querySelector('#store-form-error').textContent = '';
+  form.querySelectorAll('input:not([type="hidden"]), textarea, select').forEach((control) => {
+    control.disabled = readOnly;
+  });
+  document.querySelector('#store-details-actions button[type="submit"]').hidden = readOnly;
+  document.querySelector('#cancel-store').textContent = readOnly ? 'Cerrar' : 'Cancelar';
+  document.querySelector('.training-add-options').hidden = readOnly;
+  document.querySelector('#training-drafts').hidden = readOnly;
+  document.querySelector('#evaluate-all-training').hidden = readOnly;
+  document.querySelector('#generate-ocr-profile').hidden = readOnly;
+  document.querySelector('#save-ocr-profile').hidden = readOnly;
   document.querySelector('#store-dialog').showModal();
 }
 
@@ -718,10 +800,10 @@ function renderTrainingSamples() {
         ${sample.notes ? `<small>${escapeHtml(sample.notes)}</small>` : ''}
         ${trainingEvaluationDetails(sample.evaluation)}
       </div>
-      <div class="training-actions">
+      ${isOperator() ? '' : `<div class="training-actions">
         <button class="secondary-button evaluate-training" type="button" data-id="${escapeHtml(sample.id)}">Evaluar</button>
         <button class="text-button delete-training" type="button" data-id="${escapeHtml(sample.id)}">Eliminar</button>
-      </div>
+      </div>`}
     </article>`).join('') || '<p class="empty-state">Todavía no hay tickets de entrenamiento para este comercio.</p>';
   document.querySelectorAll('.evaluate-training').forEach((button) => button.addEventListener('click', () => evaluateTrainingSample(button.dataset.id, button)));
   document.querySelectorAll('.delete-training').forEach((button) => button.addEventListener('click', () => deleteTrainingSample(button.dataset.id)));
@@ -1062,12 +1144,12 @@ async function select(id, suppliedReceipt = null) {
   panel.className = 'review-panel';
   panel.innerHTML = `
     <div class="ticket-image-wrap">
-      <button class="image-delete-button" id="delete-ticket" type="button"
+      ${isOperator() ? '' : `<button class="image-delete-button" id="delete-ticket" type="button"
         aria-label="Eliminar ticket" title="Eliminar ticket">
         <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
           <path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="m19 6-1 14H6L5 6"></path><path d="M10 11v5M14 11v5"></path>
         </svg>
-      </button>
+      </button>`}
       <button class="image-reprocess-button" id="reprocess-ticket" type="button"
         aria-label="Volver a comprobar el ticket" title="${reprocessable ? 'Volver a comprobar el ticket' : 'No disponible para tickets con puntos asignados o duplicados'}"
         ${reprocessable ? '' : 'disabled'}>
@@ -1303,17 +1385,35 @@ document.querySelectorAll('[data-admin-view]').forEach((button) => button.addEve
   document.querySelectorAll('.admin-view').forEach((item) => item.classList.toggle('active', item.id === `${view}-view`));
   if (view === 'stores') await loadStores().catch((error) => alert(error.message));
   if (view === 'tiers') await loadTiers().catch((error) => alert(error.message));
-  if (view === 'bans') await loadBans().catch((error) => alert(error.message));
   if (view === 'users') await loadTicketUsers(1).catch((error) => alert(error.message));
-  if (view === 'settings') await Promise.all([loadSettings(), loadAdminUsers()]).catch((error) => alert(error.message));
+  if (view === 'settings') {
+    const loaders = [loadSettings()];
+    if (!isOperator()) loaders.push(loadAdminUsers());
+    await Promise.all(loaders).catch((error) => alert(error.message));
+  }
 }));
 document.querySelector('#new-store').addEventListener('click', () => openStoreDialog());
-document.querySelector('#ban-search').addEventListener('submit', (event) => {
-  event.preventDefault();
-  loadBans().catch((error) => alert(error.message));
-});
 document.querySelector('#ticket-user-search').addEventListener('submit', (event) => {
   event.preventDefault();
+  document.querySelector('#ticket-user-filters-dialog').close();
+  updateTicketUserFilterCount();
+  loadTicketUsers(1).catch((error) => alert(error.message));
+});
+function updateTicketUserFilterCount() {
+  const params = ticketUserParams(1);
+  params.delete('q');
+  params.delete('page');
+  const count = [...params].length;
+  const badge = document.querySelector('#ticket-user-filter-count');
+  badge.textContent = count;
+  badge.hidden = count === 0;
+}
+document.querySelector('#open-ticket-user-filters').addEventListener('click', () => document.querySelector('#ticket-user-filters-dialog').showModal());
+document.querySelector('#close-ticket-user-filters').addEventListener('click', () => document.querySelector('#ticket-user-filters-dialog').close());
+document.querySelector('#clear-ticket-user-filters').addEventListener('click', () => {
+  document.querySelector('#ticket-user-search').reset();
+  updateTicketUserFilterCount();
+  document.querySelector('#ticket-user-filters-dialog').close();
   loadTicketUsers(1).catch((error) => alert(error.message));
 });
 document.querySelector('#export-ticket-users').addEventListener('click', exportTicketUsers);
@@ -1323,6 +1423,7 @@ document.querySelector('#previous-ticket-users').addEventListener('click', () =>
 document.querySelector('#next-ticket-users').addEventListener('click', () => {
   if (state.ticketUserPagination.hasNext) loadTicketUsers(state.ticketUserPagination.page + 1).catch((error) => alert(error.message));
 });
+document.querySelector('#close-ticket-user-detail').addEventListener('click', () => document.querySelector('#ticket-user-detail-dialog').close());
 document.querySelector('#store-form').addEventListener('submit', saveStore);
 document.querySelectorAll('[data-store-panel]').forEach((button) => button.addEventListener('click', async () => {
   if (button.disabled) return;
@@ -1375,6 +1476,8 @@ document.querySelector('#ocr-profile-enabled').addEventListener('change', update
 closeDialogOnBackdrop(document.querySelector('#store-dialog'), clearTrainingDrafts);
 closeDialogOnBackdrop(document.querySelector('#training-receipts-dialog'));
 closeDialogOnBackdrop(document.querySelector('#training-image-dialog'));
+closeDialogOnBackdrop(document.querySelector('#ticket-user-filters-dialog'));
+closeDialogOnBackdrop(document.querySelector('#ticket-user-detail-dialog'));
 document.querySelector('#close-store-dialog').addEventListener('click', () => {
   clearTrainingDrafts();
   document.querySelector('#store-dialog').close();
@@ -1396,5 +1499,8 @@ document.querySelector('#validation-period-form').addEventListener('submit', sav
 document.querySelector('#admin-user-form').addEventListener('submit', saveAdminUser);
 document.querySelector('[name="review"]').value = 'PENDING';
 updateFilterCount();
-load(1).catch((error) => alert(error.message));
-loadFilterStores().catch((error) => alert(error.message));
+async function initializeBackoffice() {
+  await loadAdminSession();
+  await Promise.all([load(1), loadFilterStores()]);
+}
+initializeBackoffice().catch((error) => alert(error.message));

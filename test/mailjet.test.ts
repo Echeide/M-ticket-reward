@@ -30,7 +30,7 @@ test('administrator invitation is sent server-side with the backoffice link', as
   };
   try {
     const sent = await sendAdminInvitation(configuredEnv, {
-      email: 'admin@example.com', backofficeUrl: 'https://tickets.example.com/backoffice', invitedBy: 'owner@example.com',
+      email: 'admin@example.com', role: 'ADMIN', backofficeUrl: 'https://tickets.example.com/backoffice', invitedBy: 'owner@example.com',
     });
     assert.equal(sent, true);
     if (!request) throw new Error('MAILJET_REQUEST_NOT_CAPTURED');
@@ -46,6 +46,6 @@ test('administrator invitation is sent server-side with the backoffice link', as
 
 test('invitation is skipped without Mailjet configuration', async () => {
   assert.equal(await sendAdminInvitation({} as Env, {
-    email: 'admin@example.com', backofficeUrl: 'https://example.com/backoffice', invitedBy: 'owner@example.com',
+    email: 'admin@example.com', role: 'OPERATOR', backofficeUrl: 'https://example.com/backoffice', invitedBy: 'owner@example.com',
   }), false);
 });
