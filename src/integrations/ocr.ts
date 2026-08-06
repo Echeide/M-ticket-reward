@@ -3,7 +3,7 @@ import { profileHasGuidance } from '../domain/ocr-profile';
 import { findMatchingStore, type StoreIdentity } from '../domain/store';
 import { prepareOcrRegions } from '../platform/image';
 import type { Env } from '../types';
-import { createOcrProvider } from './ocr-provider';
+import { createOcrProvider, imageDataUrl, providerResponseText } from './ocr-provider';
 
 type OcrEvidence = {
   ticketNumberText?: string;
@@ -19,6 +19,61 @@ export type OcrReadResult = {
   durationMs: number;
   verificationIssues: string[];
 };
+
+type ReceiptPreflight = {
+  decision: 'TICKET' | 'NO_TICKET' | 'UNCERTAIN';
+  durationMs: number;
+  model: string;
+};
+
+function preflightTimeoutMs(env: Env): number {
+  const configured = Number(env.OCR_PREFLIGHT_TIMEOUT_MS);
+  return Number.isFinite(configured) ? Math.max(1_000, Math.min(10_000, configured)) : 5_000;
+}
+
+async function classifyReceiptImage(
+  env: Env,
+  bytes: ArrayBuffer,
+  contentType: string,
+): Promise<ReceiptPreflight | null> {
+  const model = String(env.OCR_PREFLIGHT_MODEL || '').trim();
+  if (!model) return null;
+  const startedAt = Date.now();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      (env.AI as unknown as { run: Function }).run(model, {
+        task: 'query',
+        image: imageDataUrl(bytes, contentType),
+        question: `Clasifica la imagen. Responde exclusivamente con una de estas palabras:
+TICKET: se ve claramente un ticket o recibo de compra.
+NO_TICKET: se ve claramente una foto personal, persona, paisaje, animal, objeto, portátil,
+pantalla, cartel u otra imagen ajena a un ticket.
+DUDA: parece un documento, papel o imagen borrosa y no puedes descartarlo con seguridad.
+No expliques la respuesta. Ante cualquier duda responde DUDA.`,
+        reasoning: false,
+        stream: false,
+        temperature: 0,
+        max_tokens: 8,
+      }) as Promise<unknown>,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error('OCR_PREFLIGHT_TIMEOUT')), preflightTimeoutMs(env));
+      }),
+    ]);
+    const answer = (await providerResponseText(result)).trim().toUpperCase();
+    const decision = /\bNO[_\s-]?TICKET\b/.test(answer)
+      ? 'NO_TICKET'
+      : /^TICKET\b/.test(answer)
+        ? 'TICKET'
+        : 'UNCERTAIN';
+    return { decision, durationMs: Date.now() - startedAt, model };
+  } catch (caught) {
+    console.warn('OCR preflight failed open', caught);
+    return { decision: 'UNCERTAIN', durationMs: Date.now() - startedAt, model };
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
 
 function parseJsonObject(value: string): Record<string, unknown> {
   const start = value.indexOf('{');
@@ -313,13 +368,35 @@ export async function readReceipt(
   const provider = createOcrProvider(env);
   const storeReference = authorizedStoreReference(authorizedStores);
   const startedAt = Date.now();
+  const preflight = await classifyReceiptImage(env, bytes, contentType);
+  if (preflight?.decision === 'NO_TICKET') {
+    return {
+      receipt: normalizeOcr({
+        isReceipt: false,
+        confidence: 0.99,
+        storeName: '',
+        headerText: '',
+        ticketNumber: '',
+        purchaseDate: '',
+        totalCents: 0,
+        currency: 'EUR',
+        rawText: '',
+      }),
+      provider: 'workers-ai',
+      model: preflight.model,
+      attemptCount: 1,
+      durationMs: preflight.durationMs,
+      verificationIssues: [],
+    };
+  }
+  const preflightCalls = preflight ? 1 : 0;
   let response = await provider.extract({
     bytes, contentType, prompt: extractionPrompt(storeReference, false),
   });
   let receipt = preferVerifiedIdentity(normalizeOcr(parseJsonObject(response.text)));
   let issues = verifyOcr(receipt);
-  let attemptCount = 1;
-  let durationMs = response.durationMs;
+  let attemptCount = preflightCalls + 1;
+  let durationMs = preflight ? Date.now() - startedAt : response.durationMs;
 
   // A confident negative classification must not trigger the expensive header and totals passes.
   // Uncertain negatives still get the focused verification to avoid rejecting a poorly photographed receipt.
@@ -352,7 +429,7 @@ export async function readReceipt(
       normalizeOcr(parseJsonObject(totalsResponse.text)),
     ));
     issues = verifyOcr(receipt);
-    attemptCount = 3;
+    attemptCount = preflightCalls + 3;
     durationMs = Date.now() - startedAt;
   }
 

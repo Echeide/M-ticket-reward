@@ -350,3 +350,60 @@ test('confident non-receipt images are rejected after one model call', async () 
   assert.deepEqual(result.verificationIssues, []);
   assert.match(prompt, /fotografía\s+personal, paisaje, objeto/i);
 });
+
+test('fast preflight rejects an obvious non-ticket before Llama OCR', async () => {
+  const models: string[] = [];
+  let preflightInput: Record<string, unknown> = {};
+  const env = {
+    OCR_MODE: 'workers-ai',
+    OCR_PROVIDER: 'workers-ai',
+    OCR_MODEL: '@cf/meta/llama-3.2-11b-vision-instruct',
+    OCR_PREFLIGHT_MODEL: '@cf/moondream/moondream3.1-9B-A2B',
+    OCR_PREFLIGHT_TIMEOUT_MS: '5000',
+    AI: {
+      async run(model: string, input: Record<string, unknown>) {
+        models.push(model);
+        preflightInput = input;
+        return { answer: 'NO_TICKET' };
+      },
+    },
+  } as unknown as Env;
+
+  const result = await readReceipt(env, new Uint8Array([1, 2, 3]).buffer, 'image/webp');
+
+  assert.deepEqual(models, ['@cf/moondream/moondream3.1-9B-A2B']);
+  assert.equal(result.receipt.isReceipt, false);
+  assert.equal(result.model, '@cf/moondream/moondream3.1-9B-A2B');
+  assert.equal(result.attemptCount, 1);
+  assert.equal(preflightInput.task, 'query');
+  assert.equal(preflightInput.reasoning, false);
+  assert.equal(preflightInput.max_tokens, 8);
+});
+
+test('uncertain preflight fails open and lets Llama inspect the image', async () => {
+  const models: string[] = [];
+  const env = {
+    OCR_MODE: 'workers-ai',
+    OCR_PROVIDER: 'workers-ai',
+    OCR_MODEL: '@cf/meta/llama-3.2-11b-vision-instruct',
+    OCR_WORKERS_AI_FORMAT: 'chat',
+    OCR_PREFLIGHT_MODEL: '@cf/moondream/moondream3.1-9B-A2B',
+    OCR_PREFLIGHT_TIMEOUT_MS: '5000',
+    AI: {
+      async run(model: string) {
+        models.push(model);
+        if (model.includes('moondream')) return { answer: 'DUDA' };
+        return { choices: [{ message: { content: JSON.stringify(validExtraction) } }] };
+      },
+    },
+  } as unknown as Env;
+
+  const result = await readReceipt(env, new Uint8Array([1, 2, 3]).buffer, 'image/webp');
+
+  assert.deepEqual(models, [
+    '@cf/moondream/moondream3.1-9B-A2B',
+    '@cf/meta/llama-3.2-11b-vision-instruct',
+  ]);
+  assert.equal(result.receipt.isReceipt, true);
+  assert.equal(result.attemptCount, 2);
+});

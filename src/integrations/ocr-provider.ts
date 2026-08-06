@@ -17,7 +17,7 @@ export interface OcrProvider {
   extract(request: OcrProviderRequest): Promise<OcrProviderResponse>;
 }
 
-function dataUrl(bytes: ArrayBuffer, contentType: string): string {
+export function imageDataUrl(bytes: ArrayBuffer, contentType: string): string {
   const values = new Uint8Array(bytes);
   let binary = '';
   const chunkSize = 0x8000;
@@ -128,7 +128,7 @@ class WorkersAiOcrProvider implements OcrProvider {
     const startedAt = Date.now();
     const format = String(this.env.OCR_WORKERS_AI_FORMAT || '').trim().toLowerCase() ||
       (this.env.OCR_MODEL.includes('/moondream/') ? 'moondream' : 'chat');
-    const image = dataUrl(request.bytes, request.contentType);
+    const image = imageDataUrl(request.bytes, request.contentType);
     const input = format === 'moondream'
       ? {
           task: 'query', image, question: request.prompt, reasoning: false,
@@ -186,7 +186,7 @@ class OpenAiCompatibleOcrProvider implements OcrProvider {
             role: 'user',
             content: [
               { type: 'text', text: request.prompt },
-              { type: 'image_url', image_url: { url: dataUrl(request.bytes, request.contentType) } },
+              { type: 'image_url', image_url: { url: imageDataUrl(request.bytes, request.contentType) } },
             ],
           }],
           temperature: 0.1,
