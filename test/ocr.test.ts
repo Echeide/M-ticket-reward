@@ -49,6 +49,27 @@ test('OCR normalization repairs malformed dates and identifiers from labelled ev
   assert.deepEqual(verifyOcr(receipt), []);
 });
 
+test('OCR normalization is independent of merchant and receipt label', () => {
+  const receipt = normalizeOcr({
+    isReceipt: true,
+    confidence: 0.94,
+    storeName: 'Librería Atlántico',
+    headerText: 'LIBRERÍA ATLÁNTICO S.L.\nAv. del Puerto 12',
+    ticketNumber: 'A-004582',
+    ticketNumberText: 'Recibo: A-004582',
+    purchaseDate: '2026-08-05',
+    purchaseDateText: '05-08-2026 18:42',
+    totalCents: 4830,
+    totalText: 'IMPORTE TOTAL 48,30 €',
+    currency: 'EUR',
+    rawText: 'LIBRERÍA ATLÁNTICO\nRecibo: A-004582\n05-08-2026\nIMPORTE TOTAL 48,30 €',
+  });
+
+  assert.equal(receipt.storeName, 'Librería Atlántico');
+  assert.equal(receipt.ticketNumber, 'A-004582');
+  assert.deepEqual(verifyOcr(receipt), []);
+});
+
 test('OCR verification rejects unsupported critical fields', () => {
   const receipt = normalizeOcr({
     isReceipt: true,
@@ -134,4 +155,31 @@ test('OCR retries an incomplete reading with focused regions', async () => {
   assert.match(String(requests[0]!.image), /^data:image\/webp;base64,/);
   assert.match(String(requests[1]!.question), /CABECERA/i);
   assert.match(String(requests[2]!.question), /parte INFERIOR/i);
+});
+
+test('Workers AI chat format can switch to stronger vision models by configuration', async () => {
+  let model = '';
+  let input: Record<string, unknown> = {};
+  const env = {
+    OCR_MODE: 'workers-ai',
+    OCR_PROVIDER: 'workers-ai',
+    OCR_MODEL: '@cf/google/gemma-4-26b-a4b-it',
+    OCR_WORKERS_AI_FORMAT: 'chat',
+    OCR_TIMEOUT_MS: '5000',
+    AI: {
+      async run(selectedModel: string, selectedInput: Record<string, unknown>) {
+        model = selectedModel;
+        input = selectedInput;
+        return { choices: [{ message: { content: JSON.stringify(validExtraction) } }] };
+      },
+    },
+  } as unknown as Env;
+
+  const result = await readReceipt(env, new Uint8Array([1, 2, 3]).buffer, 'image/webp');
+
+  assert.equal(model, '@cf/google/gemma-4-26b-a4b-it');
+  assert.equal(result.attemptCount, 1);
+  assert.equal(Array.isArray(input.messages), true);
+  assert.match(String(input.image), /^data:image\/webp;base64,/);
+  assert.equal(input.task, undefined);
 });

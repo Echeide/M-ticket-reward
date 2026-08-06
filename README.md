@@ -37,15 +37,25 @@ El OCR se selecciona mediante variables, sin cambiar el flujo de tickets:
 - `OCR_PROVIDER=openai-compatible` usa una API visual externa compatible con
   `POST /chat/completions`;
 - `OCR_MODEL` contiene el identificador del modelo;
+- `OCR_WORKERS_AI_FORMAT=chat` usa el contrato visual de modelos conversacionales;
+  `moondream` conserva el contrato específico de ese modelo;
 - `OCR_TIMEOUT_MS` limita cada intento (45 segundos por defecto);
 - para un proveedor externo, configura `OCR_API_BASE_URL` y guarda `OCR_API_KEY`
   como secreto con `wrangler secret put OCR_API_KEY`.
 
 La configuración inicial de producción usa
-`@cf/moondream/moondream3.1-9B-A2B`. El OCR hace un segundo intento focalizado
+`@cf/google/gemma-4-26b-a4b-it`; Moondream queda disponible como alternativa rápida.
+El OCR hace un segundo intento focalizado
 cuando faltan datos o no coinciden con sus líneas de evidencia. Un resultado que
 sigue siendo incoherente queda pendiente de revisión y nunca se rechaza
 automáticamente como ticket no autorizado.
+
+La extracción no contiene nombres, CIF ni posiciones propias de un comercio. Los
+comercios y sus alias se leen de la gestión del backoffice, y los intentos
+focalizados usan zonas relativas y solapadas del ticket. Esto permite procesar
+formatos distintos; aun así, antes de ampliar el uso debe validarse con una muestra
+representativa de tickets de cada comercio y conservar como pendiente de revisión
+cualquier formato que no aporte evidencias suficientes.
 
 Antes de probar una subida, añade al menos una tienda:
 

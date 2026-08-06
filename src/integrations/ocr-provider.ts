@@ -107,16 +107,29 @@ class WorkersAiOcrProvider implements OcrProvider {
 
   async extract(request: OcrProviderRequest): Promise<OcrProviderResponse> {
     const startedAt = Date.now();
+    const format = String(this.env.OCR_WORKERS_AI_FORMAT || '').trim().toLowerCase() ||
+      (this.env.OCR_MODEL.includes('/moondream/') ? 'moondream' : 'chat');
+    const image = dataUrl(request.bytes, request.contentType);
+    const input = format === 'moondream'
+      ? {
+          task: 'query', image, question: request.prompt, reasoning: false,
+          stream: false, temperature: 0.1, max_tokens: 2_048,
+        }
+      : format === 'chat'
+        ? {
+            messages: [
+              { role: 'system', content: 'Extrae datos visibles de tickets. Responde solo con el JSON solicitado.' },
+              { role: 'user', content: request.prompt },
+            ],
+            image,
+            stream: false,
+            temperature: 0.1,
+            max_completion_tokens: 2_048,
+          }
+        : null;
+    if (!input) throw new Error(`OCR_WORKERS_AI_FORMAT_UNSUPPORTED:${format}`);
     const result = await withTimeout(
-      (this.env.AI as unknown as { run: Function }).run(this.env.OCR_MODEL, {
-        task: 'query',
-        image: dataUrl(request.bytes, request.contentType),
-        question: request.prompt,
-        reasoning: false,
-        stream: false,
-        temperature: 0.1,
-        max_tokens: 2_048,
-      }) as Promise<Record<string, unknown>>,
+      (this.env.AI as unknown as { run: Function }).run(this.env.OCR_MODEL, input) as Promise<Record<string, unknown>>,
       timeoutMs(this.env),
     );
     return {

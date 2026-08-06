@@ -70,7 +70,7 @@ function compactIdentifier(value: string): string {
 }
 
 function ticketNumberFromEvidence(value: string): string | null {
-  const labelled = /(?:documento|ticket|factura|operaci[oó]n|n[º°o]\.?)[\s:#-]+(.+)/i.exec(value);
+  const labelled = /(?:documento|ticket|factura|recibo|transacci[oó]n|operaci[oó]n|folio|n[º°o]\.?)\s*[:#-]*\s+(.+)/i.exec(value);
   if (!labelled) return null;
   const candidates = (labelled[1] || '').match(/[A-Z0-9][A-Z0-9./-]{3,}/gi) || [];
   return candidates.sort((left, right) => compactIdentifier(right).length - compactIdentifier(left).length)[0] || null;
@@ -162,8 +162,9 @@ function regionPrompt(storeReference: string, region: 'header' | 'totals'): stri
   const focus = region === 'header'
     ? `Esta imagen muestra la CABECERA y primera parte del ticket. Localiza el comercio, la línea de
 DOCUMENTO/TICKET/FACTURA y la FECHA/HORA. ticketNumber debe ser el valor completo que aparece después
-de esa etiqueta. Un CIF/NIF (por ejemplo B61742565), dirección, centro, caja, vendedor u operación NO
-son el número del ticket. ticketNumberText debe incluir literalmente la etiqueta Documento/Ticket/Factura.`
+de una etiqueta identificadora como Documento, Ticket, Factura, Recibo, Folio o Transacción. Un CIF/NIF,
+dirección, centro, caja, vendedor o código de tienda NO son el número del ticket. ticketNumberText debe
+incluir literalmente la etiqueta que identifica ese número.`
     : `Esta imagen muestra la parte INFERIOR del ticket. Localiza el TOTAL COMPRA o importe final
 pagado. No uses subtotales, ahorro, cambio, efectivo entregado ni importes de líneas de producto.`;
   return `${focus}

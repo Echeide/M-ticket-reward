@@ -15,6 +15,7 @@ export interface Env {
   DATA_ENCRYPTION_KEY: string;
   OCR_PROVIDER?: string;
   OCR_MODEL: string;
+  OCR_WORKERS_AI_FORMAT?: string;
   OCR_MODE: string;
   OCR_API_BASE_URL?: string;
   OCR_API_KEY?: string;
