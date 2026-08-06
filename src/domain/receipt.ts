@@ -29,6 +29,11 @@ export type OcrReceipt = Partial<ReceiptFields> & {
   purchaseDateTime?: string;
   headerText?: string;
   rawText?: string;
+  evidence?: {
+    ticketNumberText?: string;
+    purchaseDateText?: string;
+    totalText?: string;
+  };
 };
 
 export type AutomaticValidationInput = {
@@ -56,7 +61,8 @@ export function receiptStatusAfterOcr(validation: AutomaticValidation): ReceiptS
 
 export function canReprocessReceipt(status: string, reasons: string[] = []): boolean {
   if (['AUTO_REJECTED', 'NOT_A_RECEIPT', 'READY_FOR_CONFIRMATION'].includes(status)) return true;
-  return status === 'REWARD_FAILED' && reasons.includes('OCR_PROCESSING_FAILED');
+  return status === 'REWARD_FAILED' && reasons.some((reason) =>
+    ['OCR_PROCESSING_FAILED', 'OCR_VERIFICATION_REQUIRED'].includes(reason));
 }
 
 export function validateReceiptAutomatically(
@@ -176,6 +182,10 @@ function isoDateToEpochDay(value: string): number | null {
     date.getUTCDate() !== day
   ) return null;
   return Math.floor(timestamp / 86_400_000);
+}
+
+export function isValidIsoDate(value: string): boolean {
+  return isoDateToEpochDay(value) !== null;
 }
 
 function currentEpochDay(now: Date): number {

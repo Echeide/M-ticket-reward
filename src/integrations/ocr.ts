@@ -1,6 +1,22 @@
 import type { OcrReceipt } from '../domain/receipt';
 import type { StoreIdentity } from '../domain/store';
 import type { Env } from '../types';
+import { createOcrProvider } from './ocr-provider';
+
+type OcrEvidence = {
+  ticketNumberText?: string;
+  purchaseDateText?: string;
+  totalText?: string;
+};
+
+export type OcrReadResult = {
+  receipt: OcrReceipt;
+  provider: string;
+  model: string;
+  attemptCount: number;
+  durationMs: number;
+  verificationIssues: string[];
+};
 
 function parseJsonObject(value: string): Record<string, unknown> {
   const start = value.indexOf('{');
@@ -9,7 +25,7 @@ function parseJsonObject(value: string): Record<string, unknown> {
   return JSON.parse(value.slice(start, end + 1)) as Record<string, unknown>;
 }
 
-function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
+export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
   const confidence = Number(value.confidence);
   const total = Number(value.totalCents);
   const rawCurrency = String(value.currency || 'EUR').trim().toUpperCase();
@@ -27,10 +43,65 @@ function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
     purchaseDateTime: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(purchaseDateTime)
       ? purchaseDateTime
       : undefined,
-    totalCents: Number.isInteger(total) ? total : undefined,
+    totalCents: Number.isInteger(total) && total > 0 ? total : undefined,
     currency,
     rawText: String(value.rawText || '').slice(0, 8_000),
+    evidence: {
+      ticketNumberText: String(value.ticketNumberText || '').trim().slice(0, 300),
+      purchaseDateText: String(value.purchaseDateText || '').trim().slice(0, 300),
+      totalText: String(value.totalText || '').trim().slice(0, 300),
+    },
   };
+}
+
+function compactIdentifier(value: string): string {
+  return value.normalize('NFKD').replace(/[^a-z0-9]/gi, '').toUpperCase();
+}
+
+function centsFromEvidence(value: string): number | null {
+  const matches = [...value.matchAll(/(\d{1,3}(?:[.\s]\d{3})*|\d+)[,.](\d{2})/g)];
+  const match = matches.at(-1);
+  if (!match) return null;
+  const units = Number(match[1]!.replace(/[.\s]/g, ''));
+  const cents = Number(match[2]!);
+  return Number.isSafeInteger(units) ? (units * 100) + cents : null;
+}
+
+function isoDateFromEvidence(value: string, expectedDate: string): string | null {
+  const iso = /\b(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\b/.exec(value);
+  const european = /\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})\b/.exec(value);
+  const shortEuropean = /\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{2})\b/.exec(value);
+  const parts: [number, number, number] | null = iso
+    ? [Number(iso[1]), Number(iso[2]), Number(iso[3])]
+    : european
+      ? [Number(european[3]), Number(european[2]), Number(european[1])]
+      : shortEuropean && /^\d{4}-/.test(expectedDate)
+        ? [Number(expectedDate.slice(0, 2) + shortEuropean[3]), Number(shortEuropean[2]), Number(shortEuropean[1])]
+      : null;
+  if (!parts) return null;
+  const [year, month, day] = parts;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+export function verifyOcr(receipt: OcrReceipt): string[] {
+  const issues: string[] = [];
+  if (!receipt.isReceipt) return issues;
+  const evidence = receipt.evidence || {};
+  if (!receipt.ticketNumber) issues.push('MISSING_TICKET_NUMBER');
+  else if (!compactIdentifier(evidence.ticketNumberText || '').includes(compactIdentifier(receipt.ticketNumber))) {
+    issues.push('UNVERIFIED_TICKET_NUMBER');
+  }
+  if (!receipt.purchaseDate) issues.push('MISSING_DATE');
+  else if (isoDateFromEvidence(evidence.purchaseDateText || '', receipt.purchaseDate) !== receipt.purchaseDate) {
+    issues.push('UNVERIFIED_DATE');
+  }
+  if (!receipt.totalCents) issues.push('MISSING_TOTAL');
+  else if (centsFromEvidence(evidence.totalText || '') !== receipt.totalCents) {
+    issues.push('UNVERIFIED_TOTAL');
+  }
+  return issues;
 }
 
 function authorizedStoreReference(stores: StoreIdentity[]): string {
@@ -48,51 +119,79 @@ function authorizedStoreReference(stores: StoreIdentity[]): string {
   return `[${entries.join(',')}]`;
 }
 
+function extractionPrompt(storeReference: string, retry: boolean): string {
+  return `Analiza la imagen como un ticket de compra y devuelve exclusivamente un objeto JSON válido con:
+isReceipt (boolean), confidence (0..1), storeName, headerText, ticketNumber,
+ticketNumberText, purchaseDate (YYYY-MM-DD), purchaseDateTime (YYYY-MM-DDTHH:mm o cadena vacía),
+purchaseDateText, totalCents (entero), totalText, currency y rawText.
+
+ticketNumberText, purchaseDateText y totalText deben ser transcripciones literales y breves de las
+líneas visibles que demuestran cada valor. Si no puedes ver esa evidencia, deja el valor y su texto vacíos.
+No deduzcas, completes ni inventes caracteres.${retry ? '\nEsta es una segunda comprobación: céntrate especialmente en FECHA, TOTAL COMPRA y número de DOCUMENTO/TICKET.' : ''}
+
+Reglas para storeName:
+- Es el comercio emisor, nunca un producto, marca del listado, eslogan, pago ni cliente.
+- Búscalo solo en cabecera o bloque fiscal, antes del primer artículo.
+- headerText debe transcribir únicamente esa cabecera o bloque fiscal.
+- Comercios autorizados y alias: ${storeReference}.
+- Si coincide claramente, devuelve exactamente su name; sin evidencia visible, déjalo vacío.
+
+Usa exclusivamente la fecha impresa. El total es el importe final pagado, no subtotal, ahorro ni efectivo entregado.
+Expresa el importe en céntimos y transcribe en rawText las líneas relevantes de cabecera, documento, fecha y total.`;
+}
+
 export async function readReceipt(
   env: Env,
   bytes: ArrayBuffer,
-  _contentType = 'image/jpeg',
+  contentType = 'image/jpeg',
   authorizedStores: StoreIdentity[] = [],
-): Promise<OcrReceipt> {
+): Promise<OcrReadResult> {
   if (env.OCR_MODE === 'mock') {
+    const today = new Date().toISOString().slice(0, 10);
     return {
-      isReceipt: true,
-      confidence: 0.93,
-      storeName: 'Tienda asociada',
-      headerText: 'Tienda asociada',
-      ticketNumber: `DEMO-${Date.now().toString(36).toUpperCase()}`,
-      purchaseDate: new Date().toISOString().slice(0, 10),
-      purchaseDateTime: new Date().toISOString().slice(0, 16),
-      totalCents: 7500,
-      currency: 'EUR',
-      rawText: 'Resultado OCR simulado para desarrollo local',
+      receipt: {
+        isReceipt: true,
+        confidence: 0.93,
+        storeName: 'Tienda asociada',
+        headerText: 'Tienda asociada',
+        ticketNumber: `DEMO-${Date.now().toString(36).toUpperCase()}`,
+        purchaseDate: today,
+        purchaseDateTime: new Date().toISOString().slice(0, 16),
+        totalCents: 7500,
+        currency: 'EUR',
+        rawText: `Fecha ${today}\nTOTAL 75,00 EUR`,
+        evidence: { ticketNumberText: 'DEMO', purchaseDateText: today, totalText: 'TOTAL 75,00 EUR' },
+      },
+      provider: 'mock', model: 'mock', attemptCount: 1, durationMs: 0, verificationIssues: [],
     };
   }
 
+  const provider = createOcrProvider(env);
   const storeReference = authorizedStoreReference(authorizedStores);
-  const prompt = `Analiza la imagen como un ticket de compra y devuelve exclusivamente un objeto JSON con:
-isReceipt (boolean), confidence (0..1), storeName, headerText, ticketNumber,
-purchaseDate (YYYY-MM-DD), purchaseDateTime (YYYY-MM-DDTHH:mm si aparece una hora impresa;
-si no aparece, cadena vacía), totalCents (entero), currency y rawText.
+  let response = await provider.extract({
+    bytes, contentType, prompt: extractionPrompt(storeReference, false),
+  });
+  let receipt = normalizeOcr(parseJsonObject(response.text));
+  let issues = verifyOcr(receipt);
+  let attemptCount = 1;
+  let durationMs = response.durationMs;
 
-Reglas obligatorias para storeName:
-- Es el comercio emisor del ticket, nunca un producto, artículo, marca del listado de compra,
-  eslogan, método de pago ni nombre del cliente.
-- Búscalo solo en la cabecera o bloque fiscal: logotipo, razón social, CIF/NIF, dirección,
-  teléfono o texto anterior al primer artículo.
-- headerText debe transcribir únicamente esa cabecera o bloque fiscal.
-- Estos son los comercios autorizados y sus alias: ${storeReference}.
-- Usa esa lista solo como referencia. Si la cabecera coincide claramente con un nombre o alias,
-  devuelve exactamente el campo name correspondiente. Si no hay evidencia visible, deja storeName vacío.
+  if (receipt.confidence < 0.75 || !receipt.isReceipt || issues.length > 0) {
+    response = await provider.extract({
+      bytes, contentType, prompt: extractionPrompt(storeReference, true),
+    });
+    receipt = normalizeOcr(parseJsonObject(response.text));
+    issues = verifyOcr(receipt);
+    attemptCount = 2;
+    durationMs += response.durationMs;
+  }
 
-Usa exclusivamente la fecha impresa; no uses la fecha actual si no es legible.
-No inventes valores ilegibles y expresa los importes en céntimos.`;
-  const result = (await (env.AI as unknown as { run: Function }).run(env.OCR_MODEL, {
-    image: Array.from(new Uint8Array(bytes)),
-    prompt,
-    temperature: 0.1,
-    max_tokens: 1_024,
-  })) as Record<string, unknown>;
-  const text = String(result.answer || result.description || result.response || result.result || '');
-  return normalizeOcr(parseJsonObject(text));
+  return {
+    receipt,
+    provider: response.provider,
+    model: response.model,
+    attemptCount,
+    durationMs,
+    verificationIssues: issues,
+  };
 }

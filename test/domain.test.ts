@@ -5,6 +5,7 @@ import {
   canReprocessReceipt,
   receiptStatusAfterOcr,
   validateReceiptAutomatically,
+  isValidIsoDate,
 } from '../src/domain/receipt';
 import {
   resolveRewardPoints,
@@ -69,6 +70,12 @@ test('automatic validation only accepts receipt dates within three calendar days
   assert.deepEqual(validateDate('2026-02-30').reasons, ['INVALID_DATE']);
 });
 
+test('manual correction date validation rejects impossible calendar dates', () => {
+  assert.equal(isValidIsoDate('2026-08-06'), true);
+  assert.equal(isValidIsoDate('2026-02-30'), false);
+  assert.equal(isValidIsoDate('06/08/2026'), false);
+});
+
 test('configured campaign dates replace the default three-day ticket window', () => {
   const validatePeriod = (purchaseDate: string, purchaseDateTime?: string) => validateReceiptAutomatically({
     fields: { ...fields, purchaseDate },
@@ -105,6 +112,7 @@ test('OCR reprocessing is limited to receipts that cannot duplicate rewards', ()
   assert.equal(canReprocessReceipt('NOT_A_RECEIPT'), true);
   assert.equal(canReprocessReceipt('READY_FOR_CONFIRMATION'), true);
   assert.equal(canReprocessReceipt('REWARD_FAILED', ['OCR_PROCESSING_FAILED']), true);
+  assert.equal(canReprocessReceipt('REWARD_FAILED', ['OCR_VERIFICATION_REQUIRED']), true);
   assert.equal(canReprocessReceipt('REWARD_FAILED', ['RTALES_DELIVERY_FAILED']), false);
   assert.equal(canReprocessReceipt('REWARDED'), false);
   assert.equal(canReprocessReceipt('REWARD_PENDING'), false);

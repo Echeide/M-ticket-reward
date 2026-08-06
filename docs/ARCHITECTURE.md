@@ -6,8 +6,8 @@
 2. El Worker intercambia el código desde servidor y crea una sesión local.
 3. El navegador captura la imagen del ticket.
 4. El Worker valida tipo y tamaño, calcula SHA-256, guarda en R2 y publica un trabajo OCR.
-5. El consumidor OCR clasifica la imagen, extrae tienda, número, fecha, importe y moneda, y ejecuta la prevalidación automática.
-6. Solo si el comercio, los campos, la fecha y la duplicidad son válidos, el ticket queda pendiente de confirmación.
+5. El consumidor OCR usa un proveedor configurable, extrae tienda, número, fecha, importe y moneda, y exige evidencia textual para los campos críticos. Si la primera lectura es incompleta o incoherente, realiza un segundo intento focalizado.
+6. Solo si el comercio, los campos, su evidencia, la fecha y la duplicidad son válidos, el ticket queda pendiente de confirmación. Una lectura que no puede verificarse queda pendiente de revisión y no se clasifica como no autorizada.
 7. El usuario revisa los campos reconocidos, sin poder modificarlos, y confirma; la API repite la validación para evitar carreras.
 8. Si pasa la validación automática, calcula puntos y crea una outbox durable.
 9. La outbox entrega el premio a Rtales con una clave idempotente.
@@ -35,7 +35,7 @@ READY_FOR_CONFIRMATION -> DUPLICATE
 - **Workers** sirve API y assets.
 - **R2** es privado. Las claves usan el prefijo `receipts/{userRef}/{año}/{receiptId}/optimized.ext`; la “carpeta” es un prefijo, no un directorio real.
 - **Queues** desacopla OCR y entregas/reintentos de premios.
-- **Workers AI** es el adaptador OCR inicial. El dominio no depende del modelo.
+- **Workers AI** es el adaptador OCR inicial. También existe un adaptador para APIs visuales externas compatibles con OpenAI. El dominio no depende del proveedor ni del modelo.
 - **D1** conserva sesiones, tickets, comercios, tramos, outbox y auditoría.
 - **Cloudflare Access** protege `/backoffice.html` y `/api/admin/*` en producción.
 

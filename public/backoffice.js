@@ -25,6 +25,13 @@ const reviewLabels = {
 };
 const reasonLabels = {
   OCR_PROCESSING_FAILED: 'La lectura automática ha fallado y necesita revisión.',
+  OCR_VERIFICATION_REQUIRED: 'El OCR no ha podido verificar todos los datos. No se ha rechazado automáticamente.',
+  OCR_MISSING_TICKET_NUMBER: 'Falta el número de ticket.',
+  OCR_UNVERIFIED_TICKET_NUMBER: 'El número no coincide con su evidencia visible.',
+  OCR_MISSING_DATE: 'Falta la fecha de compra.',
+  OCR_UNVERIFIED_DATE: 'La fecha no coincide con su evidencia visible.',
+  OCR_MISSING_TOTAL: 'Falta el importe total.',
+  OCR_UNVERIFIED_TOTAL: 'El importe no coincide con su evidencia visible.',
   NOT_A_RECEIPT: 'La imagen no parece un ticket de compra.',
   DUPLICATE: 'El ticket ya había sido utilizado.',
   DUPLICATE_IMAGE: 'La misma imagen ya había sido enviada.',
@@ -36,6 +43,11 @@ const reasonLabels = {
   TICKET_TOO_OLD: 'La fecha del ticket supera el periodo permitido.',
   OCR_REPROCESS_REQUESTED: 'La nueva comprobación está en curso.',
 };
+
+function receiptStatusLabel(receipt) {
+  if (receipt.verificationRequired) return 'Lectura pendiente de revisión';
+  return statusLabels[receipt.status] || receipt.status;
+}
 if (!state.token && location.hostname === 'localhost') {
   state.token = prompt('Token de gestor local') || '';
   if (state.token) sessionStorage.setItem('admin-token', state.token);
@@ -74,7 +86,7 @@ async function load(page = state.pagination.page) {
     <button class="receipt-row" data-id="${receipt.id}">
       <span><strong>${escapeHtml(receipt.publicId)}</strong><small>${escapeHtml(receipt.fields.storeName || 'Sin tienda')}</small></span>
       <span><strong>${formatMoney(receipt.fields.totalCents)}</strong><small>${receipt.reward.pointsAwarded} puntos</small></span>
-      <span class="status-chip ${escapeHtml(receipt.status.toLowerCase())}">${escapeHtml(statusLabels[receipt.status] || receipt.status)} · ${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</span>
+      <span class="status-chip ${escapeHtml(receipt.status.toLowerCase())}">${escapeHtml(receiptStatusLabel(receipt))} · ${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</span>
     </button>`).join('') || '<p class="empty-state">No hay registros con estos filtros.</p>';
   document.querySelectorAll('.receipt-row').forEach((button) => button.addEventListener('click', () => select(button.dataset.id)));
   highlightSelectedRow();
@@ -394,7 +406,8 @@ function escapeHtml(value) {
 function canReprocess(receipt) {
   if (['AUTO_REJECTED', 'NOT_A_RECEIPT', 'READY_FOR_CONFIRMATION'].includes(receipt.status)) return true;
   return receipt.status === 'REWARD_FAILED' &&
-    Array.isArray(receipt.reasons) && receipt.reasons.includes('OCR_PROCESSING_FAILED');
+    Array.isArray(receipt.reasons) && receipt.reasons.some((reason) =>
+      ['OCR_PROCESSING_FAILED', 'OCR_VERIFICATION_REQUIRED'].includes(reason));
 }
 
 function showNotice(message) {
@@ -414,13 +427,17 @@ function highlightSelectedRow() {
 }
 
 async function select(id, suppliedReceipt = null) {
+  if (!state.stores.length) await loadFilterStores();
   state.selected = suppliedReceipt || state.rows.find((row) => row.id === id);
   const receipt = state.selected;
   if (!receipt) return;
   highlightSelectedRow();
   const reprocessable = canReprocess(receipt);
   const canRevoke = receipt.status === 'REWARDED' && Boolean(receipt.reward.resultId);
+  const canApproveManually = receipt.status === 'AUTO_REJECTED' || receipt.verificationRequired;
   const reasons = Array.isArray(receipt.reasons) ? receipt.reasons : [];
+  const activeStoreOptions = state.stores.filter((store) => store.active).map((store) =>
+    `<option value="${escapeHtml(store.id)}" ${store.id === receipt.fields.storeId ? 'selected' : ''}>${escapeHtml(store.name)}</option>`).join('');
   const panel = document.querySelector('#review-panel');
   panel.className = 'review-panel';
   panel.innerHTML = `
@@ -437,9 +454,10 @@ async function select(id, suppliedReceipt = null) {
     <div class="review-data">
       <p class="eyebrow">${escapeHtml(receipt.publicId)}</p>
       <h2>${escapeHtml(receipt.fields.storeName || 'Sin tienda')}</h2>
-      <dl><div><dt>Usuario</dt><dd>${escapeHtml(receipt.user.displayName || receipt.user.subject)}</dd></div><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Número</dt><dd>${escapeHtml(receipt.fields.ticketNumber || '—')}</dd></div><div><dt>Fecha</dt><dd>${escapeHtml(receipt.fields.purchaseDate || '—')}</dd></div><div><dt>Importe</dt><dd>${formatMoney(receipt.fields.totalCents)}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Estado</dt><dd>${escapeHtml(statusLabels[receipt.status] || receipt.status)}</dd></div><div><dt>Revisión</dt><dd>${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</dd></div></dl>
+      <dl><div><dt>Usuario</dt><dd>${escapeHtml(receipt.user.displayName || receipt.user.subject)}</dd></div><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Número</dt><dd>${escapeHtml(receipt.fields.ticketNumber || '—')}</dd></div><div><dt>Fecha</dt><dd>${escapeHtml(receipt.fields.purchaseDate || '—')}</dd></div><div><dt>Importe</dt><dd>${formatMoney(receipt.fields.totalCents)}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Estado</dt><dd>${escapeHtml(receiptStatusLabel(receipt))}</dd></div><div><dt>Revisión</dt><dd>${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</dd></div><div><dt>OCR</dt><dd>${escapeHtml(receipt.ocrProcessing?.model || '—')}</dd></div><div><dt>Proceso OCR</dt><dd>${receipt.ocrProcessing?.durationMs == null ? '—' : `${receipt.ocrProcessing.durationMs} ms · ${receipt.ocrProcessing.attemptCount} intento(s)`}</dd></div></dl>
       ${reasons.length ? `<div class="review-reasons"><strong>Comprobación automática</strong><ul>${reasons.map((reason) => `<li>${escapeHtml(reasonLabels[reason] || reason)}</li>`).join('')}</ul></div>` : ''}
-      <label>Nota de revisión<textarea id="review-reason" rows="3" placeholder="Opcional al marcar como revisado${canRevoke ? '; obligatoria para retirar puntos' : ''}"></textarea></label>
+      ${canApproveManually ? `<div class="manual-correction"><strong>Corrección manual</strong><label>Comercio<select id="manual-store"><option value="">Selecciona un comercio</option>${activeStoreOptions}</select></label><label>Número de ticket<input id="manual-ticket-number" value="${escapeHtml(receipt.fields.ticketNumber)}" /></label><label>Fecha<input id="manual-purchase-date" type="date" value="${escapeHtml(receipt.fields.purchaseDate)}" /></label><label>Importe (€)<input id="manual-total" type="number" min="0.01" step="0.01" value="${(receipt.fields.totalCents / 100).toFixed(2)}" /></label></div>` : ''}
+      <label>Nota de revisión<textarea id="review-reason" rows="3" placeholder="${canApproveManually ? 'Obligatoria para validar manualmente' : `Opcional al marcar como revisado${canRevoke ? '; obligatoria para retirar puntos' : ''}`}"></textarea></label>
       <div class="review-actions">
         ${receipt.review.status === 'PENDING'
           ? '<button class="primary-button" id="clear-review">Revisado</button>'
@@ -447,6 +465,7 @@ async function select(id, suppliedReceipt = null) {
             ? `<span class="review-complete">Este ticket ya está resuelto.</span><button class="secondary-button reopen-review-button" id="reopen-review" type="button" aria-label="Volver a dejar pendiente" title="Volver a dejar pendiente"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5"></path><path d="M4 12h9a7 7 0 0 1 7 7"></path></svg></button>`
             : '<span class="review-complete">Este ticket está marcado como fraude.</span>'}
         ${canRevoke ? '<button class="danger-button" id="revoke">Fraude: retirar puntos</button>' : ''}
+        ${canApproveManually ? '<button class="primary-button" id="manual-approve">Validar manualmente</button>' : ''}
       </div>
     </div>`;
   const image = await fetch(`/api/admin/receipts/${id}/image`, { headers: headers() });
@@ -458,6 +477,7 @@ async function select(id, suppliedReceipt = null) {
   document.querySelector('#clear-review')?.addEventListener('click', () => review('CLEAR'));
   document.querySelector('#reopen-review')?.addEventListener('click', () => review('REOPEN'));
   document.querySelector('#revoke')?.addEventListener('click', () => review('REVOKE'));
+  document.querySelector('#manual-approve')?.addEventListener('click', () => review('MANUAL_APPROVE'));
   if (reprocessable) document.querySelector('#reprocess-ticket').addEventListener('click', reprocessSelected);
 }
 
@@ -494,6 +514,8 @@ async function reprocessSelected() {
 async function review(action) {
   if (state.reviewing || !state.selected) return;
   const reason = document.querySelector('#review-reason').value.trim();
+  if (action === 'MANUAL_APPROVE' && !reason) return alert('Indica el motivo de la validación manual.');
+  if (action === 'MANUAL_APPROVE' && !confirm('Se validará el ticket y se asignarán los puntos. ¿Continuar?')) return;
   if (action === 'REVOKE' && !reason) return alert('Indica el motivo de la revocación.');
   if (action === 'REVOKE' && !confirm('Se retirarán los puntos concedidos. ¿Continuar?')) return;
   state.reviewing = true;
@@ -503,7 +525,16 @@ async function review(action) {
     await request(`/api/admin/receipts/${state.selected.id}/review`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, reason }),
+      body: JSON.stringify({
+        action, reason,
+        ...(action === 'MANUAL_APPROVE' ? { fields: {
+          storeId: document.querySelector('#manual-store').value,
+          ticketNumber: document.querySelector('#manual-ticket-number').value,
+          purchaseDate: document.querySelector('#manual-purchase-date').value,
+          totalCents: Math.round(Number(document.querySelector('#manual-total').value) * 100),
+          currency: 'EUR',
+        } } : {}),
+      }),
     });
     await load();
     state.selected = null;
@@ -511,11 +542,13 @@ async function review(action) {
     const panel = document.querySelector('#review-panel');
     panel.className = 'review-panel empty';
     panel.innerHTML = '<p>Selecciona un ticket para revisarlo.</p>';
-    showNotice(action === 'CLEAR'
-      ? 'Ticket marcado como revisado.'
-      : action === 'REOPEN'
-        ? 'Ticket devuelto a pendientes.'
-        : 'Fraude registrado; se están retirando los puntos.');
+    showNotice(action === 'MANUAL_APPROVE'
+      ? 'Ticket validado manualmente; se están asignando los puntos.'
+      : action === 'CLEAR'
+        ? 'Ticket marcado como revisado.'
+        : action === 'REOPEN'
+          ? 'Ticket devuelto a pendientes.'
+          : 'Fraude registrado; se están retirando los puntos.');
   } catch (error) {
     buttons.forEach((button) => { button.disabled = false; });
     alert(error instanceof Error ? error.message : 'No se pudo completar la revisión');

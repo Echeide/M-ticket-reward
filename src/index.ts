@@ -4,6 +4,7 @@ import {
   type OcrReceipt,
   type ReceiptFields,
   canReprocessReceipt,
+  isValidIsoDate,
   receiptStatusAfterOcr,
   validateReceiptAutomatically,
 } from './domain/receipt';
@@ -69,6 +70,12 @@ type ReceiptRow = {
   ticket_fingerprint: string | null;
   ocr_payload: OcrReceipt | null;
   ocr_confidence: number | null;
+  ocr_provider: string | null;
+  ocr_model: string | null;
+  ocr_attempt_count: number;
+  ocr_duration_ms: number | null;
+  ocr_started_at: string | null;
+  ocr_completed_at: string | null;
   risk_score: number;
   validation_reasons: string[];
   review_status: 'PENDING' | 'CLEARED' | 'FRAUD';
@@ -143,6 +150,8 @@ function sessionView(row: SessionRow) {
 }
 
 function receiptView(row: ReceiptRow, includeManagerFields = false) {
+  const verificationRequired = row.status === 'REWARD_FAILED' &&
+    row.validation_reasons.includes('OCR_VERIFICATION_REQUIRED');
   return {
     id: row.id,
     publicId: row.public_id,
@@ -158,6 +167,15 @@ function receiptView(row: ReceiptRow, includeManagerFields = false) {
     ocr: row.ocr_payload,
     riskScore: row.risk_score,
     reasons: row.validation_reasons,
+    verificationRequired,
+    ocrProcessing: {
+      provider: row.ocr_provider,
+      model: row.ocr_model,
+      attemptCount: row.ocr_attempt_count,
+      durationMs: row.ocr_duration_ms,
+      startedAt: row.ocr_started_at,
+      completedAt: row.ocr_completed_at,
+    },
     review: {
       status: row.review_status,
       reviewedAt: row.reviewed_at,
@@ -183,6 +201,7 @@ function receiptView(row: ReceiptRow, includeManagerFields = false) {
 
 const PUBLIC_REASON_MESSAGES: Record<string, string> = {
   OCR_PROCESSING_FAILED: 'No hemos podido leer el ticket. Prueba con una foto más clara.',
+  OCR_VERIFICATION_REQUIRED: 'El ticket está registrado, pero no hemos podido verificar todos sus datos automáticamente. Queda pendiente de revisión.',
   NOT_A_RECEIPT: 'La imagen no parece un ticket de compra.',
   DUPLICATE: 'Este ticket ya se había enviado.',
   DUPLICATE_IMAGE: 'Esta imagen ya se había enviado.',
@@ -205,6 +224,8 @@ function publicReceiptMessage(row: ReceiptRow): string {
 }
 
 function publicReceiptView(row: ReceiptRow) {
+  const verificationRequired = row.status === 'REWARD_FAILED' &&
+    row.validation_reasons.includes('OCR_VERIFICATION_REQUIRED');
   return {
     id: row.id,
     publicId: row.public_id,
@@ -218,6 +239,7 @@ function publicReceiptView(row: ReceiptRow) {
       currency: row.currency,
     },
     reward: { pointsAwarded: row.points_awarded },
+    verificationRequired,
     message: publicReceiptMessage(row),
     createdAt: row.created_at,
     rewardedAt: row.rewarded_at,
@@ -543,7 +565,8 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
 async function processOcr(env: Env, receiptId: string): Promise<void> {
   const receipt = await withDatabase(env, async (client) => {
     const result = await client.query<Pick<ReceiptRow, 'id' | 'user_ref' | 'image_key' | 'image_content_type' | 'status'>>(
-      `UPDATE receipts SET status = 'OCR_PROCESSING', updated_at = NOW()
+      `UPDATE receipts SET status = 'OCR_PROCESSING', ocr_started_at = NOW(),
+          ocr_completed_at = NULL, updated_at = NOW()
         WHERE id = $1 AND status IN ('OCR_QUEUED', 'OCR_PROCESSING')
         RETURNING id, user_ref, image_key, image_content_type, status`,
       [receiptId],
@@ -563,7 +586,8 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
     );
     return result.rows;
   });
-  const ocr = await readReceipt(env, ocrBytes, 'image/webp', stores);
+  const ocrResult = await readReceipt(env, ocrBytes, receipt.image_content_type || 'image/webp', stores);
+  const ocr = ocrResult.receipt;
   await withDatabase(env, async (client) => {
     const appSettings = await loadAppSettings(client);
     const selectedStore = findMatchingStore(stores, ocr);
@@ -576,6 +600,27 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
       currency: /^[A-Z]{3}$/.test(ocr.currency || '') ? ocr.currency! : 'EUR',
     };
     const fingerprint = ocr.isReceipt ? buildTicketFingerprint(fields) : null;
+    if (ocrResult.verificationIssues.length > 0) {
+      const reasons = [
+        'OCR_VERIFICATION_REQUIRED',
+        ...ocrResult.verificationIssues.map((issue) => `OCR_${issue}`),
+      ];
+      await client.query(
+        `UPDATE receipts SET status = 'REWARD_FAILED', store_id = $2, store_name = $3,
+           ticket_number = $4, purchase_date = $5, total_cents = $6, currency = $7,
+           ticket_fingerprint = NULL, ocr_payload = $8::jsonb, ocr_confidence = $9,
+           ocr_provider = $10, ocr_model = $11, ocr_attempt_count = $12,
+           ocr_duration_ms = $13, ocr_completed_at = NOW(), risk_score = 0,
+           validation_reasons = $14::jsonb, review_status = 'PENDING',
+           reviewed_at = NULL, reviewed_by = NULL, updated_at = NOW()
+         WHERE id = $1`,
+        [receiptId, selectedStore?.id || null, fields.storeName || null,
+          fields.ticketNumber || null, fields.purchaseDate || null, fields.totalCents || null,
+          fields.currency, JSON.stringify(ocr), ocr.confidence, ocrResult.provider,
+          ocrResult.model, ocrResult.attemptCount, ocrResult.durationMs, JSON.stringify(reasons)],
+      );
+      return;
+    }
     const duplicate = fingerprint ? await client.query(
       `SELECT id FROM receipts
         WHERE user_ref = $1 AND ticket_fingerprint = $2 AND id <> $3
@@ -597,6 +642,8 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
          ticket_number = $5, purchase_date = $6, total_cents = $7, currency = $8,
          ticket_fingerprint = $9, ocr_payload = $10::jsonb, ocr_confidence = $11,
          risk_score = $12, validation_reasons = $13::jsonb,
+         ocr_provider = $14, ocr_model = $15, ocr_attempt_count = $16,
+         ocr_duration_ms = $17, ocr_completed_at = NOW(),
          review_status = 'CLEARED', reviewed_at = NOW(), reviewed_by = 'SYSTEM',
          updated_at = NOW()
        WHERE id = $1`,
@@ -604,7 +651,8 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
         fields.ticketNumber || null, fields.purchaseDate || null, fields.totalCents || null,
         fields.currency, status === 'DUPLICATE' ? null : fingerprint,
         JSON.stringify(ocr), ocr.confidence, validation.riskScore,
-        JSON.stringify(validation.reasons)],
+        JSON.stringify(validation.reasons), ocrResult.provider, ocrResult.model,
+        ocrResult.attemptCount, ocrResult.durationMs],
     );
   });
 }
@@ -614,7 +662,8 @@ async function markOcrFailed(env: Env, receiptId: string): Promise<void> {
     await client.query(
       `UPDATE receipts SET status = 'REWARD_FAILED', validation_reasons = $2::jsonb,
           review_status = 'PENDING', reviewed_at = NULL, reviewed_by = NULL,
-          updated_at = NOW() WHERE id = $1 AND status = 'OCR_PROCESSING'`,
+          ocr_completed_at = NOW(), updated_at = NOW()
+        WHERE id = $1 AND status = 'OCR_PROCESSING'`,
       [receiptId, JSON.stringify(['OCR_PROCESSING_FAILED'])],
     );
   });
@@ -911,12 +960,85 @@ async function handleAdminReview(
   const body = await readJson(request);
   const action = String(body.action || '').toUpperCase();
   const reason = String(body.reason || '').trim().slice(0, 500);
-  if (!['CLEAR', 'REOPEN', 'REVOKE'].includes(action)) return error('Acción no válida', 400);
+  if (!['CLEAR', 'REOPEN', 'REVOKE', 'MANUAL_APPROVE'].includes(action)) return error('Acción no válida', 400);
   let outboxId = '';
   const response = await withDatabase(env, (client) => inTransaction(client, async () => {
     const result = await client.query<ReceiptRow>('SELECT * FROM receipts WHERE id = $1 FOR UPDATE', [receiptId]);
     const receipt = result.rows[0];
     if (!receipt) return error('Ticket no encontrado', 404);
+    if (action === 'MANUAL_APPROVE') {
+      const verificationRequired = receipt.status === 'REWARD_FAILED' &&
+        receipt.validation_reasons.includes('OCR_VERIFICATION_REQUIRED');
+      if (receipt.status !== 'AUTO_REJECTED' && !verificationRequired) {
+        return error('Este ticket no admite validación manual', 409);
+      }
+      if (!reason) return error('Indica el motivo de la validación manual', 400);
+      const corrections = body.fields && typeof body.fields === 'object'
+        ? body.fields as Record<string, unknown>
+        : {};
+      const storeId = String(corrections.storeId || '').trim();
+      const ticketNumber = String(corrections.ticketNumber || '').trim().slice(0, 120);
+      const purchaseDate = String(corrections.purchaseDate || '').trim();
+      const totalCents = Number(corrections.totalCents);
+      const currency = String(corrections.currency || 'EUR').trim().toUpperCase();
+      if (!storeId) return error('Selecciona un comercio autorizado', 400);
+      if (!ticketNumber) return error('Indica el número del ticket', 400);
+      if (!isValidIsoDate(purchaseDate)) return error('Indica una fecha válida', 400);
+      if (!Number.isInteger(totalCents) || totalCents <= 0) return error('Indica un importe válido', 400);
+      if (!/^[A-Z]{3}$/.test(currency)) return error('La moneda no es válida', 400);
+
+      const storeResult = await client.query<StoreRow>(
+        'SELECT * FROM stores WHERE id = $1 AND active = TRUE LIMIT 1', [storeId],
+      );
+      const store = storeResult.rows[0];
+      if (!store) return error('El comercio seleccionado no está activo', 400);
+      const fields: ReceiptFields = {
+        storeId: store.id, storeName: store.name, ticketNumber, purchaseDate, totalCents, currency,
+      };
+      const fingerprint = buildTicketFingerprint(fields);
+      const duplicate = await client.query(
+        `SELECT id FROM receipts
+          WHERE user_ref = $1 AND ticket_fingerprint = $2 AND id <> $3
+            AND status = ANY($4::text[]) LIMIT 1`,
+        [receipt.user_ref, fingerprint, receiptId, [...ACTIVE_DUPLICATE_STATUSES]],
+      );
+      if (duplicate.rowCount) return error('Este ticket ya había sido utilizado', 409);
+      const tiers = await client.query<{ id: string; minimum_cents: number; points: number; active: boolean }>(
+        'SELECT id, minimum_cents, points, active FROM reward_tiers WHERE active = TRUE',
+      );
+      const points = resolveRewardPoints(totalCents, tiers.rows.map((tier) => ({
+        id: tier.id, minimumCents: tier.minimum_cents, points: tier.points, active: tier.active,
+      })));
+      outboxId = uuid();
+      await client.query(
+        `INSERT INTO receipt_reviews (id, receipt_id, action, manager_email, reason, changes)
+         VALUES ($1, $2, 'MANUALLY_APPROVED', $3, $4, $5::jsonb)`,
+        [uuid(), receiptId, managerEmail, reason, JSON.stringify({
+          previous: { storeId: receipt.store_id, storeName: receipt.store_name,
+            ticketNumber: receipt.ticket_number, purchaseDate: receipt.purchase_date,
+            totalCents: receipt.total_cents, currency: receipt.currency,
+            reasons: receipt.validation_reasons },
+          corrected: fields,
+        })],
+      );
+      await client.query(
+        `UPDATE receipts SET status = 'REWARD_PENDING', store_id = $2, store_name = $3,
+           ticket_number = $4, purchase_date = $5, total_cents = $6, currency = $7,
+           ticket_fingerprint = $8, validation_reasons = '[]'::jsonb,
+           points_awarded = $9, review_status = 'CLEARED', reviewed_at = NOW(),
+           reviewed_by = $10, updated_at = NOW() WHERE id = $1`,
+        [receiptId, store.id, store.name, ticketNumber, purchaseDate, totalCents,
+          currency, fingerprint, points, managerEmail],
+      );
+      await client.query(
+        `INSERT INTO reward_outbox (id, receipt_id, operation, idempotency_key, payload)
+         VALUES ($1, $2, 'GRANT', $3, $4::jsonb)`,
+        [outboxId, receiptId, rewardIdempotencyKey(receiptId), JSON.stringify({
+          points, manualApproval: true, managerEmail, reason,
+        })],
+      );
+      return json({ success: true, status: 'REWARD_PENDING', points }, 202);
+    }
     if (action === 'CLEAR') {
       if (receipt.review_status === 'CLEARED') {
         return json({ success: true, status: receipt.status, idempotent: true });

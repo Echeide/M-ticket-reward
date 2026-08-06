@@ -421,7 +421,14 @@ function finish(receipt) {
   }
 }
 
-function statusMeta(status) {
+function statusMeta(status, verificationRequired = false) {
+  if (verificationRequired) {
+    return {
+      label: 'Pendiente de revisión',
+      tone: 'attention',
+      message: 'El ticket está registrado, pero no hemos podido verificar todos sus datos automáticamente.',
+    };
+  }
   return RECEIPT_STATUSES[status] || {
     label: 'En revisión', tone: 'pending', message: 'Consulta de nuevo el estado más tarde.',
   };
@@ -473,7 +480,7 @@ function renderHistory(receipts) {
     return;
   }
   for (const receipt of receipts) {
-    const meta = statusMeta(receipt.status);
+    const meta = statusMeta(receipt.status, receipt.verificationRequired);
     const button = document.createElement('button');
     button.className = 'ticket-card';
     button.type = 'button';
@@ -509,7 +516,7 @@ function renderHistory(receipts) {
 
 function showTicketDetail(receipt) {
   state.receipt = receipt;
-  const meta = statusMeta(receipt.status);
+  const meta = statusMeta(receipt.status, receipt.verificationRequired);
   document.querySelector('#detail-title').textContent = receipt.publicId;
   const status = document.querySelector('#detail-status');
   status.className = `ticket-status ${meta.tone}`;

@@ -29,6 +29,24 @@ npm run dev
 
 Con `OCR_MODE=mock` se puede probar el flujo sin consumir un modelo OCR.
 
+### Proveedor OCR
+
+El OCR se selecciona mediante variables, sin cambiar el flujo de tickets:
+
+- `OCR_PROVIDER=workers-ai` usa el binding AI de Cloudflare;
+- `OCR_PROVIDER=openai-compatible` usa una API visual externa compatible con
+  `POST /chat/completions`;
+- `OCR_MODEL` contiene el identificador del modelo;
+- `OCR_TIMEOUT_MS` limita cada intento (45 segundos por defecto);
+- para un proveedor externo, configura `OCR_API_BASE_URL` y guarda `OCR_API_KEY`
+  como secreto con `wrangler secret put OCR_API_KEY`.
+
+La configuración inicial de producción usa
+`@cf/moondream/moondream3.1-9B-A2B`. El OCR hace un segundo intento focalizado
+cuando faltan datos o no coinciden con sus líneas de evidencia. Un resultado que
+sigue siendo incoherente queda pendiente de revisión y nunca se rechaza
+automáticamente como ticket no autorizado.
+
 Antes de probar una subida, añade al menos una tienda:
 
 ```sql
