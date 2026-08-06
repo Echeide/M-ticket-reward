@@ -6,7 +6,7 @@
 2. El Worker intercambia el código desde servidor y crea una sesión local.
 3. El navegador captura la imagen del ticket.
 4. El Worker valida tipo y tamaño, calcula SHA-256, guarda en R2 y publica un trabajo OCR.
-5. El consumidor OCR usa un proveedor configurable, extrae tienda, número, fecha, importe y moneda, y exige evidencia textual para los campos críticos. Si la primera lectura es incompleta o incoherente, realiza un segundo intento focalizado.
+5. El consumidor OCR usa un proveedor configurable, extrae tienda, número, fecha/hora, importe y moneda, y exige evidencia textual para los campos críticos. Si el ticket no imprime número, admite la fecha y hora verificadas como identidad alternativa. Si la primera lectura es incompleta o incoherente, realiza un segundo intento focalizado.
 6. Solo si el comercio, los campos, su evidencia, la fecha y la duplicidad son válidos, el ticket queda pendiente de confirmación. Una lectura que no puede verificarse queda pendiente de revisión y no se clasifica como no autorizada.
 7. El usuario revisa los campos reconocidos, sin poder modificarlos, y confirma; la API repite la validación para evitar carreras.
 8. Si pasa la validación automática, calcula puntos y crea una outbox durable.
@@ -44,7 +44,7 @@ READY_FOR_CONFIRMATION -> DUPLICATE
 Se aplican tres controles:
 
 - SHA-256 de la imagen para duplicado binario;
-- huella lógica `tienda + número + fecha + importe + moneda` por usuario;
+- huella lógica `tienda + número + fecha + importe + moneda` por usuario o, cuando no hay número impreso, `tienda + fecha/hora + importe + moneda`;
 - puntuación de riesgo por correcciones respecto al OCR, baja confianza, fechas anómalas e importes fuera de patrón.
 
 Debe añadirse una huella perceptual para detectar recortes o recompresión de la misma imagen. Los casos de alto riesgo siguen pudiendo recibir puntos si la política lo decide, pero aparecen primero en el backoffice.

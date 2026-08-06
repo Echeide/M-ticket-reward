@@ -1,8 +1,9 @@
-import type { OcrReceipt } from './receipt';
+import { isValidPurchaseDateTime, type OcrReceipt } from './receipt';
 
 export type TrainingSampleInput = {
   ticketNumber: string;
   purchaseDate: string;
+  purchaseDateTime: string;
   totalCents: number;
   currency: string;
   notes: string;
@@ -12,6 +13,7 @@ export type TrainingEvaluationMatches = {
   store: boolean;
   ticketNumber: boolean;
   purchaseDate: boolean;
+  purchaseTime: boolean;
   total: boolean;
   evidence: boolean;
 };
@@ -30,20 +32,25 @@ function validIsoDate(value: string): boolean {
 export function normalizeTrainingSampleInput(value: Record<string, unknown>): TrainingSampleInput {
   const ticketNumber = String(value.ticketNumber || '').trim();
   const purchaseDate = String(value.purchaseDate || '').trim();
+  const purchaseDateTime = String(value.purchaseDateTime || '').trim();
   const totalCents = Number(value.totalCents);
   const currency = String(value.currency || 'EUR').trim().toUpperCase();
   const notes = String(value.notes || '').trim();
 
-  if (ticketNumber.length < 3 || ticketNumber.length > 160 || compactIdentifier(ticketNumber).length < 3) {
+  if (ticketNumber && (ticketNumber.length < 3 || ticketNumber.length > 160 || compactIdentifier(ticketNumber).length < 3)) {
     throw new Error('TRAINING_TICKET_NUMBER_INVALID');
   }
   if (!validIsoDate(purchaseDate)) throw new Error('TRAINING_DATE_INVALID');
+  if (purchaseDateTime && !isValidPurchaseDateTime(purchaseDateTime, purchaseDate)) {
+    throw new Error('TRAINING_PURCHASE_TIME_INVALID');
+  }
+  if (!ticketNumber && !purchaseDateTime) throw new Error('TRAINING_IDENTITY_REQUIRED');
   if (!Number.isInteger(totalCents) || totalCents <= 0 || totalCents > 100_000_000) {
     throw new Error('TRAINING_TOTAL_INVALID');
   }
   if (!/^[A-Z]{3}$/.test(currency)) throw new Error('TRAINING_CURRENCY_INVALID');
   if (notes.length > 1_000) throw new Error('TRAINING_NOTES_TOO_LONG');
-  return { ticketNumber, purchaseDate, totalCents, currency, notes };
+  return { ticketNumber, purchaseDate, purchaseDateTime, totalCents, currency, notes };
 }
 
 export function compareTrainingResult(
@@ -56,6 +63,7 @@ export function compareTrainingResult(
     store: storeMatched,
     ticketNumber: compactIdentifier(receipt.ticketNumber || '') === compactIdentifier(expected.ticketNumber),
     purchaseDate: receipt.purchaseDate === expected.purchaseDate,
+    purchaseTime: !expected.purchaseDateTime || receipt.purchaseDateTime === expected.purchaseDateTime,
     total: receipt.totalCents === expected.totalCents && (receipt.currency || 'EUR') === expected.currency,
     evidence: verificationIssues.length === 0,
   };

@@ -16,10 +16,42 @@ test('training samples normalize verified ground truth', () => {
   }), {
     ticketNumber: 'A-004582',
     purchaseDate: '2026-08-05',
+    purchaseDateTime: '',
     totalCents: 4830,
     currency: 'EUR',
     notes: 'Formato de caja nuevo',
   });
+});
+
+test('training samples accept date and time when the ticket has no printed number', () => {
+  assert.deepEqual(normalizeTrainingSampleInput({
+    ticketNumber: '',
+    purchaseDate: '2026-08-05',
+    purchaseDateTime: '2026-08-05T18:42',
+    totalCents: 4830,
+    currency: 'EUR',
+  }), {
+    ticketNumber: '',
+    purchaseDate: '2026-08-05',
+    purchaseDateTime: '2026-08-05T18:42',
+    totalCents: 4830,
+    currency: 'EUR',
+    notes: '',
+  });
+});
+
+test('training evaluation compares the alternative date and time identity', () => {
+  const expected = normalizeTrainingSampleInput({
+    ticketNumber: '', purchaseDate: '2026-08-05', purchaseDateTime: '2026-08-05T18:42',
+    totalCents: 4830, currency: 'EUR',
+  });
+  const matches = compareTrainingResult(expected, {
+    isReceipt: true, confidence: 0.95, storeName: 'Librería Atlántico', ticketNumber: '',
+    purchaseDate: '2026-08-05', purchaseDateTime: '2026-08-05T18:42',
+    totalCents: 4830, currency: 'EUR',
+  }, true, []);
+  assert.equal(trainingEvaluationPassed(matches), true);
+  assert.equal(matches.purchaseTime, true);
 });
 
 test('training samples reject incomplete or impossible ground truth', () => {
@@ -43,7 +75,7 @@ test('evaluation compares every critical field and visible evidence', () => {
     rawText: '',
   }, true, []);
   assert.deepEqual(matches, {
-    store: true, ticketNumber: true, purchaseDate: true, total: true, evidence: true,
+    store: true, ticketNumber: true, purchaseDate: true, purchaseTime: true, total: true, evidence: true,
   });
   assert.equal(trainingEvaluationPassed(matches), true);
   assert.equal(trainingEvaluationPassed({ ...matches, evidence: false }), false);

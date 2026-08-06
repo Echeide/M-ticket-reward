@@ -321,16 +321,17 @@ function showOcrReview(receipt) {
   const fields = receipt.fields;
   const store = matchStore(fields.storeName);
   const validDate = isPurchaseDateAllowed(fields.purchaseDate);
+  const hasAlternativeIdentity = isPurchaseDateTimeForDate(fields.purchaseDateTime, fields.purchaseDate);
   const hasConfiguredPeriod = Boolean(
     state.appSettings['validation.startAt'] || state.appSettings['validation.endAt'],
   );
   const valid = Boolean(
-    store && fields.ticketNumber && validDate &&
+    store && (fields.ticketNumber || hasAlternativeIdentity) && validDate &&
     Number.isInteger(fields.totalCents) && fields.totalCents > 0
   );
   document.querySelector('#ocr-store').textContent = store?.name || fields.storeName || 'No reconocido';
-  document.querySelector('#ocr-number').textContent = fields.ticketNumber || 'No reconocido';
-  document.querySelector('#ocr-date').textContent = fields.purchaseDate || 'No reconocida';
+  document.querySelector('#ocr-number').textContent = fields.ticketNumber || (hasAlternativeIdentity ? 'No impreso; validado por hora' : 'No reconocido');
+  document.querySelector('#ocr-date').textContent = formatPurchaseDate(fields);
   const currency = /^[A-Z]{3}$/.test(fields.currency || '') ? fields.currency : 'EUR';
   document.querySelector('#ocr-total').textContent = fields.totalCents
     ? new Intl.NumberFormat('es-ES', { style: 'currency', currency }).format(fields.totalCents / 100)
@@ -348,6 +349,18 @@ function showOcrReview(receipt) {
   badge.className = `ocr-validation-badge ${valid ? 'valid' : 'invalid'}`;
   document.querySelector('#confirm-ocr').hidden = !valid;
   document.querySelector('#retry-ocr').hidden = valid;
+}
+
+function isPurchaseDateTimeForDate(value, purchaseDate) {
+  return new RegExp(`^${String(purchaseDate || '').replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}T(?:[01]\\d|2[0-3]):[0-5]\\d$`)
+    .test(String(value || ''));
+}
+
+function formatPurchaseDate(fields) {
+  if (!fields.purchaseDate) return 'No reconocida';
+  return isPurchaseDateTimeForDate(fields.purchaseDateTime, fields.purchaseDate)
+    ? `${fields.purchaseDate} · ${fields.purchaseDateTime.slice(11, 16)}`
+    : fields.purchaseDate;
 }
 
 function isPurchaseDateAllowed(value) {
@@ -525,8 +538,9 @@ function showTicketDetail(receipt) {
     : meta.label;
   document.querySelector('#detail-message').textContent = receipt.message || meta.message;
   document.querySelector('#detail-store').textContent = receipt.fields.storeName || 'Pendiente';
-  document.querySelector('#detail-number').textContent = receipt.fields.ticketNumber || 'Pendiente';
-  document.querySelector('#detail-date').textContent = receipt.fields.purchaseDate || 'Pendiente';
+  document.querySelector('#detail-number').textContent = receipt.fields.ticketNumber ||
+    (isPurchaseDateTimeForDate(receipt.fields.purchaseDateTime, receipt.fields.purchaseDate) ? 'No impreso; validado por hora' : 'Pendiente');
+  document.querySelector('#detail-date').textContent = formatPurchaseDate(receipt.fields);
   document.querySelector('#detail-total').textContent = formatMoney(receipt.fields.totalCents, receipt.fields.currency);
   document.querySelector('#detail-points').textContent = receipt.status === 'REVOKED'
     ? `${receipt.reward.pointsAwarded} retirados`

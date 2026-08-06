@@ -61,7 +61,7 @@ cualquier formato que no aporte evidencias suficientes.
 ### Entrenamiento y evaluación por comercio
 
 La edición de cada comercio incluye una pestaña `Entrenamiento` para mantener un
-conjunto de tickets con número, fecha e importe verificados. Las imágenes se
+conjunto de tickets con número o fecha/hora, además del importe, verificados. Las imágenes se
 optimizan con el flujo canónico de tickets y se guardan bajo un prefijo separado
 en R2; nunca participan en recompensas, duplicados ni actividad de usuarios.
 Los ejemplos pueden partir de archivos nuevos o de tickets ya subidos y vinculados
@@ -70,7 +70,7 @@ usuario, su revisión y su recompensa permanecen sin cambios.
 
 El gestor puede evaluar un ejemplo o el conjunto completo con el proveedor OCR
 activo. Se conserva el modelo, la latencia y la coincidencia de comercio, número,
-fecha, total y evidencias. Esta función construye un banco de evaluación fiable;
+fecha, hora, total y evidencias. Esta función construye un banco de evaluación fiable;
 no realiza fine-tuning ni activa automáticamente un modelo en producción.
 
 Antes de probar una subida, añade al menos una tienda:

@@ -34,6 +34,7 @@ const reasonLabels = {
   OCR_PROCESSING_FAILED: 'La lectura automática ha fallado y necesita revisión.',
   OCR_VERIFICATION_REQUIRED: 'El OCR no ha podido verificar todos los datos. No se ha rechazado automáticamente.',
   OCR_MISSING_TICKET_NUMBER: 'Falta el número de ticket.',
+  OCR_MISSING_TICKET_NUMBER_OR_TIME: 'Falta un número de ticket o una hora de compra verificable.',
   OCR_UNVERIFIED_TICKET_NUMBER: 'El número no coincide con su evidencia visible.',
   OCR_MISSING_DATE: 'Falta la fecha de compra.',
   OCR_UNVERIFIED_DATE: 'La fecha no coincide con su evidencia visible.',
@@ -44,6 +45,7 @@ const reasonLabels = {
   DUPLICATE_IMAGE: 'La misma imagen ya había sido enviada.',
   STORE_NOT_ALLOWED: 'El comercio no está autorizado.',
   TICKET_NUMBER_REQUIRED: 'No se ha reconocido el número del ticket.',
+  TICKET_NUMBER_OR_TIME_REQUIRED: 'No se ha reconocido un número de ticket ni una hora de compra verificable.',
   INVALID_TOTAL: 'El importe no es válido.',
   INVALID_DATE: 'No se ha reconocido una fecha válida.',
   FUTURE_DATE: 'La fecha está fuera del periodo permitido.',
@@ -69,6 +71,18 @@ async function request(path, options = {}) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || 'Error de backoffice');
   return payload;
+}
+
+function closeDialogOnBackdrop(dialog, beforeClose) {
+  dialog.addEventListener('click', (event) => {
+    if (event.target !== dialog) return;
+    const bounds = dialog.getBoundingClientRect();
+    const outsideContent = event.clientX < bounds.left || event.clientX > bounds.right ||
+      event.clientY < bounds.top || event.clientY > bounds.bottom;
+    if (!outsideContent) return;
+    beforeClose?.();
+    dialog.close();
+  });
 }
 
 function filterParams() {
@@ -457,7 +471,7 @@ function trainingEvaluationDetails(evaluation) {
     return `<span class="status-chip auto_rejected">Error técnico</span><small>${escapeHtml(evaluation.errorMessage || 'No se pudo ejecutar el OCR')}</small>`;
   }
   const labels = {
-    store: 'Comercio', ticketNumber: 'Número', purchaseDate: 'Fecha', total: 'Importe', evidence: 'Evidencias',
+    store: 'Comercio', ticketNumber: 'Número', purchaseDate: 'Fecha', purchaseTime: 'Hora', total: 'Importe', evidence: 'Evidencias',
   };
   const fields = Object.entries(labels).map(([key, label]) =>
     `<span class="training-match ${evaluation.matches?.[key] ? 'passed' : 'failed'}">${evaluation.matches?.[key] ? '✓' : '×'} ${label}</span>`).join('');
@@ -575,8 +589,8 @@ function renderTrainingSamples() {
         <span>Ampliar</span>
       </button>
       <div class="training-ground-truth">
-        <strong>${escapeHtml(sample.expected.ticketNumber)}</strong>
-        <span>${escapeHtml(sample.expected.purchaseDate)} · ${formatMoney(sample.expected.totalCents)}</span>
+        <strong>${escapeHtml(sample.expected.ticketNumber || 'Sin número; identificado por hora')}</strong>
+        <span>${escapeHtml(sample.expected.purchaseDateTime || sample.expected.purchaseDate)} · ${formatMoney(sample.expected.totalCents)}</span>
         ${sample.notes ? `<small>${escapeHtml(sample.notes)}</small>` : ''}
         ${trainingEvaluationDetails(sample.evaluation)}
       </div>
@@ -620,7 +634,7 @@ function renderTrainingReceiptCandidates() {
       <div class="training-receipt-candidate-data">
         <strong>${escapeHtml(receipt.publicId)}</strong>
         <span>${escapeHtml(user)}</span>
-        <small>${escapeHtml(receipt.expected.ticketNumber || 'Número pendiente')} · ${escapeHtml(receipt.expected.purchaseDate || 'Fecha pendiente')} · ${escapeHtml(total)}</small>
+        <small>${escapeHtml(receipt.expected.ticketNumber || (receipt.expected.purchaseDateTime ? 'Sin número' : 'Identidad pendiente'))} · ${escapeHtml(receipt.expected.purchaseDateTime || receipt.expected.purchaseDate || 'Fecha pendiente')} · ${escapeHtml(total)}</small>
         <small>${escapeHtml(statusLabels[receipt.status] || receipt.status)} · subido ${escapeHtml(new Date(receipt.createdAt).toLocaleDateString('es-ES'))}</small>
       </div>
       <button class="${selected ? 'secondary-button' : 'primary-button'} select-training-receipt" type="button" data-id="${escapeHtml(receipt.id)}" ${selected ? 'disabled' : ''}>${selected ? 'Añadido' : 'Seleccionar'}</button>
@@ -648,6 +662,7 @@ function renderTrainingReceiptCandidates() {
       values: {
         ticketNumber: receipt.expected.ticketNumber || '',
         purchaseDate: receipt.expected.purchaseDate || '',
+        purchaseTime: receipt.expected.purchaseDateTime?.slice(11, 16) || '',
         total,
         notes: '',
       },
@@ -699,8 +714,9 @@ function renderTrainingDrafts() {
       </button>
       <div class="training-draft-fields">
         <div class="training-draft-title"><strong>${escapeHtml(draft.label)}</strong>${draft.sourceLabel ? `<small>${escapeHtml(draft.sourceLabel)}</small>` : ''}</div>
-        <label>Número del ticket<input data-training-field="ticketNumber" maxlength="160" placeholder="Número exacto impreso" value="${escapeHtml(draft.values?.ticketNumber || '')}" /></label>
+        <label>Número del ticket<input data-training-field="ticketNumber" maxlength="160" placeholder="Opcional si el ticket muestra la hora" value="${escapeHtml(draft.values?.ticketNumber || '')}" /></label>
         <label>Fecha<input data-training-field="purchaseDate" type="date" value="${escapeHtml(draft.values?.purchaseDate || '')}" /></label>
+        <label>Hora<input data-training-field="purchaseTime" type="time" value="${escapeHtml(draft.values?.purchaseTime || '')}" /><small>Obligatoria cuando el ticket no tiene número.</small></label>
         <label>Importe total (€)<input data-training-field="total" inputmode="decimal" placeholder="15,92" value="${escapeHtml(draft.values?.total || '')}" /></label>
         <label class="training-notes-field">Notas<input data-training-field="notes" maxlength="1000" placeholder="Caja, formato o particularidades" value="${escapeHtml(draft.values?.notes || '')}" /></label>
       </div>
@@ -736,8 +752,8 @@ async function saveTrainingDrafts(event) {
       const card = cards[index];
       const value = (field) => card.querySelector(`[data-training-field="${field}"]`).value.trim();
       const totalCents = Math.round(Number(value('total').replace(',', '.')) * 100);
-      if (!value('ticketNumber') || !value('purchaseDate') || !Number.isInteger(totalCents) || totalCents <= 0) {
-        throw new Error(`Completa número, fecha e importe de ${draft.label}`);
+      if ((!value('ticketNumber') && !value('purchaseTime')) || !value('purchaseDate') || !Number.isInteger(totalCents) || totalCents <= 0) {
+        throw new Error(`Completa número o hora, además de fecha e importe de ${draft.label}`);
       }
       button.textContent = `Guardando ${index + 1} de ${trainingDraftFiles.length}…`;
       const form = new FormData();
@@ -745,6 +761,7 @@ async function saveTrainingDrafts(event) {
       else form.append('image', draft.file);
       form.append('ticketNumber', value('ticketNumber'));
       form.append('purchaseDate', value('purchaseDate'));
+      form.append('purchaseDateTime', value('purchaseTime') ? `${value('purchaseDate')}T${value('purchaseTime')}` : '');
       form.append('totalCents', String(totalCents));
       form.append('currency', 'EUR');
       form.append('notes', value('notes'));
@@ -937,7 +954,7 @@ async function select(id, suppliedReceipt = null) {
     <div class="review-data">
       <p class="eyebrow">${escapeHtml(receipt.publicId)}</p>
       <h2>${escapeHtml(receipt.fields.storeName || 'Sin tienda')}</h2>
-      <dl><div><dt>Usuario</dt><dd>${escapeHtml(receipt.user.displayName || receipt.user.subject)}</dd></div><div class="lookup-code-field"><dt>Código de búsqueda</dt><dd>${escapeHtml(receipt.user.lookupCode || 'Histórico sin código')}</dd></div><div><dt>Número</dt><dd>${escapeHtml(receipt.fields.ticketNumber || '—')}</dd></div><div><dt>Fecha</dt><dd>${escapeHtml(receipt.fields.purchaseDate || '—')}</dd></div><div><dt>Importe</dt><dd>${formatMoney(receipt.fields.totalCents)}</dd></div><div><dt>Estado</dt><dd>${escapeHtml(receiptStatusLabel(receipt))}</dd></div></dl>
+      <dl><div><dt>Usuario</dt><dd>${escapeHtml(receipt.user.displayName || receipt.user.subject)}</dd></div><div class="lookup-code-field"><dt>Código de búsqueda</dt><dd>${escapeHtml(receipt.user.lookupCode || 'Histórico sin código')}</dd></div><div><dt>Número</dt><dd>${escapeHtml(receipt.fields.ticketNumber || (receipt.fields.purchaseDateTime ? 'Sin número; validado por hora' : '—'))}</dd></div><div><dt>Fecha y hora</dt><dd>${escapeHtml(receipt.fields.purchaseDateTime || receipt.fields.purchaseDate || '—')}</dd></div><div><dt>Importe</dt><dd>${formatMoney(receipt.fields.totalCents)}</dd></div><div><dt>Estado</dt><dd>${escapeHtml(receiptStatusLabel(receipt))}</dd></div></dl>
       ${reasons.length ? `<div class="review-reasons"><strong>Comprobación automática</strong><ul>${reasons.map((reason) => `<li>${escapeHtml(reasonLabels[reason] || reason)}</li>`).join('')}</ul></div>` : ''}
       ${canApproveManually ? `<div class="manual-correction"><strong>Corrección manual</strong><label>Comercio<select id="manual-store"><option value="">Selecciona un comercio</option>${activeStoreOptions}</select></label><label>Número de ticket<input id="manual-ticket-number" value="${escapeHtml(receipt.fields.ticketNumber)}" /></label><label>Fecha<input id="manual-purchase-date" type="date" value="${escapeHtml(receipt.fields.purchaseDate)}" /></label><label>Importe (€)<input id="manual-total" type="number" min="0.01" step="0.01" value="${(receipt.fields.totalCents / 100).toFixed(2)}" /></label></div>` : ''}
       <label>Nota de revisión<textarea id="review-reason" rows="3" placeholder="${canApproveManually ? 'Obligatoria para validar manualmente' : `Opcional al marcar como revisado${canRevoke ? '; obligatoria para retirar puntos' : ''}`}"></textarea></label>
@@ -1157,7 +1174,7 @@ document.querySelector('#training-files').addEventListener('change', (event) => 
     previewUrl: URL.createObjectURL(file),
     objectUrl: true,
     label: file.name,
-    values: { ticketNumber: '', purchaseDate: '', total: '', notes: '' },
+    values: { ticketNumber: '', purchaseDate: '', purchaseTime: '', total: '', notes: '' },
   })));
   event.currentTarget.value = '';
   renderTrainingDrafts();
@@ -1189,6 +1206,9 @@ document.querySelector('#evaluate-all-training').addEventListener('click', evalu
 document.querySelector('#generate-ocr-profile').addEventListener('click', generateOcrProfile);
 document.querySelector('#save-ocr-profile').addEventListener('click', saveOcrProfile);
 document.querySelector('#ocr-profile-enabled').addEventListener('change', updateOcrProfileStatus);
+closeDialogOnBackdrop(document.querySelector('#store-dialog'), clearTrainingDrafts);
+closeDialogOnBackdrop(document.querySelector('#training-receipts-dialog'));
+closeDialogOnBackdrop(document.querySelector('#training-image-dialog'));
 document.querySelector('#close-store-dialog').addEventListener('click', () => {
   clearTrainingDrafts();
   document.querySelector('#store-dialog').close();

@@ -20,7 +20,7 @@ export type StoreOcrProfile = {
 
 export type OcrProfileTrainingResult = {
   receipt: OcrReceipt | null;
-  matches?: Partial<Record<'store' | 'ticketNumber' | 'purchaseDate' | 'total' | 'evidence', boolean>>;
+  matches?: Partial<Record<'store' | 'ticketNumber' | 'purchaseDate' | 'purchaseTime' | 'total' | 'evidence', boolean>>;
   notes?: string;
 };
 

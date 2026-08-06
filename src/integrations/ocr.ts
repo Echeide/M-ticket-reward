@@ -1,4 +1,4 @@
-import type { OcrReceipt } from '../domain/receipt';
+import { hasVerifiedPurchaseTime, type OcrReceipt } from '../domain/receipt';
 import { profileHasGuidance } from '../domain/ocr-profile';
 import { findMatchingStore, type StoreIdentity } from '../domain/store';
 import { prepareOcrRegions } from '../platform/image';
@@ -70,6 +70,16 @@ function compactIdentifier(value: string): string {
   return value.normalize('NFKD').replace(/[^a-z0-9]/gi, '').toUpperCase();
 }
 
+function hasVerifiedTicketNumber(receipt: OcrReceipt): boolean {
+  return Boolean(receipt.ticketNumber) && compactIdentifier(receipt.evidence?.ticketNumberText || '')
+    .includes(compactIdentifier(receipt.ticketNumber || ''));
+}
+
+function preferVerifiedIdentity(receipt: OcrReceipt): OcrReceipt {
+  if (!receipt.ticketNumber || hasVerifiedTicketNumber(receipt) || !hasVerifiedPurchaseTime(receipt)) return receipt;
+  return { ...receipt, ticketNumber: '' };
+}
+
 function ticketNumberFromEvidence(value: string): string | null {
   const labelled = /(?:documento|ticket|factura|recibo|transacci[oó]n|operaci[oó]n|folio|n[º°o]\.?)\s*[:#-]*\s+(.+)/i.exec(value);
   if (!labelled) return null;
@@ -108,8 +118,9 @@ export function verifyOcr(receipt: OcrReceipt): string[] {
   const issues: string[] = [];
   if (!receipt.isReceipt) return issues;
   const evidence = receipt.evidence || {};
-  if (!receipt.ticketNumber) issues.push('MISSING_TICKET_NUMBER');
-  else if (!compactIdentifier(evidence.ticketNumberText || '').includes(compactIdentifier(receipt.ticketNumber))) {
+  if (!receipt.ticketNumber) {
+    if (!hasVerifiedPurchaseTime(receipt)) issues.push('MISSING_TICKET_NUMBER_OR_TIME');
+  } else if (!hasVerifiedTicketNumber(receipt)) {
     issues.push('UNVERIFIED_TICKET_NUMBER');
   }
   if (!receipt.purchaseDate) issues.push('MISSING_DATE');
@@ -168,6 +179,10 @@ purchaseDateText, totalCents (entero), totalText, currency y rawText.
 ticketNumberText, purchaseDateText y totalText deben ser transcripciones literales y breves de las
 líneas visibles que demuestran cada valor. Si no puedes ver esa evidencia, deja el valor y su texto vacíos.
 No deduzcas, completes ni inventes caracteres.${retry ? '\nEsta es una segunda comprobación: céntrate especialmente en FECHA, TOTAL COMPRA y número de DOCUMENTO/TICKET.' : ''}
+
+Si el ticket no imprime un número identificador, deja ticketNumber y ticketNumberText vacíos y extrae
+obligatoriamente la fecha y hora impresas en purchaseDateTime y purchaseDateText. La combinación de
+comercio, fecha, hora e importe se utilizará entonces como identificación alternativa.
 
 Reglas para storeName:
 - Es el comercio emisor, nunca un producto, marca del listado, eslogan, pago ni cliente.
@@ -257,7 +272,7 @@ export async function readReceipt(
   let response = await provider.extract({
     bytes, contentType, prompt: extractionPrompt(storeReference, false),
   });
-  let receipt = normalizeOcr(parseJsonObject(response.text));
+  let receipt = preferVerifiedIdentity(normalizeOcr(parseJsonObject(response.text)));
   let issues = verifyOcr(receipt);
   let attemptCount = 1;
   let durationMs = response.durationMs;
@@ -274,11 +289,11 @@ export async function readReceipt(
         bytes: regions.totals, contentType: 'image/webp', prompt: regionPrompt(focusedStoreReference, 'totals'),
       }),
     ]);
-    receipt = mergeRegionResults(
+    receipt = preferVerifiedIdentity(mergeRegionResults(
       receipt,
       normalizeOcr(parseJsonObject(headerResponse.text)),
       normalizeOcr(parseJsonObject(totalsResponse.text)),
-    );
+    ));
     issues = verifyOcr(receipt);
     attemptCount = 3;
     durationMs = Date.now() - startedAt;

@@ -19,6 +19,7 @@ export type ReceiptFields = {
   storeName: string;
   ticketNumber: string;
   purchaseDate: string;
+  purchaseDateTime?: string;
   totalCents: number;
   currency: string;
 };
@@ -26,7 +27,6 @@ export type ReceiptFields = {
 export type OcrReceipt = Partial<ReceiptFields> & {
   isReceipt: boolean;
   confidence: number;
-  purchaseDateTime?: string;
   headerText?: string;
   rawText?: string;
   evidence?: {
@@ -81,7 +81,9 @@ export function validateReceiptAutomatically(
   if (!input.ocr.isReceipt) reasons.push('NOT_A_RECEIPT');
   if (input.duplicate) reasons.push('DUPLICATE');
   if (!input.storeActive) reasons.push('STORE_NOT_ALLOWED');
-  if (!input.fields.ticketNumber.trim()) reasons.push('TICKET_NUMBER_REQUIRED');
+  if (!input.fields.ticketNumber.trim() && !hasVerifiedPurchaseTime(input.ocr, input.fields.purchaseDate)) {
+    reasons.push('TICKET_NUMBER_OR_TIME_REQUIRED');
+  }
   if (!Number.isInteger(input.fields.totalCents) || input.fields.totalCents <= 0) {
     reasons.push('INVALID_TOTAL');
   }
@@ -124,6 +126,20 @@ export function validateReceiptAutomatically(
     riskScore: Math.min(100, riskScore),
     reasons,
   };
+}
+
+export function isValidPurchaseDateTime(value: string, purchaseDate: string): boolean {
+  if (!value.startsWith(`${purchaseDate}T`)) return false;
+  return canaryDateTimeToTimestamp(value) !== null;
+}
+
+export function hasVerifiedPurchaseTime(ocr: OcrReceipt, purchaseDate = ocr.purchaseDate || ''): boolean {
+  const purchaseDateTime = String(ocr.purchaseDateTime || '');
+  if (!isValidPurchaseDateTime(purchaseDateTime, purchaseDate)) return false;
+  const printedTime = /(?:^|\D)([01]\d|2[0-3]):([0-5]\d)(?:\D|$)/.exec(
+    String(ocr.evidence?.purchaseDateText || ''),
+  );
+  return Boolean(printedTime && `${printedTime[1]}:${printedTime[2]}` === purchaseDateTime.slice(11, 16));
 }
 
 function canaryDateTimeToTimestamp(value: string): number | null {

@@ -1,0 +1,1 @@
+ALTER TABLE store_training_samples ADD COLUMN expected_purchase_datetime TEXT;

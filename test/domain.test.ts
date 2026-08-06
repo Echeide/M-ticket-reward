@@ -42,6 +42,39 @@ test('automatic validation approves a valid non-duplicate receipt', () => {
   assert.deepEqual(result.reasons, []);
 });
 
+test('automatic validation accepts a verified purchase time when no ticket number is printed', () => {
+  const fieldsWithoutNumber = {
+    ...fields,
+    ticketNumber: '',
+    purchaseDateTime: '2026-08-02T09:17',
+  };
+  const result = validateReceiptAutomatically({
+    fields: fieldsWithoutNumber,
+    ocr: {
+      ...fieldsWithoutNumber,
+      isReceipt: true,
+      confidence: 0.92,
+      evidence: { purchaseDateText: 'Fecha 02/08/2026 Hora 09:17' },
+    },
+    storeActive: true,
+    duplicate: false,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  assert.equal(result.approved, true);
+  assert.deepEqual(result.reasons, []);
+});
+
+test('automatic validation still rejects receipts without a number or verified purchase time', () => {
+  const result = validateReceiptAutomatically({
+    fields: { ...fields, ticketNumber: '' },
+    ocr: { ...fields, ticketNumber: '', isReceipt: true, confidence: 0.92 },
+    storeActive: true,
+    duplicate: false,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  assert.deepEqual(result.reasons, ['TICKET_NUMBER_OR_TIME_REQUIRED']);
+});
+
 test('duplicates and non-receipt images never receive automatic approval', () => {
   const result = validateReceiptAutomatically({
     fields,
@@ -130,6 +163,9 @@ test('reward tiers select the highest eligible purchase threshold', () => {
 
 test('fingerprints and Rtales operations are deterministic', () => {
   assert.equal(buildTicketFingerprint(fields), 'STORE-1|A-123|2026-08-02|7500|EUR');
+  assert.equal(buildTicketFingerprint({
+    ...fields, ticketNumber: '', purchaseDateTime: '2026-08-02T09:17',
+  }), 'STORE-1|@TIME:2026-08-02T09:17|2026-08-02|7500|EUR');
   assert.equal(rewardIdempotencyKey('receipt-1'), 'ticket:receipt-1:grant:v1');
   assert.equal(reversalIdempotencyKey('receipt-1'), 'ticket:receipt-1:revoke:v1');
 });

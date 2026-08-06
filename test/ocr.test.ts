@@ -36,6 +36,53 @@ test('OCR verification accepts printed dates with a two-digit year', () => {
   assert.deepEqual(verifyOcr(receipt), []);
 });
 
+test('OCR verification accepts a printed time as identity when the receipt has no number', () => {
+  const receipt = normalizeOcr({
+    ...validExtraction,
+    ticketNumber: '',
+    ticketNumberText: '',
+    purchaseDateTime: '2026-08-06T09:01',
+    purchaseDateText: 'Fecha 06/08/2026 Hora 09:01',
+  });
+  assert.deepEqual(verifyOcr(receipt), []);
+});
+
+test('OCR verification rejects a receipt with neither printed number nor matching time', () => {
+  const receipt = normalizeOcr({
+    ...validExtraction,
+    ticketNumber: '',
+    ticketNumberText: '',
+    purchaseDateTime: '2026-08-06T09:01',
+    purchaseDateText: 'Fecha 06/08/2026 Hora 09:02',
+  });
+  assert.deepEqual(verifyOcr(receipt), ['MISSING_TICKET_NUMBER_OR_TIME']);
+});
+
+test('OCR reading prefers verified date and time over an unsupported number candidate', async () => {
+  const env = {
+    OCR_MODE: 'workers-ai',
+    OCR_PROVIDER: 'workers-ai',
+    OCR_MODEL: '@cf/google/gemma-4-26b-a4b-it',
+    OCR_WORKERS_AI_FORMAT: 'chat',
+    OCR_TIMEOUT_MS: '5000',
+    AI: {
+      async run() {
+        return { choices: [{ message: { content: JSON.stringify({
+          ...validExtraction,
+          ticketNumber: 'CAJA-03',
+          ticketNumberText: '',
+        }) } }] };
+      },
+    },
+  } as unknown as Env;
+
+  const result = await readReceipt(env, new Uint8Array([1, 2, 3]).buffer, 'image/webp');
+  assert.equal(result.receipt.ticketNumber, '');
+  assert.equal(result.receipt.purchaseDateTime, '2026-08-06T09:01');
+  assert.deepEqual(result.verificationIssues, []);
+  assert.equal(result.attemptCount, 1);
+});
+
 test('OCR normalization repairs malformed dates and identifiers from labelled evidence', () => {
   const receipt = normalizeOcr({
     ...validExtraction,

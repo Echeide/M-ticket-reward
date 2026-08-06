@@ -5,9 +5,10 @@ function normalize(value: string): string {
 }
 
 export function buildTicketFingerprint(fields: ReceiptFields): string {
+  const printedIdentity = normalize(fields.ticketNumber) || `@TIME:${String(fields.purchaseDateTime || '')}`;
   return [
     normalize(fields.storeId || fields.storeName),
-    normalize(fields.ticketNumber),
+    printedIdentity,
     fields.purchaseDate,
     String(fields.totalCents),
     normalize(fields.currency),

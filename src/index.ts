@@ -150,6 +150,7 @@ type TrainingSampleRow = {
   image_height: number;
   expected_ticket_number: string;
   expected_purchase_date: string;
+  expected_purchase_datetime: string | null;
   expected_total_cents: number;
   expected_currency: string;
   notes: string;
@@ -190,6 +191,7 @@ type TrainingReceiptCandidateRow = {
   status: string;
   ticket_number: string | null;
   purchase_date: string | null;
+  ocr_payload: OcrReceipt | null;
   total_cents: number | null;
   currency: string;
   created_at: string;
@@ -261,6 +263,7 @@ function receiptView(row: ReceiptRow, includeManagerFields = false) {
       storeName: row.store_name || '',
       ticketNumber: row.ticket_number || '',
       purchaseDate: row.purchase_date || '',
+      purchaseDateTime: row.ocr_payload?.purchaseDateTime || '',
       totalCents: row.total_cents || 0,
       currency: row.currency,
     },
@@ -310,6 +313,7 @@ const PUBLIC_REASON_MESSAGES: Record<string, string> = {
   DUPLICATE_IMAGE: 'Esta imagen ya se había enviado.',
   STORE_NOT_ALLOWED: 'El comercio no está autorizado.',
   TICKET_NUMBER_REQUIRED: 'No se pudo reconocer el número del ticket.',
+  TICKET_NUMBER_OR_TIME_REQUIRED: 'No se pudo reconocer un número de ticket ni una hora de compra verificable.',
   INVALID_TOTAL: 'No se pudo validar el importe del ticket.',
   INVALID_DATE: 'No se pudo reconocer una fecha válida.',
   FUTURE_DATE: 'La fecha está fuera del periodo permitido.',
@@ -338,6 +342,7 @@ function publicReceiptView(row: ReceiptRow) {
       storeName: row.store_name || '',
       ticketNumber: row.ticket_number || '',
       purchaseDate: row.purchase_date || '',
+      purchaseDateTime: row.ocr_payload?.purchaseDateTime || '',
       totalCents: row.total_cents || 0,
       currency: row.currency,
     },
@@ -612,6 +617,7 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
         storeName: selectedStore?.name || receipt.store_name || '',
         ticketNumber: receipt.ticket_number || '',
         purchaseDate: receipt.purchase_date || '',
+        purchaseDateTime: receipt.ocr_payload?.purchaseDateTime,
         totalCents: receipt.total_cents || 0,
         currency: /^[A-Z]{3}$/.test(receipt.currency || '') ? receipt.currency : 'EUR',
       };
@@ -718,6 +724,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
       storeName: selectedStore?.name || ocr.storeName || '',
       ticketNumber: ocr.ticketNumber || '',
       purchaseDate: ocr.purchaseDate || '',
+      purchaseDateTime: ocr.purchaseDateTime,
       totalCents: ocr.totalCents || 0,
       currency: /^[A-Z]{3}$/.test(ocr.currency || '') ? ocr.currency! : 'EUR',
     };
@@ -1634,12 +1641,13 @@ async function handleAdminStoreOcrProfileGenerate(
 
 function trainingEvaluationView(row: TrainingEvaluationRow | null) {
   if (!row) return null;
+  const matches = row.matches || {} as TrainingEvaluationMatches;
   return {
     id: row.id,
     provider: row.provider,
     model: row.model,
     status: row.status,
-    matches: row.matches || {},
+    matches: { ...matches, purchaseTime: matches.purchaseTime ?? true },
     verificationIssues: Array.isArray(row.verification_issues) ? row.verification_issues : [],
     attemptCount: Number(row.attempt_count || 0),
     durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
@@ -1678,6 +1686,7 @@ function trainingSampleView(row: TrainingSampleRow) {
     expected: {
       ticketNumber: row.expected_ticket_number,
       purchaseDate: String(row.expected_purchase_date).slice(0, 10),
+      purchaseDateTime: row.expected_purchase_datetime || '',
       totalCents: Number(row.expected_total_cents),
       currency: row.expected_currency,
     },
@@ -1711,6 +1720,7 @@ function trainingReceiptCandidateView(row: TrainingReceiptCandidateRow) {
     expected: {
       ticketNumber: row.ticket_number || '',
       purchaseDate: row.purchase_date ? String(row.purchase_date).slice(0, 10) : '',
+      purchaseDateTime: row.ocr_payload?.purchaseDateTime || '',
       totalCents: Number(row.total_cents || 0),
       currency: row.currency || 'EUR',
     },
@@ -1756,7 +1766,7 @@ async function handleAdminTrainingReceiptCandidates(
       values,
     );
     const rows = await client.query<TrainingReceiptCandidateRow>(
-      `SELECT r.id, r.public_id, r.status, r.ticket_number, r.purchase_date,
+      `SELECT r.id, r.public_id, r.status, r.ticket_number, r.purchase_date, r.ocr_payload,
               r.total_cents, r.currency, r.created_at, r.user_ref,
               s.display_name AS user_display_name, s.user_email
          FROM receipts r JOIN player_sessions s ON s.id = r.session_id
@@ -1831,6 +1841,7 @@ async function handleAdminTrainingSamples(request: Request, env: Env, storeId: s
   const input = normalizeTrainingSampleInput({
     ticketNumber: form.get('ticketNumber'),
     purchaseDate: form.get('purchaseDate'),
+    purchaseDateTime: form.get('purchaseDateTime'),
     totalCents: form.get('totalCents'),
     currency: form.get('currency'),
     notes: form.get('notes'),
@@ -1885,12 +1896,12 @@ async function handleAdminTrainingSamples(request: Request, env: Env, storeId: s
         `INSERT INTO store_training_samples
           (id, store_id, image_key, image_content_type, image_size, image_width, image_height,
            expected_ticket_number, expected_purchase_date, expected_total_cents,
-           expected_currency, notes, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+           expected_purchase_datetime, expected_currency, notes, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          RETURNING *`,
         [sampleId, storeId, objectKey, optimized.contentType, optimized.bytes.byteLength,
           optimized.width, optimized.height, input.ticketNumber, input.purchaseDate,
-          input.totalCents, input.currency, input.notes, managerEmail],
+          input.totalCents, input.purchaseDateTime || null, input.currency, input.notes, managerEmail],
       );
       return result.rows[0]!;
     });
@@ -1969,6 +1980,7 @@ async function handleAdminTrainingEvaluate(
     const expected = normalizeTrainingSampleInput({
       ticketNumber: data.sample.expected_ticket_number,
       purchaseDate: String(data.sample.expected_purchase_date).slice(0, 10),
+      purchaseDateTime: data.sample.expected_purchase_datetime || '',
       totalCents: data.sample.expected_total_cents,
       currency: data.sample.expected_currency,
       notes: data.sample.notes,
