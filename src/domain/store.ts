@@ -71,7 +71,10 @@ export function findMatchingStore<T extends StoreIdentity>(
   // item list could mistake a product or brand for the establishment.
   const rawHeader = normalizeStoreText((evidence.rawText || '').slice(0, 1_000));
   const matches = stores.map((store) => {
-    const variants = [store.name, ...(Array.isArray(store.aliases) ? store.aliases : [])]
+    const learnedSignatures = store.ocrProfile?.enabled
+      ? store.ocrProfile.headerSignatures
+      : [];
+    const variants = [store.name, ...(Array.isArray(store.aliases) ? store.aliases : []), ...learnedSignatures]
       .map(normalizeStoreText)
       .filter(Boolean);
     const score = variants.reduce((best, candidate) => Math.max(

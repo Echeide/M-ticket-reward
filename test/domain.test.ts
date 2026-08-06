@@ -175,6 +175,22 @@ test('store matching does not search merchant names deep in the item list', () =
   assert.equal(selected, null);
 });
 
+test('store matching uses active learned header signatures', () => {
+  const profile = {
+    version: 1 as const, enabled: true, headerSignatures: ['B12345678'],
+    ticketNumberLabels: [], dateLabels: [], totalLabels: [], ignoredTotalLabels: [],
+    ticketNumberRegion: 'header' as const, dateRegion: 'header' as const,
+    totalRegion: 'footer' as const, dateFormat: '', instructions: '', sampleCount: 3,
+  };
+  const stores = [{ id: 'store-1', name: 'Comercio Uno', aliases: [], ocrProfile: profile }];
+  assert.equal(findMatchingStore(stores, {
+    storeName: 'Nombre parcialmente ilegible',
+    headerText: 'TIENDA LOCAL\nCIF B12345678\nLas Palmas',
+  })?.id, 'store-1');
+  profile.enabled = false;
+  assert.equal(findMatchingStore(stores, { headerText: 'CIF B12345678' }), null);
+});
+
 test('reward tiers use the highest reached threshold without accumulating', () => {
   const tiers = [
     { id: '50', minimumCents: 5_000, points: 10, active: true },
