@@ -43,9 +43,11 @@ El OCR se selecciona mediante variables, sin cambiar el flujo de tickets:
 - para un proveedor externo, configura `OCR_API_BASE_URL` y guarda `OCR_API_KEY`
   como secreto con `wrangler secret put OCR_API_KEY`.
 
-La configuración inicial de producción usa
-`@cf/moondream/moondream3.1-9B-A2B`; Gemma queda disponible como alternativa
-de mayor capacidad para evaluaciones controladas.
+La configuración de producción usa
+`@cf/meta/llama-3.2-11b-vision-instruct` con el contrato visual `chat` y JSON Mode.
+Antes de la primera ejecución en una cuenta de Cloudflare debe aceptarse una sola vez
+la licencia y la política de uso de Meta mediante una petición al modelo con
+`{ "prompt": "agree" }`.
 El OCR hace un segundo intento focalizado
 cuando faltan datos o no coinciden con sus líneas de evidencia. Un resultado que
 sigue siendo incoherente queda pendiente de revisión y nunca se rechaza

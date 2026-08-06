@@ -220,13 +220,13 @@ test('OCR retries an incomplete reading with focused regions', async () => {
   assert.match(String(requests[2]!.question), /TOTAL COMPRA/);
 });
 
-test('Workers AI chat format can switch to stronger vision models by configuration', async () => {
+test('Workers AI chat format supports Llama vision with JSON mode', async () => {
   let model = '';
   let input: Record<string, unknown> = {};
   const env = {
     OCR_MODE: 'workers-ai',
     OCR_PROVIDER: 'workers-ai',
-    OCR_MODEL: '@cf/google/gemma-4-26b-a4b-it',
+    OCR_MODEL: '@cf/meta/llama-3.2-11b-vision-instruct',
     OCR_WORKERS_AI_FORMAT: 'chat',
     OCR_TIMEOUT_MS: '5000',
     AI: {
@@ -240,11 +240,12 @@ test('Workers AI chat format can switch to stronger vision models by configurati
 
   const result = await readReceipt(env, new Uint8Array([1, 2, 3]).buffer, 'image/webp');
 
-  assert.equal(model, '@cf/google/gemma-4-26b-a4b-it');
+  assert.equal(model, '@cf/meta/llama-3.2-11b-vision-instruct');
   assert.equal(result.attemptCount, 1);
   assert.equal(Array.isArray(input.messages), true);
   assert.match(String(input.image), /^data:image\/webp;base64,/);
   assert.deepEqual(input.response_format, { type: 'json_object' });
-  assert.equal(input.reasoning_effort, 'low');
+  assert.equal(input.max_tokens, 2_048);
+  assert.equal(input.max_completion_tokens, undefined);
   assert.equal(input.task, undefined);
 });

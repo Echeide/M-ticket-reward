@@ -142,8 +142,7 @@ class WorkersAiOcrProvider implements OcrProvider {
             image,
             stream: false,
             temperature: 0.1,
-            max_completion_tokens: 2_048,
-            reasoning_effort: 'low',
+            max_tokens: 2_048,
             response_format: { type: 'json_object' },
           }
         : null;
