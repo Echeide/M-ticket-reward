@@ -39,6 +39,33 @@ function createIcon(name, className = 'button-icon') {
   return svg;
 }
 
+function renderStoreCarousel(stores) {
+  const carousel = document.querySelector('#store-carousel');
+  const track = document.querySelector('#store-carousel-track');
+  const storesWithLogo = stores.filter((store) => store.logoUrl);
+  track.replaceChildren();
+  if (!storesWithLogo.length) {
+    carousel.hidden = true;
+    return;
+  }
+
+  const items = storesWithLogo.length > 1 ? [...storesWithLogo, ...storesWithLogo] : storesWithLogo;
+  items.forEach((store, index) => {
+    const item = document.createElement('span');
+    item.className = 'store-carousel-item';
+    if (index >= storesWithLogo.length) item.setAttribute('aria-hidden', 'true');
+    const image = document.createElement('img');
+    image.src = store.logoUrl;
+    image.alt = index < storesWithLogo.length ? `Logo de ${store.name}` : '';
+    image.loading = 'lazy';
+    image.decoding = 'async';
+    item.append(image);
+    track.append(item);
+  });
+  track.classList.toggle('static', storesWithLogo.length === 1);
+  carousel.hidden = false;
+}
+
 function authHeaders(extra = {}) {
   return { Authorization: `Bearer ${state.sessionToken}`, ...extra };
 }
@@ -105,6 +132,7 @@ async function bootstrap() {
   if (!state.sessionToken) throw new Error('Abre este módulo desde Rtales para comenzar');
   const stores = await api('/api/stores');
   state.stores = stores.stores;
+  renderStoreCarousel(state.stores);
   if (!state.receiptId) {
     const latest = await api('/api/receipts/latest');
     if (latest.receipt) {

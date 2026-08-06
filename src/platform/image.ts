@@ -16,6 +16,15 @@ export type StoredImage = {
   ocrReady: true;
 };
 
+export type StoredLogo = {
+  bytes: ArrayBuffer;
+  contentType: 'image/webp';
+  extension: 'webp';
+  originalBytes: number;
+  width: number;
+  height: number;
+};
+
 async function transform(env: Env, bytes: ArrayBuffer, quality: number): Promise<ArrayBuffer> {
   const result = await env.IMAGES
     .input(new Blob([bytes]).stream())
@@ -64,6 +73,28 @@ export async function optimizeTicketImage(
     width,
     height,
     ocrReady: true,
+  };
+}
+
+export async function optimizeStoreLogo(env: Env, original: ArrayBuffer): Promise<StoredLogo> {
+  const info = await env.IMAGES.info(new Blob([original]).stream());
+  if (!('width' in info) || info.format === 'image/svg+xml') throw new Error('IMAGE_INVALID');
+
+  const scale = Math.min(1, 800 / info.width);
+  const width = Math.max(1, Math.round(info.width * scale));
+  const height = Math.max(1, Math.round(info.height * scale));
+  const result = await env.IMAGES
+    .input(new Blob([original]).stream())
+    .transform({ width: 800, fit: 'scale-down' })
+    .output({ format: 'image/webp', quality: 82 });
+
+  return {
+    bytes: await result.response().arrayBuffer(),
+    contentType: 'image/webp',
+    extension: 'webp',
+    originalBytes: original.byteLength,
+    width,
+    height,
   };
 }
 

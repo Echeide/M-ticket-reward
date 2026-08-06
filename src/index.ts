@@ -23,7 +23,7 @@ import {
 } from './integrations/rtales';
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from './platform/crypto';
 import { inTransaction, withDatabase } from './platform/db';
-import { optimizeTicketImage, prepareOcrImage } from './platform/image';
+import { optimizeStoreLogo, optimizeTicketImage, prepareOcrImage } from './platform/image';
 import {
   allowedParentOrigin,
   bearerToken,
@@ -83,6 +83,12 @@ type StoreRow = {
   name: string;
   aliases: string[];
   active: boolean;
+  logo_key: string | null;
+  logo_content_type: string | null;
+  logo_width: number | null;
+  logo_height: number | null;
+  logo_size: number | null;
+  logo_updated_at: string | null;
   created_at: string;
   updated_at: string;
   receipt_count?: string;
@@ -338,12 +344,23 @@ async function handleStores(request: Request, env: Env): Promise<Response> {
   const session = await authenticatedSession(request, env);
   if (!session) return error('Sesión no válida', 401);
   const stores = await withDatabase(env, async (client) => {
-    const result = await client.query<{ id: string; code: string; name: string; aliases: string[] }>(
-      'SELECT id, code, name, aliases FROM stores WHERE active = TRUE ORDER BY name ASC',
+    const result = await client.query<StoreRow>(
+      'SELECT * FROM stores WHERE active = TRUE ORDER BY name ASC',
     );
     return result.rows;
   });
-  return json({ success: true, stores });
+  return json({
+    success: true,
+    stores: stores.map((store) => ({
+      id: store.id,
+      code: store.code,
+      name: store.name,
+      aliases: store.aliases,
+      logoUrl: store.logo_key
+        ? `/api/stores/${store.id}/logo?v=${encodeURIComponent(store.logo_updated_at || store.logo_key)}`
+        : '',
+    })),
+  });
 }
 
 async function loadOwnedReceipt(
@@ -937,10 +954,114 @@ function storeView(row: StoreRow) {
     name: row.name,
     aliases: Array.isArray(row.aliases) ? row.aliases : [],
     active: row.active,
+    logoUrl: row.logo_key
+      ? `/api/admin/stores/${row.id}/logo?v=${encodeURIComponent(row.logo_updated_at || row.logo_key)}`
+      : '',
+    logoWidth: Number(row.logo_width || 0),
+    logoHeight: Number(row.logo_height || 0),
     receiptCount: Number(row.receipt_count || 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+async function handleStoreLogo(
+  request: Request,
+  env: Env,
+  storeId: string,
+  admin: boolean,
+): Promise<Response> {
+  if (admin && !managerIdentity(request, env)) return error('Acceso de gestor requerido', 401);
+  const store = await withDatabase(env, async (client) => {
+    const result = await client.query<Pick<StoreRow, 'active' | 'logo_key' | 'logo_content_type'>>(
+      'SELECT active, logo_key, logo_content_type FROM stores WHERE id = $1 LIMIT 1',
+      [storeId],
+    );
+    return result.rows[0];
+  });
+  if (!store || (!admin && !store.active) || !store.logo_key) return error('Logo no encontrado', 404);
+  const object = await env.TICKETS.get(store.logo_key);
+  if (!object) return error('Logo no encontrado', 404);
+  const headers = new Headers({
+    'Content-Type': store.logo_content_type || object.httpMetadata?.contentType || 'image/webp',
+    'Cache-Control': admin ? 'private, no-store' : 'public, max-age=86400',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  headers.set('ETag', object.httpEtag);
+  if (request.headers.get('If-None-Match') === object.httpEtag) return new Response(null, { status: 304, headers });
+  return new Response(object.body, { headers });
+}
+
+async function handleAdminStoreLogoUpload(
+  request: Request,
+  env: Env,
+  storeId: string,
+): Promise<Response> {
+  const managerEmail = managerIdentity(request, env);
+  if (!managerEmail) return error('Acceso de gestor requerido', 401);
+  const current = await withDatabase(env, async (client) => {
+    const result = await client.query<StoreRow>('SELECT * FROM stores WHERE id = $1 LIMIT 1', [storeId]);
+    return result.rows[0];
+  });
+  if (!current) return error('Comercio no encontrado', 404);
+
+  const form = await request.formData();
+  const logo = form.get('logo');
+  if (!(logo instanceof File)) return error('Selecciona una imagen para el comercio', 400);
+  if (!new Set(['image/jpeg', 'image/png', 'image/webp']).has(logo.type)) {
+    return error('Formato de imagen no admitido', 415);
+  }
+  if (logo.size <= 0 || logo.size > 5 * 1024 * 1024) return error('El logo supera el límite de 5 MB', 413);
+
+  const optimized = await optimizeStoreLogo(env, await logo.arrayBuffer());
+  const objectKey = `store-logos/${storeId}/${uuid()}.${optimized.extension}`;
+  await env.TICKETS.put(objectKey, optimized.bytes, {
+    httpMetadata: { contentType: optimized.contentType },
+    customMetadata: {
+      storeId,
+      originalBytes: String(optimized.originalBytes),
+      storedBytes: String(optimized.bytes.byteLength),
+      storedDimensions: `${optimized.width}x${optimized.height}`,
+    },
+  });
+
+  let updated: StoreRow;
+  try {
+    updated = await withDatabase(env, (client) => inTransaction(client, async () => {
+      const result = await client.query<StoreRow>(
+        `UPDATE stores SET logo_key = $2, logo_content_type = $3,
+           logo_width = $4, logo_height = $5, logo_size = $6,
+           logo_updated_at = NOW(), updated_at = NOW()
+         WHERE id = $1 RETURNING *`,
+        [storeId, objectKey, optimized.contentType, optimized.width, optimized.height, optimized.bytes.byteLength],
+      );
+      await client.query(
+        `INSERT INTO store_audit_log (id, store_id, action, manager_email, changes)
+         VALUES ($1, $2, 'UPDATED', $3, $4::jsonb)`,
+        [uuid(), storeId, managerEmail, JSON.stringify({ logo: {
+          width: optimized.width,
+          height: optimized.height,
+          bytes: optimized.bytes.byteLength,
+        } })],
+      );
+      return result.rows[0]!;
+    }));
+  } catch (caught) {
+    try {
+      await env.TICKETS.delete(objectKey);
+    } catch (cleanupError) {
+      console.error('Could not clean up unlinked store logo', cleanupError);
+    }
+    throw caught;
+  }
+  if (current.logo_key && current.logo_key !== objectKey) {
+    try {
+      await env.TICKETS.delete(current.logo_key);
+    } catch (cleanupError) {
+      console.error('Could not remove previous store logo', cleanupError);
+    }
+  }
+  return json({ success: true, store: storeView(updated) });
 }
 
 async function handleAdminStores(request: Request, env: Env): Promise<Response> {
@@ -1115,6 +1236,10 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     }
     if (request.method === 'POST' && url.pathname === '/api/session/exchange') return await handleExchange(request, env);
     if (request.method === 'GET' && url.pathname === '/api/stores') return await handleStores(request, env);
+    const publicStoreLogoMatch = url.pathname.match(/^\/api\/stores\/([^/]+)\/logo$/);
+    if (request.method === 'GET' && publicStoreLogoMatch?.[1]) {
+      return await handleStoreLogo(request, env, publicStoreLogoMatch[1], false);
+    }
     if (request.method === 'POST' && url.pathname === '/api/receipts') return await handleUpload(request, env);
     if (request.method === 'GET' && url.pathname === '/api/receipts') return await handleReceiptList(request, env);
     if (request.method === 'GET' && url.pathname === '/api/receipts/latest') {
@@ -1130,6 +1255,13 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'GET' && adminReceiptMatch?.[1]) return await handleAdminReceipt(request, env, adminReceiptMatch[1]);
     if (url.pathname === '/api/admin/stores' && ['GET', 'POST'].includes(request.method)) {
       return await handleAdminStores(request, env);
+    }
+    const adminStoreLogoMatch = url.pathname.match(/^\/api\/admin\/stores\/([^/]+)\/logo$/);
+    if (request.method === 'GET' && adminStoreLogoMatch?.[1]) {
+      return await handleStoreLogo(request, env, adminStoreLogoMatch[1], true);
+    }
+    if (request.method === 'POST' && adminStoreLogoMatch?.[1]) {
+      return await handleAdminStoreLogoUpload(request, env, adminStoreLogoMatch[1]);
     }
     const storeMatch = url.pathname.match(/^\/api\/admin\/stores\/([^/]+)$/);
     if (request.method === 'PATCH' && storeMatch?.[1]) return await handleAdminStoreUpdate(request, env, storeMatch[1]);
@@ -1177,6 +1309,7 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       STORE_CODE_INVALID: 'El código debe tener entre 2 y 40 caracteres: letras, números, guion o guion bajo',
       STORE_NAME_INVALID: 'El nombre debe tener entre 2 y 160 caracteres',
       STORE_ALIAS_INVALID: 'Los alias no pueden superar 160 caracteres',
+      IMAGE_INVALID: 'La imagen seleccionada no es válida',
       TIER_MINIMUM_INVALID: 'El importe mínimo debe ser un valor válido en céntimos',
       TIER_POINTS_INVALID: 'Los puntos deben ser un número entero positivo o cero',
     };

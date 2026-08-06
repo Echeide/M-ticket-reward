@@ -4,6 +4,7 @@ const state = {
   reviewing: false,
   token: sessionStorage.getItem('admin-token') || '',
 };
+let storeLogoPreviewObjectUrl = '';
 const statusLabels = {
   OCR_QUEUED: 'En espera de lectura',
   OCR_PROCESSING: 'Leyendo ticket',
@@ -89,7 +90,7 @@ async function loadStores() {
   document.querySelector('#linked-receipt-count').textContent = state.stores.reduce((total, store) => total + store.receiptCount, 0);
   document.querySelector('#store-list').innerHTML = state.stores.map((store) => `
     <article class="store-row ${store.active ? '' : 'inactive'}">
-      <span><strong>${escapeHtml(store.name)}</strong><small>${escapeHtml(store.code)}</small></span>
+      <span class="store-identity">${store.logoUrl ? `<img src="${escapeHtml(store.logoUrl)}" alt="" loading="lazy" />` : '<span class="store-logo-empty" aria-hidden="true">—</span>'}<span><strong>${escapeHtml(store.name)}</strong><small>${escapeHtml(store.code)}</small></span></span>
       <span class="alias-list">${store.aliases.length ? store.aliases.map((alias) => `<small>${escapeHtml(alias)}</small>`).join('') : '<small>Sin alias</small>'}</span>
       <strong>${store.receiptCount}</strong>
       <span class="status-chip ${store.active ? 'rewarded' : 'duplicate'}">${store.active ? 'ACTIVO' : 'INACTIVO'}</span>
@@ -185,9 +186,21 @@ function openStoreDialog(id = '') {
   form.elements.code.value = store?.code || '';
   form.elements.aliases.value = (store?.aliases || []).join('\n');
   form.elements.active.checked = store?.active ?? true;
+  setStoreLogoPreview(store?.logoUrl || '');
   document.querySelector('#store-dialog-title').textContent = store ? 'Editar comercio' : 'Añadir comercio';
   document.querySelector('#store-form-error').textContent = '';
   document.querySelector('#store-dialog').showModal();
+}
+
+function setStoreLogoPreview(source = '', objectUrl = false) {
+  if (storeLogoPreviewObjectUrl) URL.revokeObjectURL(storeLogoPreviewObjectUrl);
+  storeLogoPreviewObjectUrl = objectUrl ? source : '';
+  const preview = document.querySelector('#store-logo-preview');
+  const placeholder = document.querySelector('#store-logo-placeholder');
+  preview.hidden = !source;
+  placeholder.hidden = Boolean(source);
+  if (source) preview.src = source;
+  else preview.removeAttribute('src');
 }
 
 async function saveStore(event) {
@@ -209,11 +222,20 @@ async function saveStore(event) {
   submitButton.disabled = true;
   submitButton.textContent = 'Guardando…';
   try {
-    await request(id ? `/api/admin/stores/${id}` : '/api/admin/stores', {
+    const saved = await request(id ? `/api/admin/stores/${id}` : '/api/admin/stores', {
       method: id ? 'PATCH' : 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
+    const storeId = saved.store.id;
+    form.elements.id.value = storeId;
+    const logo = form.elements.logo.files[0];
+    if (logo) {
+      submitButton.textContent = 'Optimizando logo…';
+      const logoForm = new FormData();
+      logoForm.append('logo', logo);
+      await request(`/api/admin/stores/${storeId}/logo`, { method: 'POST', body: logoForm });
+    }
     document.querySelector('#store-dialog').close();
     await loadStores();
     const notice = document.querySelector('#admin-notice');
@@ -227,6 +249,11 @@ async function saveStore(event) {
     submitButton.textContent = 'Guardar comercio';
   }
 }
+
+document.querySelector('#store-form [name="logo"]').addEventListener('change', (event) => {
+  const file = event.currentTarget.files[0];
+  setStoreLogoPreview(file ? URL.createObjectURL(file) : '', Boolean(file));
+});
 
 function formatMoney(cents) {
   return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' }).format((cents || 0) / 100);
