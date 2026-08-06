@@ -37,6 +37,7 @@ test('administrators can manage operators but cannot create or delete administra
 
 test('operator routes are limited to review and read-only store and settings access', () => {
   assert.equal(adminRouteAllowed('OPERATOR', 'GET', '/api/admin/receipts'), true);
+  assert.equal(adminRouteAllowed('OPERATOR', 'GET', '/api/admin/spaces'), true);
   assert.equal(adminRouteAllowed('OPERATOR', 'GET', '/api/admin/receipts/ticket-id/image'), true);
   assert.equal(adminRouteAllowed('OPERATOR', 'POST', '/api/admin/receipts/ticket-id/review'), true);
   assert.equal(adminRouteAllowed('OPERATOR', 'POST', '/api/admin/receipts/ticket-id/reprocess'), true);

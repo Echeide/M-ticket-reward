@@ -260,7 +260,7 @@
         <div class="dialog-heading"><div><p class="eyebrow">Revisión antifraude</p><h2>Filtrar tickets</h2></div><button class="icon-button" id="close-filters-dialog" type="button" aria-label="Cerrar">×</button></div>
         <div class="filter-dialog-grid">
           <label class="filter-store">Comercio autorizado<select id="store-filter" name="store" form="filters"><option value="">Todos los comercios</option></select></label>
-          <label class="filter-store">Espacio o instalación<input name="space" form="filters" placeholder="GCX26" /></label>
+          <label class="filter-store">Espacio<select id="receipt-space-filter" name="space" form="filters"><option value="">Todos los espacios</option></select></label>
           <label>Estado<select name="status" form="filters">
             <option value="">Todos los estados</option>
             <option value="OCR_QUEUED">En espera de lectura</option>
@@ -290,7 +290,7 @@
           <label>Estado<select name="status" form="ticket-user-search"><option value="">Todos</option><option value="ALLOWED">Permitidos</option><option value="BANNED">Baneados</option><option value="LIFTING">Desbaneo en proceso</option></select></label>
           <label>Strikes<select name="strikes" form="ticket-user-search"><option value="">Cualquier puntuación</option><option value="NONE">Sin strikes</option><option value="ANY">Con strikes</option><option value="NEAR">Próximos al baneo</option></select></label>
           <label>Actividad<select name="activity" form="ticket-user-search"><option value="">Cualquier actividad</option><option value="VALIDATED">Con tickets validados</option><option value="UNVALIDATED">Con tickets sin validar</option><option value="NO_VALIDATED">Sin tickets validados</option></select></label>
-          <label>Espacio o instalación<input name="space" form="ticket-user-search" placeholder="GCX26" /></label>
+          <label>Espacio<select id="ticket-user-space-filter" name="space" form="ticket-user-search"><option value="">Todos los espacios</option></select></label>
           <label>Última subida desde<input name="from" type="date" form="ticket-user-search" /></label>
           <label>Última subida hasta<input name="to" type="date" form="ticket-user-search" /></label>
         </div>

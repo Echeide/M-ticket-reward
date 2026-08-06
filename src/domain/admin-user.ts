@@ -28,7 +28,7 @@ export function canDeleteAdminRole(currentRole: AdminRole, targetRole: AdminRole
 export function adminRouteAllowed(role: AdminRole, method: string, pathname: string): boolean {
   if (role !== 'OPERATOR') return true;
   if (method === 'GET') {
-    if (['/api/admin/session', '/api/admin/receipts', '/api/admin/receipts.csv',
+    if (['/api/admin/session', '/api/admin/receipts', '/api/admin/receipts.csv', '/api/admin/spaces',
       '/api/admin/stores', '/api/admin/settings'].includes(pathname)) return true;
     if (/^\/api\/admin\/receipts\/[^/]+(?:\/image)?$/.test(pathname)) return true;
     if (/^\/api\/admin\/stores\/[^/]+\/(?:logo|ocr-profile|training)$/.test(pathname)) return true;

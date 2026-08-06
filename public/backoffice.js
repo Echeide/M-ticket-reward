@@ -1,5 +1,5 @@
 const state = {
-  rows: [], stores: [], tiers: [], ticketUsers: [], settings: [], adminUsers: [], trainingSamples: [], trainingProfile: null, selected: null,
+  rows: [], stores: [], spaces: [], tiers: [], ticketUsers: [], settings: [], adminUsers: [], trainingSamples: [], trainingProfile: null, selected: null,
   currentAdmin: null,
   pagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
   ticketUserPagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
@@ -143,7 +143,7 @@ function activeFilterDescriptions(params) {
   };
   add('user', 'Búsqueda');
   add('store', 'Comercio');
-  add('space', 'Espacio o instalación');
+  add('space', 'Espacio');
   add('status', 'Estado', (value) => statusLabels[value] || value);
   add('review', 'Resultado antifraude', (value) => reviewLabels[value] || value);
   add('from', 'Compra desde', formatFilterDate);
@@ -221,6 +221,22 @@ async function loadFilterStores() {
   populateStoreFilter();
 }
 
+function populateSpaceFilters() {
+  const options = state.spaces.map((space) => `<option value="${escapeHtml(space)}">${escapeHtml(space)}</option>`).join('');
+  ['#receipt-space-filter', '#ticket-user-space-filter'].forEach((selector) => {
+    const select = document.querySelector(selector);
+    const selected = select.value;
+    select.innerHTML = `<option value="">Todos los espacios</option>${options}`;
+    if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+  });
+}
+
+async function loadSpaces() {
+  const payload = await request('/api/admin/spaces');
+  state.spaces = payload.spaces;
+  populateSpaceFilters();
+}
+
 async function loadTiers() {
   const payload = await request('/api/admin/reward-tiers');
   state.tiers = payload.tiers;
@@ -250,7 +266,7 @@ async function loadTicketUsers(page = state.ticketUserPagination.page) {
     const statusClass = user.banStatus === 'BANNED' ? 'revoked' : user.banStatus === 'LIFTING' ? 'reward_pending' : 'rewarded';
     return `
     <article class="ticket-user-row">
-      <span><strong class="ban-lookup-code">${escapeHtml(user.lookupCode)}</strong><small>${escapeHtml(user.displayName || 'Sin nombre')}${user.email ? ` · ${escapeHtml(user.email)}` : ''}</small><small>${escapeHtml(user.spaceCode || '—')} · ${escapeHtml(user.installationId || '—')}</small></span>
+      <span><strong class="ban-lookup-code">${escapeHtml(user.lookupCode)}</strong><small>${escapeHtml(user.displayName || 'Sin nombre')}${user.email ? ` · ${escapeHtml(user.email)}` : ''}</small><small>Espacio: ${escapeHtml(user.spaceCode || '—')}</small></span>
       <strong>${user.ticketsSubmitted}</strong>
       <strong class="validated-count">${user.ticketsValidated}</strong>
       <strong>${user.ticketsUnvalidated}</strong>
@@ -289,7 +305,7 @@ async function openTicketUserDetail(lookupCode) {
     const status = user.banStatus === 'BANNED' ? 'Baneado' : user.banStatus === 'LIFTING' ? 'Desbaneo en proceso' : 'Permitido';
     body.innerHTML = `<div class="ticket-user-detail-summary">
       <div><span>Nombre</span><strong>${escapeHtml(user.displayName || 'Sin nombre')}</strong><small>${escapeHtml(user.email || 'Correo no compartido')}</small></div>
-      <div><span>Contexto</span><strong>${escapeHtml(user.spaceCode || '—')}</strong><small>${escapeHtml(user.installationId || '—')}</small></div>
+      <div><span>Espacio</span><strong>${escapeHtml(user.spaceCode || '—')}</strong></div>
       <div><span>Estado</span><strong>${status}</strong><small>${user.strikePoints}/${user.banThreshold || '—'} puntos</small></div>
       <div><span>Actividad</span><strong>${user.ticketsValidated} validados</strong><small>${user.ticketsSubmitted} subidos · ${user.ticketsUnvalidated} sin validar</small></div>
       <div><span>Compras autorizadas</span><strong>${formatMoney(user.authorizedTotalCents)}</strong></div>
@@ -1572,6 +1588,6 @@ document.querySelector('[name="review"]').value = 'PENDING';
 updateFilterCount();
 async function initializeBackoffice() {
   await loadAdminSession();
-  await Promise.all([load(1), loadFilterStores()]);
+  await Promise.all([load(1), loadFilterStores(), loadSpaces()]);
 }
 initializeBackoffice().catch((error) => alert(error.message));

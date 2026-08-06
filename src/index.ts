@@ -1443,12 +1443,8 @@ function adminFilters(url: URL) {
     lookupOrderPlaceholder = exactLookupPlaceholder;
   }
   if (url.searchParams.get('space')) {
-    const space = String(url.searchParams.get('space') || '').trim();
-    values.push(space);
-    const installationPlaceholder = `$${values.length}`;
-    values.push(space.toUpperCase());
-    const spaceCodePlaceholder = `$${values.length}`;
-    conditions.push(`(u.installation_id = ${installationPlaceholder} OR u.space_code = ${spaceCodePlaceholder})`);
+    values.push(String(url.searchParams.get('space') || '').trim().toUpperCase());
+    conditions.push(`UPPER(COALESCE(u.space_code, s.space_code)) = $${values.length}`);
   }
   if (url.searchParams.get('store')) {
     const value = `%${url.searchParams.get('store')}%`;
@@ -1554,6 +1550,24 @@ async function handleAdminReceipt(request: Request, env: Env, receiptId: string)
   return json({ success: true, manager, receipt: receiptView(receipt, true) });
 }
 
+async function handleAdminSpaces(request: Request, env: Env): Promise<Response> {
+  const manager = managerIdentity(request, env);
+  if (!manager) return error('Acceso de gestor requerido', 401);
+  const spaces = await withDatabase(env, async (client) => {
+    const result = await client.query<{ code: string }>(
+      `SELECT space_code AS code FROM (
+         SELECT UPPER(TRIM(space_code)) AS space_code FROM external_users
+         UNION
+         SELECT UPPER(TRIM(space_code)) AS space_code FROM player_sessions
+       ) known_spaces
+       WHERE space_code <> ''
+       ORDER BY space_code`,
+    );
+    return result.rows.map((row) => row.code);
+  });
+  return json({ success: true, spaces });
+}
+
 function csvCell(value: unknown): string {
   return `"${String(value ?? '').replaceAll('"', '""')}"`;
 }
@@ -1604,7 +1618,7 @@ function ticketUserSummaryQuery(url: URL, configuredThreshold: number, paginatio
   const status = String(url.searchParams.get('status') || '').toUpperCase();
   const strikes = String(url.searchParams.get('strikes') || '').toUpperCase();
   const activity = String(url.searchParams.get('activity') || '').toUpperCase();
-  const space = String(url.searchParams.get('space') || '').trim();
+  const space = String(url.searchParams.get('space') || '').trim().toUpperCase();
   const from = String(url.searchParams.get('from') || '').trim();
   const to = String(url.searchParams.get('to') || '').trim();
   const pageClause = pagination ? ` LIMIT ${pagination.limit} OFFSET ${pagination.offset}` : '';
@@ -1639,7 +1653,7 @@ function ticketUserSummaryQuery(url: URL, configuredThreshold: number, paginatio
           OR ($5 = 'NEAR' AND $3 > 0 AND strike_points > 0 AND strike_points < $3 AND strike_points >= $3 - 2))
         AND ($6 = '' OR ($6 = 'VALIDATED' AND tickets_validated > 0)
           OR ($6 = 'UNVALIDATED' AND tickets_unvalidated > 0) OR ($6 = 'NO_VALIDATED' AND tickets_validated = 0))
-        AND ($7 = '' OR installation_id ILIKE $7 OR space_code ILIKE $7)
+        AND ($7 = '' OR UPPER(space_code) = $7)
         AND ($8 = '' OR last_submission_at >= $8) AND ($9 = '' OR last_submission_at < $9 || 'T23:59:59')
       ORDER BY CASE WHEN rtales_lookup_code_normalized = $1 THEN 0 ELSE 1 END,
         last_submission_at DESC, external_user_id DESC${pageClause}`,
@@ -3300,6 +3314,7 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     const confirmMatch = url.pathname.match(/^\/api\/receipts\/([^/]+)\/confirm$/);
     if (request.method === 'POST' && confirmMatch?.[1]) return await handleConfirm(request, env, confirmMatch[1]);
     if (request.method === 'GET' && url.pathname === '/api/admin/session') return await handleAdminSession(request, env);
+    if (request.method === 'GET' && url.pathname === '/api/admin/spaces') return await handleAdminSpaces(request, env);
     if (request.method === 'GET' && url.pathname === '/api/admin/receipts') return await handleAdminList(request, env);
     if (request.method === 'GET' && url.pathname === '/api/admin/receipts.csv') return await handleAdminCsv(request, env);
     if (request.method === 'GET' && url.pathname === '/api/admin/ticket-users.csv') return await handleAdminTicketUsersCsv(request, env);
