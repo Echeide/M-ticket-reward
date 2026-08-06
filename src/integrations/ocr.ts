@@ -34,21 +34,30 @@ export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
   const normalizedTotal = Number.isInteger(total) && total > 0 ? total : centsFromEvidence(totalText);
   const ticketNumberText = String(value.ticketNumberText || '').trim().slice(0, 300);
   const purchaseDateText = String(value.purchaseDateText || '').trim().slice(0, 300);
+  const rawText = String(value.rawText || '').slice(0, 8_000);
   const rawPurchaseDate = String(value.purchaseDate || '').trim();
   const evidencedDate = isoDateFromEvidence(purchaseDateText, rawPurchaseDate);
   const normalizedDate = /^\d{4}-\d{2}-\d{2}$/.test(rawPurchaseDate)
     ? rawPurchaseDate
     : evidencedDate || rawPurchaseDate;
-  const evidencedTicketNumber = ticketNumberFromEvidence(ticketNumberText);
+  const directTicketNumber = ticketNumberFromEvidence(ticketNumberText);
+  const rawTicketNumber = directTicketNumber ? null : ticketNumberFromEvidence(rawText.slice(0, 2_000));
+  const evidencedTicketNumber = directTicketNumber || rawTicketNumber;
+  const verifiedTicketNumberText = directTicketNumber
+    ? ticketNumberText
+    : rawTicketNumber ? `Documento ${rawTicketNumber}` : ticketNumberText;
   const rawCurrency = String(value.currency || 'EUR').trim().toUpperCase();
   const currency = ['€', 'EURO', 'EUROS'].includes(rawCurrency) || !/^[A-Z]{3}$/.test(rawCurrency)
     ? 'EUR'
     : rawCurrency;
   const purchaseDateTime = String(value.purchaseDateTime || '').trim();
+  const evidencedTime = /(?:^|\D)([01]\d|2[0-3]):([0-5]\d)(?:\D|$)/.exec(purchaseDateText);
   const normalizedDateTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(purchaseDateTime)
     ? purchaseDateTime
     : /^\d{2}:\d{2}$/.test(purchaseDateTime) && /^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)
       ? `${normalizedDate}T${purchaseDateTime}`
+      : evidencedTime && /^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)
+        ? `${normalizedDate}T${evidencedTime[1]}:${evidencedTime[2]}`
       : undefined;
   return {
     isReceipt: value.isReceipt === true,
@@ -60,9 +69,9 @@ export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
     purchaseDateTime: normalizedDateTime,
     totalCents: normalizedTotal && normalizedTotal > 0 ? normalizedTotal : undefined,
     currency,
-    rawText: String(value.rawText || '').slice(0, 8_000),
+    rawText,
     evidence: {
-      ticketNumberText,
+      ticketNumberText: verifiedTicketNumberText,
       purchaseDateText,
       totalText,
     },
@@ -84,7 +93,7 @@ function preferVerifiedIdentity(receipt: OcrReceipt): OcrReceipt {
 }
 
 function ticketNumberFromEvidence(value: string): string | null {
-  const labelled = /(?:documento|ticket|factura|recibo|transacci[oó]n|operaci[oó]n|folio|n[º°o]\.?)\s*[:#-]*\s+(.+)/i.exec(value);
+  const labelled = /(?:^|\b)(?:documento|ticket|factura|recibo|transacci[oó]n|operaci[oó]n|folio|n[º°o]\.?)\s*[:#-]*\s+(.+)/i.exec(value);
   if (!labelled) return null;
   const candidates = (labelled[1] || '').match(/[A-Z0-9][A-Z0-9./-]{3,}/gi) || [];
   return candidates.sort((left, right) => compactIdentifier(right).length - compactIdentifier(left).length)[0] || null;

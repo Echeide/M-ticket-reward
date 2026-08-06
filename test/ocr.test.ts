@@ -43,7 +43,9 @@ test('OCR verification accepts a printed time as identity when the receipt has n
     ticketNumberText: '',
     purchaseDateTime: '2026-08-06T09:01',
     purchaseDateText: 'Fecha 06/08/2026 Hora 09:01',
+    rawText: 'HIPERDINO\nFecha 06/08/2026 Hora 09:01\nTOTAL COMPRA 15,92',
   });
+  assert.equal(receipt.ticketNumber, '');
   assert.deepEqual(verifyOcr(receipt), []);
 });
 
@@ -61,6 +63,21 @@ test('OCR normalization combines Llama time-only output with the verified purcha
   assert.deepEqual(verifyOcr(receipt), []);
 });
 
+test('OCR normalization recovers Llama identity fields from literal raw evidence', () => {
+  const receipt = normalizeOcr({
+    ...validExtraction,
+    ticketNumber: '934211-001000048',
+    ticketNumberText: 'Documento',
+    purchaseDateTime: '',
+    purchaseDateText: 'Fecha Hora 06/08/2026 09:01',
+    rawText: 'DINOSOL SUPERMERCADOS Documento Fecha Hora 2026/934211-001000048 06/08/2026 09:01 ARTICULO IMPORTE',
+  });
+  assert.equal(receipt.ticketNumber, '2026/934211-001000048');
+  assert.equal(receipt.purchaseDateTime, '2026-08-06T09:01');
+  assert.equal(receipt.evidence?.ticketNumberText, 'Documento 2026/934211-001000048');
+  assert.deepEqual(verifyOcr(receipt), []);
+});
+
 test('OCR verification rejects a receipt with neither printed number nor matching time', () => {
   const receipt = normalizeOcr({
     ...validExtraction,
@@ -68,6 +85,7 @@ test('OCR verification rejects a receipt with neither printed number nor matchin
     ticketNumberText: '',
     purchaseDateTime: '2026-08-06T09:01',
     purchaseDateText: 'Fecha 06/08/2026 Hora 09:02',
+    rawText: 'HIPERDINO\nFecha 06/08/2026 Hora 09:02\nTOTAL COMPRA 15,92',
   });
   assert.deepEqual(verifyOcr(receipt), ['MISSING_TICKET_NUMBER_OR_TIME']);
 });
@@ -85,6 +103,7 @@ test('OCR reading prefers verified date and time over an unsupported number cand
           ...validExtraction,
           ticketNumber: 'CAJA-03',
           ticketNumberText: '',
+          rawText: 'HIPERDINO\nFecha 06/08/2026 Hora 09:01\nTOTAL COMPRA 15,92',
         }) } }] };
       },
     },
