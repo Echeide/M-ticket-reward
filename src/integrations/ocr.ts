@@ -1,5 +1,6 @@
 import type { OcrReceipt } from '../domain/receipt';
-import type { StoreIdentity } from '../domain/store';
+import { profileHasGuidance } from '../domain/ocr-profile';
+import { findMatchingStore, type StoreIdentity } from '../domain/store';
 import { prepareOcrRegions } from '../platform/image';
 import type { Env } from '../types';
 import { createOcrProvider } from './ocr-provider';
@@ -126,9 +127,30 @@ function authorizedStoreReference(stores: StoreIdentity[]): string {
   const entries: string[] = [];
   let length = 2;
   for (const store of stores.slice(0, 80)) {
+    const profile = store.ocrProfile && profileHasGuidance(store.ocrProfile)
+      ? {
+          headerSignatures: store.ocrProfile.headerSignatures.slice(0, 8),
+          ticketNumber: {
+            labels: store.ocrProfile.ticketNumberLabels.slice(0, 8),
+            region: store.ocrProfile.ticketNumberRegion,
+          },
+          purchaseDate: {
+            labels: store.ocrProfile.dateLabels.slice(0, 8),
+            region: store.ocrProfile.dateRegion,
+            format: store.ocrProfile.dateFormat,
+          },
+          total: {
+            labels: store.ocrProfile.totalLabels.slice(0, 8),
+            ignore: store.ocrProfile.ignoredTotalLabels.slice(0, 10),
+            region: store.ocrProfile.totalRegion,
+          },
+          instructions: store.ocrProfile.instructions.slice(0, 600),
+        }
+      : undefined;
     const entry = JSON.stringify({
       name: store.name,
       aliases: (Array.isArray(store.aliases) ? store.aliases : []).slice(0, 12),
+      ...(profile ? { profile } : {}),
     });
     if (length + entry.length + entries.length > 6_000) break;
     entries.push(entry);
@@ -152,6 +174,8 @@ Reglas para storeName:
 - Búscalo solo en cabecera o bloque fiscal, antes del primer artículo.
 - headerText debe transcribir únicamente esa cabecera o bloque fiscal.
 - Comercios autorizados y alias: ${storeReference}.
+- Algunos comercios incluyen un profile aprendido de ejemplos verificados. Úsalo solo para localizar
+  etiquetas y zonas después de comprobar una firma visible del comercio; nunca copies valores del perfil.
 - Si coincide claramente, devuelve exactamente su name; sin evidencia visible, déjalo vacío.
 
 Usa exclusivamente la fecha impresa. El total es el importe final pagado, no subtotal, ahorro ni efectivo entregado.
@@ -239,13 +263,15 @@ export async function readReceipt(
   let durationMs = response.durationMs;
 
   if (receipt.confidence < 0.75 || !receipt.isReceipt || issues.length > 0) {
+    const matchedStore = findMatchingStore(authorizedStores, receipt);
+    const focusedStoreReference = authorizedStoreReference(matchedStore ? [matchedStore] : authorizedStores);
     const regions = await prepareOcrRegions(env, bytes);
     const [headerResponse, totalsResponse] = await Promise.all([
       provider.extract({
-        bytes: regions.header, contentType: 'image/webp', prompt: regionPrompt(storeReference, 'header'),
+        bytes: regions.header, contentType: 'image/webp', prompt: regionPrompt(focusedStoreReference, 'header'),
       }),
       provider.extract({
-        bytes: regions.totals, contentType: 'image/webp', prompt: regionPrompt(storeReference, 'totals'),
+        bytes: regions.totals, contentType: 'image/webp', prompt: regionPrompt(focusedStoreReference, 'totals'),
       }),
     ]);
     receipt = mergeRegionResults(

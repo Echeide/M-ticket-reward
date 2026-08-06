@@ -17,6 +17,7 @@ const JSON_COLUMNS = new Set([
   'evaluation_verification_issues',
   'matches',
   'ocr_payload',
+  'ocr_profile',
   'payload',
   'response_payload',
   'validation_reasons',

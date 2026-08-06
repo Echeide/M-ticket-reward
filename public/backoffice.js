@@ -1,5 +1,5 @@
 const state = {
-  rows: [], stores: [], tiers: [], settings: [], adminUsers: [], trainingSamples: [], selected: null,
+  rows: [], stores: [], tiers: [], settings: [], adminUsers: [], trainingSamples: [], trainingProfile: null, selected: null,
   pagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
   reviewing: false,
   token: sessionStorage.getItem('admin-token') || '',
@@ -396,6 +396,7 @@ function openStoreDialog(id = '') {
   setStoreLogoPreview(store?.logoUrl || '');
   clearTrainingDrafts();
   state.trainingSamples = [];
+  renderOcrProfile(store?.ocrProfile || {});
   document.querySelector('#training-samples').replaceChildren();
   document.querySelector('#training-summary').replaceChildren();
   document.querySelector('#training-tab-count').textContent = '0';
@@ -463,6 +464,102 @@ function trainingEvaluationDetails(evaluation) {
   return `<div class="training-evaluation-heading"><span class="status-chip ${evaluation.status === 'PASSED' ? 'rewarded' : 'auto_rejected'}">${evaluation.status === 'PASSED' ? 'Correcto' : 'Con diferencias'}</span><small>${escapeHtml(evaluation.model)} · ${evaluation.durationMs ?? '—'} ms</small></div><div class="training-matches">${fields}</div>`;
 }
 
+function profileLines(value) {
+  return Array.isArray(value) ? value.join('\n') : '';
+}
+
+function updateOcrProfileStatus() {
+  const enabled = document.querySelector('#ocr-profile-enabled').checked;
+  const status = document.querySelector('#ocr-profile-status');
+  status.textContent = enabled ? 'ACTIVO' : 'INACTIVO';
+  status.className = `status-chip ${enabled ? 'rewarded' : 'duplicate'}`;
+}
+
+function renderOcrProfile(profile = {}) {
+  state.trainingProfile = profile;
+  document.querySelector('#ocr-profile-enabled').checked = profile.enabled === true;
+  document.querySelector('#ocr-profile-signatures').value = profileLines(profile.headerSignatures);
+  document.querySelector('#ocr-profile-ticket-labels').value = profileLines(profile.ticketNumberLabels);
+  document.querySelector('#ocr-profile-date-labels').value = profileLines(profile.dateLabels);
+  document.querySelector('#ocr-profile-total-labels').value = profileLines(profile.totalLabels);
+  document.querySelector('#ocr-profile-ignore-labels').value = profileLines(profile.ignoredTotalLabels);
+  document.querySelector('#ocr-profile-ticket-region').value = profile.ticketNumberRegion || 'header';
+  document.querySelector('#ocr-profile-date-region').value = profile.dateRegion || 'header';
+  document.querySelector('#ocr-profile-total-region').value = profile.totalRegion || 'footer';
+  document.querySelector('#ocr-profile-date-format').value = profile.dateFormat || '';
+  document.querySelector('#ocr-profile-instructions').value = profile.instructions || '';
+  document.querySelector('#ocr-profile-meta').textContent = profile.sampleCount
+    ? `Perfil generado a partir de ${profile.sampleCount} ${profile.sampleCount === 1 ? 'ejemplo evaluado' : 'ejemplos evaluados'}.`
+    : 'Perfil todavía no generado desde ejemplos.';
+  document.querySelector('#ocr-profile-error').textContent = '';
+  updateOcrProfileStatus();
+}
+
+function linesFromProfileField(selector) {
+  return document.querySelector(selector).value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+}
+
+function ocrProfileFormValue() {
+  return {
+    version: 1,
+    enabled: document.querySelector('#ocr-profile-enabled').checked,
+    headerSignatures: linesFromProfileField('#ocr-profile-signatures'),
+    ticketNumberLabels: linesFromProfileField('#ocr-profile-ticket-labels'),
+    dateLabels: linesFromProfileField('#ocr-profile-date-labels'),
+    totalLabels: linesFromProfileField('#ocr-profile-total-labels'),
+    ignoredTotalLabels: linesFromProfileField('#ocr-profile-ignore-labels'),
+    ticketNumberRegion: document.querySelector('#ocr-profile-ticket-region').value,
+    dateRegion: document.querySelector('#ocr-profile-date-region').value,
+    totalRegion: document.querySelector('#ocr-profile-total-region').value,
+    dateFormat: document.querySelector('#ocr-profile-date-format').value,
+    instructions: document.querySelector('#ocr-profile-instructions').value,
+    sampleCount: state.trainingProfile?.sampleCount || 0,
+  };
+}
+
+async function generateOcrProfile() {
+  const storeId = document.querySelector('#store-form').elements.id.value;
+  const button = document.querySelector('#generate-ocr-profile');
+  const errorNode = document.querySelector('#ocr-profile-error');
+  errorNode.textContent = '';
+  button.disabled = true;
+  button.textContent = 'Generando…';
+  try {
+    const payload = await request(`/api/admin/stores/${storeId}/ocr-profile/generate`, { method: 'POST' });
+    renderOcrProfile(payload.profile);
+    showNotice('Borrador de perfil generado. Revísalo y guárdalo para utilizarlo.');
+  } catch (error) {
+    errorNode.textContent = error instanceof Error ? error.message : 'No se pudo generar el perfil';
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Generar desde ejemplos evaluados';
+  }
+}
+
+async function saveOcrProfile() {
+  const storeId = document.querySelector('#store-form').elements.id.value;
+  const button = document.querySelector('#save-ocr-profile');
+  const errorNode = document.querySelector('#ocr-profile-error');
+  errorNode.textContent = '';
+  button.disabled = true;
+  button.textContent = 'Guardando…';
+  try {
+    const payload = await request(`/api/admin/stores/${storeId}/ocr-profile`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ocrProfileFormValue()),
+    });
+    renderOcrProfile(payload.profile);
+    const store = state.stores.find((item) => item.id === storeId);
+    if (store) store.ocrProfile = payload.profile;
+    showNotice(payload.profile.enabled ? 'Perfil OCR guardado y activado.' : 'Perfil OCR guardado como inactivo.');
+  } catch (error) {
+    errorNode.textContent = error instanceof Error ? error.message : 'No se pudo guardar el perfil';
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Guardar perfil';
+  }
+}
+
 function renderTrainingSamples() {
   const passed = state.trainingSamples.filter((sample) => sample.evaluation?.status === 'PASSED').length;
   const evaluated = state.trainingSamples.filter((sample) => sample.evaluation).length;
@@ -496,9 +593,13 @@ function renderTrainingSamples() {
 async function loadTrainingSamples() {
   const storeId = document.querySelector('#store-form').elements.id.value;
   if (!storeId) return;
-  const payload = await request(`/api/admin/stores/${storeId}/training`);
+  const [payload, profilePayload] = await Promise.all([
+    request(`/api/admin/stores/${storeId}/training`),
+    request(`/api/admin/stores/${storeId}/ocr-profile`),
+  ]);
   state.trainingSamples = payload.samples;
   renderTrainingSamples();
+  renderOcrProfile(profilePayload.profile);
 }
 
 function renderTrainingReceiptCandidates() {
@@ -1085,6 +1186,9 @@ document.querySelector('#training-image-dialog').addEventListener('close', () =>
   document.querySelector('#training-image-expanded').removeAttribute('src');
 });
 document.querySelector('#evaluate-all-training').addEventListener('click', evaluateAllTraining);
+document.querySelector('#generate-ocr-profile').addEventListener('click', generateOcrProfile);
+document.querySelector('#save-ocr-profile').addEventListener('click', saveOcrProfile);
+document.querySelector('#ocr-profile-enabled').addEventListener('change', updateOcrProfileStatus);
 document.querySelector('#close-store-dialog').addEventListener('click', () => {
   clearTrainingDrafts();
   document.querySelector('#store-dialog').close();

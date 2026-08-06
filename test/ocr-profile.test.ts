@@ -1,0 +1,53 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { generateStoreOcrProfile, normalizeStoreOcrProfile } from '../src/domain/ocr-profile';
+
+test('OCR profiles normalize editable guidance safely', () => {
+  const profile = normalizeStoreOcrProfile({
+    enabled: true,
+    headerSignatures: ['  Comercio Uno  ', 'Comercio Uno'],
+    ticketNumberRegion: 'somewhere',
+    totalRegion: 'footer',
+    instructions: '  Buscar el número junto a CAJA  ',
+  });
+  assert.equal(profile.enabled, true);
+  assert.deepEqual(profile.headerSignatures, ['Comercio Uno']);
+  assert.equal(profile.ticketNumberRegion, 'header');
+  assert.equal(profile.totalRegion, 'footer');
+  assert.equal(profile.instructions, 'Buscar el número junto a CAJA');
+  assert.ok(profile.ignoredTotalLabels.includes('Subtotal'));
+});
+
+test('training evaluations generate merchant-specific OCR landmarks', () => {
+  const profile = generateStoreOcrProfile(
+    { name: 'Comercio Uno', aliases: ['Comercio Uno SL'] },
+    [{
+      notes: 'El total válido es el último TOTAL A PAGAR.',
+      matches: { ticketNumber: true, purchaseDate: true, total: true },
+      receipt: {
+        isReceipt: true,
+        confidence: 0.98,
+        storeName: 'Comercio Uno',
+        headerText: 'COMERCIO UNO\nB12345678',
+        ticketNumber: 'A-12345',
+        purchaseDate: '2026-08-06',
+        totalCents: 1599,
+        currency: 'EUR',
+        rawText: '',
+        evidence: {
+          ticketNumberText: 'Documento: A-12345',
+          purchaseDateText: 'Fecha operación: 06/08/2026',
+          totalText: 'TOTAL A PAGAR 15,99',
+        },
+      },
+    }],
+  );
+  assert.equal(profile.enabled, false);
+  assert.equal(profile.sampleCount, 1);
+  assert.ok(profile.headerSignatures.includes('B12345678'));
+  assert.deepEqual(profile.ticketNumberLabels, ['Documento']);
+  assert.deepEqual(profile.dateLabels, ['Fecha operación']);
+  assert.deepEqual(profile.totalLabels, ['TOTAL A PAGAR']);
+  assert.equal(profile.dateFormat, 'DD/MM/AAAA');
+  assert.match(profile.instructions, /último TOTAL A PAGAR/);
+});

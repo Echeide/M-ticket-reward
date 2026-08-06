@@ -20,6 +20,11 @@ import {
   trainingEvaluationPassed,
   type TrainingEvaluationMatches,
 } from './domain/training-sample';
+import {
+  generateStoreOcrProfile,
+  normalizeStoreOcrProfile,
+  type StoreOcrProfile,
+} from './domain/ocr-profile';
 import { normalizeRewardTierInput } from './domain/reward-tier';
 import { normalizeAdminEmail, type AdminRole } from './domain/admin-user';
 import {
@@ -123,6 +128,7 @@ type StoreRow = {
   name: string;
   aliases: string[];
   active: boolean;
+  ocr_profile: StoreOcrProfile | null;
   logo_key: string | null;
   logo_content_type: string | null;
   logo_width: number | null;
@@ -700,7 +706,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
     const result = await client.query<StoreRow>(
       'SELECT * FROM stores WHERE active = TRUE ORDER BY name ASC',
     );
-    return result.rows;
+    return result.rows.map(storeIdentity);
   });
   const ocrResult = await readReceipt(env, ocrBytes, receipt.image_content_type || 'image/webp', stores);
   const ocr = ocrResult.receipt;
@@ -1347,6 +1353,7 @@ function storeView(row: StoreRow) {
     name: row.name,
     aliases: Array.isArray(row.aliases) ? row.aliases : [],
     active: row.active,
+    ocrProfile: normalizeStoreOcrProfile(row.ocr_profile),
     logoUrl: row.logo_key
       ? `/api/admin/stores/${row.id}/logo?v=${encodeURIComponent(row.logo_updated_at || row.logo_key)}`
       : '',
@@ -1355,6 +1362,14 @@ function storeView(row: StoreRow) {
     receiptCount: Number(row.receipt_count || 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function storeIdentity(row: StoreRow) {
+  return {
+    ...row,
+    aliases: Array.isArray(row.aliases) ? row.aliases : [],
+    ocrProfile: normalizeStoreOcrProfile(row.ocr_profile),
   };
 }
 
@@ -1536,6 +1551,85 @@ async function handleAdminStoreUpdate(
   if (updated.kind === 'missing') return error('Comercio no encontrado', 404);
   if (updated.kind === 'duplicate') return error('Ya existe un comercio con ese código', 409);
   return json({ success: true, store: storeView(updated.row) });
+}
+
+async function handleAdminStoreOcrProfile(
+  request: Request,
+  env: Env,
+  storeId: string,
+): Promise<Response> {
+  const managerEmail = managerIdentity(request, env);
+  if (!managerEmail) return error('Acceso de gestor requerido', 401);
+  const current = await withDatabase(env, async (client) => {
+    const result = await client.query<StoreRow>('SELECT * FROM stores WHERE id = $1 LIMIT 1', [storeId]);
+    return result.rows[0];
+  });
+  if (!current) return error('Comercio no encontrado', 404);
+  if (request.method === 'GET') {
+    return json({ success: true, profile: normalizeStoreOcrProfile(current.ocr_profile) });
+  }
+
+  const profile = normalizeStoreOcrProfile(await readJson(request));
+  if (profile.enabled && !(
+    profile.headerSignatures.length || profile.ticketNumberLabels.length ||
+    profile.dateLabels.length || profile.totalLabels.length || profile.instructions
+  )) {
+    return error('Añade alguna referencia antes de activar el perfil', 400);
+  }
+  const updated = await withDatabase(env, (client) => inTransaction(client, async () => {
+    const result = await client.query<StoreRow>(
+      `UPDATE stores SET ocr_profile = $2::jsonb, updated_at = NOW()
+        WHERE id = $1 RETURNING *`,
+      [storeId, JSON.stringify(profile)],
+    );
+    await client.query(
+      `INSERT INTO store_audit_log (id, store_id, action, manager_email, changes)
+       VALUES ($1, $2, 'UPDATED', $3, $4::jsonb)`,
+      [uuid(), storeId, managerEmail, JSON.stringify({ ocrProfile: profile })],
+    );
+    return result.rows[0]!;
+  }));
+  return json({ success: true, profile: normalizeStoreOcrProfile(updated.ocr_profile) });
+}
+
+async function handleAdminStoreOcrProfileGenerate(
+  request: Request,
+  env: Env,
+  storeId: string,
+): Promise<Response> {
+  if (!managerIdentity(request, env)) return error('Acceso de gestor requerido', 401);
+  const data = await withDatabase(env, async (client) => {
+    const storeResult = await client.query<StoreRow>('SELECT * FROM stores WHERE id = $1 LIMIT 1', [storeId]);
+    const sourceResult = await client.query<{
+      notes: string;
+      actual_payload: OcrReceipt | null;
+      matches: TrainingEvaluationMatches | null;
+    }>(
+      `SELECT s.notes, e.actual_payload, e.matches
+         FROM store_training_samples s
+         LEFT JOIN store_training_evaluations e ON e.id = (
+           SELECT latest.id FROM store_training_evaluations latest
+            WHERE latest.sample_id = s.id ORDER BY latest.created_at DESC LIMIT 1
+         )
+        WHERE s.store_id = $1 ORDER BY s.created_at DESC`,
+      [storeId],
+    );
+    return { store: storeResult.rows[0], sources: sourceResult.rows };
+  });
+  if (!data.store) return error('Comercio no encontrado', 404);
+  const evaluated = data.sources.filter((source) => source.actual_payload);
+  if (!evaluated.length) {
+    return error('Evalúa al menos un ejemplo antes de generar el perfil', 409);
+  }
+  const profile = generateStoreOcrProfile(
+    { name: data.store.name, aliases: data.store.aliases },
+    evaluated.map((source) => ({
+      receipt: source.actual_payload,
+      matches: source.matches || {},
+      notes: source.notes,
+    })),
+  );
+  return json({ success: true, profile, evaluatedSamples: evaluated.length });
 }
 
 function trainingEvaluationView(row: TrainingEvaluationRow | null) {
@@ -1870,7 +1964,7 @@ async function handleAdminTrainingEvaluate(
       env,
       await object.arrayBuffer(),
       data.sample.image_content_type,
-      [data.store],
+      [storeIdentity(data.store)],
     );
     const expected = normalizeTrainingSampleInput({
       ticketNumber: data.sample.expected_ticket_number,
@@ -2233,6 +2327,16 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     }
     if (request.method === 'POST' && adminStoreLogoMatch?.[1]) {
       return await handleAdminStoreLogoUpload(request, env, adminStoreLogoMatch[1]);
+    }
+    const storeOcrProfileGenerateMatch = url.pathname.match(
+      /^\/api\/admin\/stores\/([^/]+)\/ocr-profile\/generate$/,
+    );
+    if (request.method === 'POST' && storeOcrProfileGenerateMatch?.[1]) {
+      return await handleAdminStoreOcrProfileGenerate(request, env, storeOcrProfileGenerateMatch[1]);
+    }
+    const storeOcrProfileMatch = url.pathname.match(/^\/api\/admin\/stores\/([^/]+)\/ocr-profile$/);
+    if (storeOcrProfileMatch?.[1] && ['GET', 'PATCH'].includes(request.method)) {
+      return await handleAdminStoreOcrProfile(request, env, storeOcrProfileMatch[1]);
     }
     const trainingCandidatesMatch = url.pathname.match(
       /^\/api\/admin\/stores\/([^/]+)\/training-candidates$/,

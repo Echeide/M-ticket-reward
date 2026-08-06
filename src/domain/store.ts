@@ -1,3 +1,5 @@
+import type { StoreOcrProfile } from './ocr-profile';
+
 export type StoreInput = {
   code: string;
   name: string;
@@ -8,6 +10,7 @@ export type StoreInput = {
 export type StoreIdentity = {
   name: string;
   aliases: string[];
+  ocrProfile?: StoreOcrProfile;
 };
 
 export type StoreOcrEvidence = {

@@ -148,7 +148,16 @@ test('OCR retries an incomplete reading with focused regions', async () => {
     env,
     new Uint8Array([1, 2, 3]).buffer,
     'image/webp',
-    [{ name: 'Hiperdino', aliases: ['Dinosol'] }],
+    [{
+      name: 'Hiperdino', aliases: ['Dinosol'],
+      ocrProfile: {
+        version: 1, enabled: true, headerSignatures: ['DINOSOL SUPERMERCADOS'],
+        ticketNumberLabels: ['Documento'], dateLabels: ['Fecha operación'],
+        totalLabels: ['TOTAL COMPRA'], ignoredTotalLabels: ['Subtotal'],
+        ticketNumberRegion: 'header', dateRegion: 'header', totalRegion: 'footer',
+        dateFormat: 'DD/MM/AAAA', instructions: 'Ignorar el número de caja.', sampleCount: 3,
+      },
+    }],
   );
 
   assert.equal(result.attemptCount, 3);
@@ -159,7 +168,9 @@ test('OCR retries an incomplete reading with focused regions', async () => {
   assert.equal(requests[0]!.task, 'query');
   assert.match(String(requests[0]!.image), /^data:image\/webp;base64,/);
   assert.match(String(requests[1]!.question), /CABECERA/i);
+  assert.match(String(requests[1]!.question), /Fecha operación/);
   assert.match(String(requests[2]!.question), /parte INFERIOR/i);
+  assert.match(String(requests[2]!.question), /TOTAL COMPRA/);
 });
 
 test('Workers AI chat format can switch to stronger vision models by configuration', async () => {
