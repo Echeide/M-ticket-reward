@@ -1,10 +1,11 @@
 const state = {
-  rows: [], stores: [], tiers: [], settings: [], selected: null,
+  rows: [], stores: [], tiers: [], settings: [], trainingSamples: [], selected: null,
   pagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
   reviewing: false,
   token: sessionStorage.getItem('admin-token') || '',
 };
 let storeLogoPreviewObjectUrl = '';
+let trainingDraftFiles = [];
 const statusLabels = {
   OCR_QUEUED: 'En espera de lectura',
   OCR_PROCESSING: 'Leyendo ticket',
@@ -325,9 +326,26 @@ function openStoreDialog(id = '') {
   form.elements.aliases.value = (store?.aliases || []).join('\n');
   form.elements.active.checked = store?.active ?? true;
   setStoreLogoPreview(store?.logoUrl || '');
+  clearTrainingDrafts();
+  state.trainingSamples = [];
+  document.querySelector('#training-samples').replaceChildren();
+  document.querySelector('#training-summary').replaceChildren();
+  document.querySelector('#training-tab-count').textContent = '0';
+  document.querySelector('#store-training-tab').disabled = !store;
+  setStorePanel('details');
   document.querySelector('#store-dialog-title').textContent = store ? 'Editar comercio' : 'Añadir comercio';
   document.querySelector('#store-form-error').textContent = '';
   document.querySelector('#store-dialog').showModal();
+}
+
+function setStorePanel(panel) {
+  document.querySelectorAll('[data-store-panel]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.storePanel === panel);
+  });
+  document.querySelector('#store-details-panel').hidden = panel !== 'details';
+  document.querySelector('#store-training-panel').hidden = panel !== 'training';
+  document.querySelector('#store-details-panel').classList.toggle('active', panel === 'details');
+  document.querySelector('#store-training-panel').classList.toggle('active', panel === 'training');
 }
 
 function setStoreLogoPreview(source = '', objectUrl = false) {
@@ -339,6 +357,175 @@ function setStoreLogoPreview(source = '', objectUrl = false) {
   placeholder.hidden = Boolean(source);
   if (source) preview.src = source;
   else preview.removeAttribute('src');
+}
+
+function clearTrainingDrafts() {
+  trainingDraftFiles.forEach((draft) => URL.revokeObjectURL(draft.previewUrl));
+  trainingDraftFiles = [];
+  document.querySelector('#training-files').value = '';
+  document.querySelector('#training-drafts').replaceChildren();
+  document.querySelector('#training-form-error').textContent = '';
+}
+
+function trainingEvaluationDetails(evaluation) {
+  if (!evaluation) return '<span class="training-not-evaluated">Sin evaluar</span>';
+  if (evaluation.status === 'ERROR') {
+    return `<span class="status-chip auto_rejected">Error técnico</span><small>${escapeHtml(evaluation.errorMessage || 'No se pudo ejecutar el OCR')}</small>`;
+  }
+  const labels = {
+    store: 'Comercio', ticketNumber: 'Número', purchaseDate: 'Fecha', total: 'Importe', evidence: 'Evidencias',
+  };
+  const fields = Object.entries(labels).map(([key, label]) =>
+    `<span class="training-match ${evaluation.matches?.[key] ? 'passed' : 'failed'}">${evaluation.matches?.[key] ? '✓' : '×'} ${label}</span>`).join('');
+  return `<div class="training-evaluation-heading"><span class="status-chip ${evaluation.status === 'PASSED' ? 'rewarded' : 'auto_rejected'}">${evaluation.status === 'PASSED' ? 'Correcto' : 'Con diferencias'}</span><small>${escapeHtml(evaluation.model)} · ${evaluation.durationMs ?? '—'} ms</small></div><div class="training-matches">${fields}</div>`;
+}
+
+function renderTrainingSamples() {
+  const passed = state.trainingSamples.filter((sample) => sample.evaluation?.status === 'PASSED').length;
+  const evaluated = state.trainingSamples.filter((sample) => sample.evaluation).length;
+  document.querySelector('#training-tab-count').textContent = String(state.trainingSamples.length);
+  document.querySelector('#training-summary').innerHTML = state.trainingSamples.length
+    ? `<strong>${state.trainingSamples.length} ejemplos</strong><span>${evaluated} evaluados · ${passed} completamente correctos</span>`
+    : '';
+  document.querySelector('#evaluate-all-training').disabled = !state.trainingSamples.length;
+  document.querySelector('#training-samples').innerHTML = state.trainingSamples.map((sample) => `
+    <article class="training-sample" data-id="${escapeHtml(sample.id)}">
+      <img src="${escapeHtml(sample.imageUrl)}" alt="Ticket de entrenamiento" loading="lazy" />
+      <div class="training-ground-truth">
+        <strong>${escapeHtml(sample.expected.ticketNumber)}</strong>
+        <span>${escapeHtml(sample.expected.purchaseDate)} · ${formatMoney(sample.expected.totalCents)}</span>
+        ${sample.notes ? `<small>${escapeHtml(sample.notes)}</small>` : ''}
+        ${trainingEvaluationDetails(sample.evaluation)}
+      </div>
+      <div class="training-actions">
+        <button class="secondary-button evaluate-training" type="button" data-id="${escapeHtml(sample.id)}">Evaluar</button>
+        <button class="text-button delete-training" type="button" data-id="${escapeHtml(sample.id)}">Eliminar</button>
+      </div>
+    </article>`).join('') || '<p class="empty-state">Todavía no hay tickets de entrenamiento para este comercio.</p>';
+  document.querySelectorAll('.evaluate-training').forEach((button) => button.addEventListener('click', () => evaluateTrainingSample(button.dataset.id, button)));
+  document.querySelectorAll('.delete-training').forEach((button) => button.addEventListener('click', () => deleteTrainingSample(button.dataset.id)));
+}
+
+async function loadTrainingSamples() {
+  const storeId = document.querySelector('#store-form').elements.id.value;
+  if (!storeId) return;
+  const payload = await request(`/api/admin/stores/${storeId}/training`);
+  state.trainingSamples = payload.samples;
+  renderTrainingSamples();
+}
+
+function renderTrainingDrafts() {
+  document.querySelector('#training-drafts').innerHTML = trainingDraftFiles.map((draft, index) => `
+    <article class="training-draft" data-index="${index}">
+      <img src="${escapeHtml(draft.previewUrl)}" alt="Vista previa de ${escapeHtml(draft.file.name)}" />
+      <div class="training-draft-fields">
+        <strong>${escapeHtml(draft.file.name)}</strong>
+        <label>Número del ticket<input data-training-field="ticketNumber" maxlength="160" placeholder="Número exacto impreso" /></label>
+        <label>Fecha<input data-training-field="purchaseDate" type="date" /></label>
+        <label>Importe total (€)<input data-training-field="total" inputmode="decimal" placeholder="15,92" /></label>
+        <label class="training-notes-field">Notas<input data-training-field="notes" maxlength="1000" placeholder="Caja, formato o particularidades" /></label>
+      </div>
+      <button class="icon-button remove-training-draft" type="button" data-index="${index}" aria-label="Quitar ejemplo">×</button>
+    </article>`).join('') + (trainingDraftFiles.length
+    ? `<div class="training-save-row"><button class="primary-button" id="save-training-drafts" type="button">Guardar ${trainingDraftFiles.length} ${trainingDraftFiles.length === 1 ? 'ejemplo' : 'ejemplos'}</button></div>` : '');
+  document.querySelectorAll('.remove-training-draft').forEach((button) => button.addEventListener('click', () => {
+    const [removed] = trainingDraftFiles.splice(Number(button.dataset.index), 1);
+    if (removed) URL.revokeObjectURL(removed.previewUrl);
+    renderTrainingDrafts();
+  }));
+  document.querySelector('#save-training-drafts')?.addEventListener('click', saveTrainingDrafts);
+}
+
+async function saveTrainingDrafts(event) {
+  const button = event.currentTarget;
+  const storeId = document.querySelector('#store-form').elements.id.value;
+  const errorNode = document.querySelector('#training-form-error');
+  const cards = [...document.querySelectorAll('.training-draft')];
+  errorNode.textContent = '';
+  button.disabled = true;
+  let savedCount = 0;
+  try {
+    for (const [index, draft] of trainingDraftFiles.entries()) {
+      const card = cards[index];
+      const value = (field) => card.querySelector(`[data-training-field="${field}"]`).value.trim();
+      const totalCents = Math.round(Number(value('total').replace(',', '.')) * 100);
+      if (!value('ticketNumber') || !value('purchaseDate') || !Number.isInteger(totalCents) || totalCents <= 0) {
+        throw new Error(`Completa número, fecha e importe de ${draft.file.name}`);
+      }
+      button.textContent = `Guardando ${index + 1} de ${trainingDraftFiles.length}…`;
+      const form = new FormData();
+      form.append('image', draft.file);
+      form.append('ticketNumber', value('ticketNumber'));
+      form.append('purchaseDate', value('purchaseDate'));
+      form.append('totalCents', String(totalCents));
+      form.append('currency', 'EUR');
+      form.append('notes', value('notes'));
+      await request(`/api/admin/stores/${storeId}/training`, { method: 'POST', body: form });
+      savedCount += 1;
+    }
+    clearTrainingDrafts();
+    await loadTrainingSamples();
+    showNotice(`${savedCount} ${savedCount === 1 ? 'ejemplo guardado' : 'ejemplos guardados'} correctamente.`);
+  } catch (error) {
+    errorNode.textContent = error instanceof Error ? error.message : 'No se pudieron guardar los ejemplos';
+    if (savedCount) {
+      trainingDraftFiles.slice(0, savedCount).forEach((draft) => URL.revokeObjectURL(draft.previewUrl));
+      trainingDraftFiles = trainingDraftFiles.slice(savedCount);
+      renderTrainingDrafts();
+      await loadTrainingSamples();
+    }
+  } finally {
+    if (document.body.contains(button)) {
+      button.disabled = false;
+      button.textContent = `Guardar ${trainingDraftFiles.length} ${trainingDraftFiles.length === 1 ? 'ejemplo' : 'ejemplos'}`;
+    }
+  }
+}
+
+async function evaluateTrainingSample(sampleId, button) {
+  const storeId = document.querySelector('#store-form').elements.id.value;
+  button.disabled = true;
+  button.textContent = 'Evaluando…';
+  try {
+    const payload = await request(`/api/admin/stores/${storeId}/training/${sampleId}/evaluate`, { method: 'POST' });
+    const sample = state.trainingSamples.find((item) => item.id === sampleId);
+    if (sample) sample.evaluation = payload.evaluation;
+    renderTrainingSamples();
+  } catch (error) {
+    document.querySelector('#training-form-error').textContent = error instanceof Error ? error.message : 'No se pudo evaluar el ejemplo';
+    button.disabled = false;
+    button.textContent = 'Evaluar';
+  }
+}
+
+async function evaluateAllTraining() {
+  const button = document.querySelector('#evaluate-all-training');
+  button.disabled = true;
+  document.querySelector('#training-form-error').textContent = '';
+  try {
+    for (const [index, sample] of state.trainingSamples.entries()) {
+      button.textContent = `Evaluando ${index + 1} de ${state.trainingSamples.length}…`;
+      const storeId = document.querySelector('#store-form').elements.id.value;
+      const payload = await request(`/api/admin/stores/${storeId}/training/${sample.id}/evaluate`, { method: 'POST' });
+      sample.evaluation = payload.evaluation;
+      renderTrainingSamples();
+    }
+    showNotice('Evaluación del comercio completada.');
+  } catch (error) {
+    document.querySelector('#training-form-error').textContent = error instanceof Error ? error.message : 'No se pudo completar la evaluación';
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Evaluar todos';
+  }
+}
+
+async function deleteTrainingSample(sampleId) {
+  if (!confirm('¿Eliminar este ejemplo y todas sus evaluaciones?')) return;
+  const storeId = document.querySelector('#store-form').elements.id.value;
+  await request(`/api/admin/stores/${storeId}/training/${sampleId}`, { method: 'DELETE' });
+  state.trainingSamples = state.trainingSamples.filter((sample) => sample.id !== sampleId);
+  renderTrainingSamples();
+  showNotice('Ejemplo eliminado.');
 }
 
 async function saveStore(event) {
@@ -633,8 +820,30 @@ document.querySelectorAll('[data-admin-view]').forEach((button) => button.addEve
 }));
 document.querySelector('#new-store').addEventListener('click', () => openStoreDialog());
 document.querySelector('#store-form').addEventListener('submit', saveStore);
-document.querySelector('#close-store-dialog').addEventListener('click', () => document.querySelector('#store-dialog').close());
-document.querySelector('#cancel-store').addEventListener('click', () => document.querySelector('#store-dialog').close());
+document.querySelectorAll('[data-store-panel]').forEach((button) => button.addEventListener('click', async () => {
+  if (button.disabled) return;
+  setStorePanel(button.dataset.storePanel);
+  if (button.dataset.storePanel === 'training') {
+    await loadTrainingSamples().catch((error) => {
+      document.querySelector('#training-form-error').textContent = error.message;
+    });
+  }
+}));
+document.querySelector('#training-files').addEventListener('change', (event) => {
+  const selected = [...event.currentTarget.files].slice(0, Math.max(0, 20 - trainingDraftFiles.length));
+  trainingDraftFiles.push(...selected.map((file) => ({ file, previewUrl: URL.createObjectURL(file) })));
+  event.currentTarget.value = '';
+  renderTrainingDrafts();
+});
+document.querySelector('#evaluate-all-training').addEventListener('click', evaluateAllTraining);
+document.querySelector('#close-store-dialog').addEventListener('click', () => {
+  clearTrainingDrafts();
+  document.querySelector('#store-dialog').close();
+});
+document.querySelector('#cancel-store').addEventListener('click', () => {
+  clearTrainingDrafts();
+  document.querySelector('#store-dialog').close();
+});
 document.querySelector('#new-tier').addEventListener('click', () => openTierDialog());
 document.querySelector('#tier-form').addEventListener('submit', saveTier);
 document.querySelector('#close-tier-dialog').addEventListener('click', () => document.querySelector('#tier-dialog').close());

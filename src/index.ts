@@ -14,6 +14,12 @@ import {
   rewardIdempotencyKey,
 } from './domain/rewards';
 import { findMatchingStore, normalizeStoreInput } from './domain/store';
+import {
+  compareTrainingResult,
+  normalizeTrainingSampleInput,
+  trainingEvaluationPassed,
+  type TrainingEvaluationMatches,
+} from './domain/training-sample';
 import { normalizeRewardTierInput } from './domain/reward-tier';
 import {
   APP_SETTING_DEFINITIONS,
@@ -106,6 +112,50 @@ type StoreRow = {
   created_at: string;
   updated_at: string;
   receipt_count?: string;
+};
+
+type TrainingSampleRow = {
+  id: string;
+  store_id: string;
+  image_key: string;
+  image_content_type: string;
+  image_size: number;
+  image_width: number;
+  image_height: number;
+  expected_ticket_number: string;
+  expected_purchase_date: string;
+  expected_total_cents: number;
+  expected_currency: string;
+  notes: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  evaluation_id?: string | null;
+  evaluation_provider?: string | null;
+  evaluation_model?: string | null;
+  evaluation_status?: 'PASSED' | 'FAILED' | 'ERROR' | null;
+  evaluation_matches?: TrainingEvaluationMatches | null;
+  evaluation_verification_issues?: string[] | null;
+  evaluation_attempt_count?: number | null;
+  evaluation_duration_ms?: number | null;
+  evaluation_error_message?: string | null;
+  evaluation_created_at?: string | null;
+};
+
+type TrainingEvaluationRow = {
+  id: string;
+  sample_id: string;
+  provider: string;
+  model: string;
+  status: 'PASSED' | 'FAILED' | 'ERROR';
+  actual_payload: OcrReceipt | null;
+  matches: TrainingEvaluationMatches;
+  verification_issues: string[];
+  attempt_count: number;
+  duration_ms: number | null;
+  error_message: string | null;
+  created_by: string;
+  created_at: string;
 };
 
 type RewardTierRow = {
@@ -1301,6 +1351,276 @@ async function handleAdminStoreUpdate(
   return json({ success: true, store: storeView(updated.row) });
 }
 
+function trainingEvaluationView(row: TrainingEvaluationRow | null) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    provider: row.provider,
+    model: row.model,
+    status: row.status,
+    matches: row.matches || {},
+    verificationIssues: Array.isArray(row.verification_issues) ? row.verification_issues : [],
+    attemptCount: Number(row.attempt_count || 0),
+    durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
+    errorMessage: row.error_message || '',
+    createdAt: row.created_at,
+  };
+}
+
+function trainingSampleView(row: TrainingSampleRow) {
+  const evaluation = row.evaluation_id ? trainingEvaluationView({
+    id: row.evaluation_id,
+    sample_id: row.id,
+    provider: row.evaluation_provider || '',
+    model: row.evaluation_model || '',
+    status: row.evaluation_status || 'ERROR',
+    actual_payload: null,
+    matches: row.evaluation_matches || {} as TrainingEvaluationMatches,
+    verification_issues: row.evaluation_verification_issues || [],
+    attempt_count: Number(row.evaluation_attempt_count || 0),
+    duration_ms: row.evaluation_duration_ms === null || row.evaluation_duration_ms === undefined
+      ? null : Number(row.evaluation_duration_ms),
+    error_message: row.evaluation_error_message || null,
+    created_by: '',
+    created_at: row.evaluation_created_at || '',
+  }) : null;
+  return {
+    id: row.id,
+    storeId: row.store_id,
+    imageUrl: `/api/admin/stores/${row.store_id}/training/${row.id}/image`,
+    image: {
+      contentType: row.image_content_type,
+      size: Number(row.image_size),
+      width: Number(row.image_width),
+      height: Number(row.image_height),
+    },
+    expected: {
+      ticketNumber: row.expected_ticket_number,
+      purchaseDate: String(row.expected_purchase_date).slice(0, 10),
+      totalCents: Number(row.expected_total_cents),
+      currency: row.expected_currency,
+    },
+    notes: row.notes || '',
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    evaluation,
+  };
+}
+
+async function loadTrainingSample(
+  env: Env,
+  storeId: string,
+  sampleId: string,
+): Promise<TrainingSampleRow | undefined> {
+  return withDatabase(env, async (client) => {
+    const result = await client.query<TrainingSampleRow>(
+      'SELECT * FROM store_training_samples WHERE id = $1 AND store_id = $2 LIMIT 1',
+      [sampleId, storeId],
+    );
+    return result.rows[0];
+  });
+}
+
+async function handleAdminTrainingSamples(request: Request, env: Env, storeId: string): Promise<Response> {
+  const managerEmail = managerIdentity(request, env);
+  if (!managerEmail) return error('Acceso de gestor requerido', 401);
+  const store = await withDatabase(env, async (client) => {
+    const result = await client.query<StoreRow>('SELECT * FROM stores WHERE id = $1 LIMIT 1', [storeId]);
+    return result.rows[0];
+  });
+  if (!store) return error('Comercio no encontrado', 404);
+
+  if (request.method === 'GET') {
+    const samples = await withDatabase(env, async (client) => {
+      const result = await client.query<TrainingSampleRow>(
+        `SELECT s.*,
+            e.id AS evaluation_id, e.provider AS evaluation_provider,
+            e.model AS evaluation_model, e.status AS evaluation_status,
+            e.matches AS evaluation_matches,
+            e.verification_issues AS evaluation_verification_issues,
+            e.attempt_count AS evaluation_attempt_count,
+            e.duration_ms AS evaluation_duration_ms,
+            e.error_message AS evaluation_error_message,
+            e.created_at AS evaluation_created_at
+           FROM store_training_samples s
+           LEFT JOIN store_training_evaluations e ON e.id = (
+             SELECT latest.id FROM store_training_evaluations latest
+              WHERE latest.sample_id = s.id
+              ORDER BY latest.created_at DESC LIMIT 1
+           )
+          WHERE s.store_id = $1
+          ORDER BY s.created_at DESC`,
+        [storeId],
+      );
+      return result.rows;
+    });
+    return json({ success: true, store: storeView(store), samples: samples.map(trainingSampleView) });
+  }
+
+  const form = await request.formData();
+  const image = form.get('image');
+  if (!(image instanceof File)) return error('Selecciona una imagen de ticket', 400);
+  if (!new Set(['image/jpeg', 'image/png', 'image/webp']).has(image.type)) {
+    return error('Formato de imagen no admitido', 415);
+  }
+  const maxBytes = Math.max(1, Number(env.MAX_TICKET_BYTES || 10 * 1024 * 1024));
+  if (image.size <= 0 || image.size > maxBytes) return error('La imagen supera el límite permitido', 413);
+  const input = normalizeTrainingSampleInput({
+    ticketNumber: form.get('ticketNumber'),
+    purchaseDate: form.get('purchaseDate'),
+    totalCents: form.get('totalCents'),
+    currency: form.get('currency'),
+    notes: form.get('notes'),
+  });
+  const optimized = await optimizeTicketImage(env, await image.arrayBuffer(), image.type);
+  const sampleId = uuid();
+  const objectKey = `training/${storeId}/${sampleId}.${optimized.extension}`;
+  await env.TICKETS.put(objectKey, optimized.bytes, {
+    httpMetadata: { contentType: optimized.contentType },
+    customMetadata: {
+      kind: 'ocr-training-sample',
+      storeId,
+      sampleId,
+      originalBytes: String(optimized.originalBytes),
+      storedBytes: String(optimized.bytes.byteLength),
+      storedDimensions: `${optimized.width}x${optimized.height}`,
+      ocrReady: 'true',
+    },
+  });
+  let created: TrainingSampleRow;
+  try {
+    created = await withDatabase(env, async (client) => {
+      const result = await client.query<TrainingSampleRow>(
+        `INSERT INTO store_training_samples
+          (id, store_id, image_key, image_content_type, image_size, image_width, image_height,
+           expected_ticket_number, expected_purchase_date, expected_total_cents,
+           expected_currency, notes, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         RETURNING *`,
+        [sampleId, storeId, objectKey, optimized.contentType, optimized.bytes.byteLength,
+          optimized.width, optimized.height, input.ticketNumber, input.purchaseDate,
+          input.totalCents, input.currency, input.notes, managerEmail],
+      );
+      return result.rows[0]!;
+    });
+  } catch (caught) {
+    try { await env.TICKETS.delete(objectKey); } catch (cleanupError) {
+      console.error('Could not clean up unlinked training image', cleanupError);
+    }
+    throw caught;
+  }
+  return json({ success: true, sample: trainingSampleView(created) }, 201);
+}
+
+async function handleAdminTrainingImage(
+  request: Request,
+  env: Env,
+  storeId: string,
+  sampleId: string,
+): Promise<Response> {
+  if (!managerIdentity(request, env)) return error('Acceso de gestor requerido', 401);
+  const sample = await loadTrainingSample(env, storeId, sampleId);
+  if (!sample) return error('Ejemplo no encontrado', 404);
+  const object = await env.TICKETS.get(sample.image_key);
+  if (!object) return error('Imagen no encontrada', 404);
+  return new Response(object.body, { headers: {
+    'Content-Type': sample.image_content_type,
+    'Cache-Control': 'private, no-store',
+    'X-Content-Type-Options': 'nosniff',
+  } });
+}
+
+async function handleAdminTrainingDelete(
+  request: Request,
+  env: Env,
+  storeId: string,
+  sampleId: string,
+): Promise<Response> {
+  if (!managerIdentity(request, env)) return error('Acceso de gestor requerido', 401);
+  const sample = await loadTrainingSample(env, storeId, sampleId);
+  if (!sample) return error('Ejemplo no encontrado', 404);
+  await withDatabase(env, async (client) => {
+    await client.query('DELETE FROM store_training_samples WHERE id = $1 AND store_id = $2', [sampleId, storeId]);
+  });
+  try { await env.TICKETS.delete(sample.image_key); } catch (caught) {
+    console.error('Could not remove training image', caught);
+  }
+  return json({ success: true });
+}
+
+async function handleAdminTrainingEvaluate(
+  request: Request,
+  env: Env,
+  storeId: string,
+  sampleId: string,
+): Promise<Response> {
+  const managerEmail = managerIdentity(request, env);
+  if (!managerEmail) return error('Acceso de gestor requerido', 401);
+  const data = await withDatabase(env, async (client) => {
+    const sampleResult = await client.query<TrainingSampleRow>(
+      'SELECT * FROM store_training_samples WHERE id = $1 AND store_id = $2 LIMIT 1',
+      [sampleId, storeId],
+    );
+    const storeResult = await client.query<StoreRow>('SELECT * FROM stores WHERE id = $1 LIMIT 1', [storeId]);
+    return { sample: sampleResult.rows[0], store: storeResult.rows[0] };
+  });
+  if (!data.sample || !data.store) return error('Ejemplo no encontrado', 404);
+  const object = await env.TICKETS.get(data.sample.image_key);
+  if (!object) return error('Imagen no encontrada', 404);
+  const evaluationId = uuid();
+  try {
+    const result = await readReceipt(
+      env,
+      await object.arrayBuffer(),
+      data.sample.image_content_type,
+      [data.store],
+    );
+    const expected = normalizeTrainingSampleInput({
+      ticketNumber: data.sample.expected_ticket_number,
+      purchaseDate: String(data.sample.expected_purchase_date).slice(0, 10),
+      totalCents: data.sample.expected_total_cents,
+      currency: data.sample.expected_currency,
+      notes: data.sample.notes,
+    });
+    const matches = compareTrainingResult(
+      expected,
+      result.receipt,
+      Boolean(findMatchingStore([data.store], result.receipt)),
+      result.verificationIssues,
+    );
+    const status = trainingEvaluationPassed(matches) ? 'PASSED' : 'FAILED';
+    const created = await withDatabase(env, async (client) => {
+      const insert = await client.query<TrainingEvaluationRow>(
+        `INSERT INTO store_training_evaluations
+          (id, sample_id, provider, model, status, actual_payload, matches,
+           verification_issues, attempt_count, duration_ms, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11)
+         RETURNING *`,
+        [evaluationId, sampleId, result.provider, result.model, status,
+          JSON.stringify(result.receipt), JSON.stringify(matches), JSON.stringify(result.verificationIssues),
+          result.attemptCount, result.durationMs, managerEmail],
+      );
+      return insert.rows[0]!;
+    });
+    return json({ success: true, evaluation: trainingEvaluationView(created) });
+  } catch (caught) {
+    const message = (caught instanceof Error ? caught.message : 'OCR_EVALUATION_FAILED').slice(0, 500);
+    const created = await withDatabase(env, async (client) => {
+      const insert = await client.query<TrainingEvaluationRow>(
+        `INSERT INTO store_training_evaluations
+          (id, sample_id, provider, model, status, matches, verification_issues,
+           attempt_count, error_message, created_by)
+         VALUES ($1, $2, $3, $4, 'ERROR', $5::jsonb, $6::jsonb, 0, $7, $8)
+         RETURNING *`,
+        [evaluationId, sampleId, env.OCR_PROVIDER || 'workers-ai', env.OCR_MODEL,
+          JSON.stringify({}), JSON.stringify([]), message, managerEmail],
+      );
+      return insert.rows[0]!;
+    });
+    return json({ success: false, evaluation: trainingEvaluationView(created) }, 200);
+  }
+}
+
 function rewardTierView(row: RewardTierRow) {
   return {
     id: row.id,
@@ -1479,6 +1799,28 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'POST' && adminStoreLogoMatch?.[1]) {
       return await handleAdminStoreLogoUpload(request, env, adminStoreLogoMatch[1]);
     }
+    const trainingCollectionMatch = url.pathname.match(/^\/api\/admin\/stores\/([^/]+)\/training$/);
+    if (trainingCollectionMatch?.[1] && ['GET', 'POST'].includes(request.method)) {
+      return await handleAdminTrainingSamples(request, env, trainingCollectionMatch[1]);
+    }
+    const trainingImageMatch = url.pathname.match(
+      /^\/api\/admin\/stores\/([^/]+)\/training\/([^/]+)\/image$/,
+    );
+    if (request.method === 'GET' && trainingImageMatch?.[1] && trainingImageMatch[2]) {
+      return await handleAdminTrainingImage(request, env, trainingImageMatch[1], trainingImageMatch[2]);
+    }
+    const trainingEvaluateMatch = url.pathname.match(
+      /^\/api\/admin\/stores\/([^/]+)\/training\/([^/]+)\/evaluate$/,
+    );
+    if (request.method === 'POST' && trainingEvaluateMatch?.[1] && trainingEvaluateMatch[2]) {
+      return await handleAdminTrainingEvaluate(request, env, trainingEvaluateMatch[1], trainingEvaluateMatch[2]);
+    }
+    const trainingSampleMatch = url.pathname.match(
+      /^\/api\/admin\/stores\/([^/]+)\/training\/([^/]+)$/,
+    );
+    if (request.method === 'DELETE' && trainingSampleMatch?.[1] && trainingSampleMatch[2]) {
+      return await handleAdminTrainingDelete(request, env, trainingSampleMatch[1], trainingSampleMatch[2]);
+    }
     const storeMatch = url.pathname.match(/^\/api\/admin\/stores\/([^/]+)$/);
     if (request.method === 'PATCH' && storeMatch?.[1]) return await handleAdminStoreUpdate(request, env, storeMatch[1]);
     if (url.pathname === '/api/admin/reward-tiers' && ['GET', 'POST'].includes(request.method)) {
@@ -1533,6 +1875,11 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       STORE_NAME_INVALID: 'El nombre debe tener entre 2 y 160 caracteres',
       STORE_ALIAS_INVALID: 'Los alias no pueden superar 160 caracteres',
       IMAGE_INVALID: 'La imagen seleccionada no es válida',
+      TRAINING_TICKET_NUMBER_INVALID: 'Indica un número de ticket válido para el ejemplo',
+      TRAINING_DATE_INVALID: 'Indica una fecha válida para el ejemplo',
+      TRAINING_TOTAL_INVALID: 'Indica un importe total válido para el ejemplo',
+      TRAINING_CURRENCY_INVALID: 'La moneda del ejemplo no es válida',
+      TRAINING_NOTES_TOO_LONG: 'Las notas del ejemplo son demasiado largas',
       TIER_MINIMUM_INVALID: 'El importe mínimo debe ser un valor válido en céntimos',
       TIER_POINTS_INVALID: 'Los puntos deben ser un número entero positivo o cero',
       APP_SETTING_UNKNOWN: 'El ajuste seleccionado no existe',

@@ -11,11 +11,16 @@ export type DbClient = {
 
 const JSON_COLUMNS = new Set([
   'aliases',
+  'actual_payload',
   'changes',
+  'evaluation_matches',
+  'evaluation_verification_issues',
+  'matches',
   'ocr_payload',
   'payload',
   'response_payload',
   'validation_reasons',
+  'verification_issues',
 ]);
 
 const BOOLEAN_COLUMNS = new Set(['active']);

@@ -98,23 +98,43 @@
       </section>
     </main>
 
-    <dialog id="store-dialog">
+    <dialog id="store-dialog" class="store-dialog">
       <form id="store-form" method="dialog">
         <div class="dialog-heading"><div><p class="eyebrow">Comercio autorizado</p><h2 id="store-dialog-title">Añadir comercio</h2></div><button class="icon-button" id="close-store-dialog" type="button" aria-label="Cerrar">×</button></div>
         <input name="id" type="hidden" />
-        <label>Nombre comercial<input name="name" maxlength="160" required placeholder="Ej. Librería Atlántica" /></label>
-        <label>Logo del comercio
-          <div class="store-logo-control">
-            <span class="store-logo-preview"><img id="store-logo-preview" alt="Vista previa del logo" hidden /><span id="store-logo-placeholder">Sin logo</span></span>
-            <input name="logo" type="file" accept="image/jpeg,image/png,image/webp" />
+        <nav class="store-dialog-tabs" aria-label="Edición del comercio">
+          <button class="active" data-store-panel="details" type="button">Datos</button>
+          <button id="store-training-tab" data-store-panel="training" type="button">Entrenamiento <span id="training-tab-count">0</span></button>
+        </nav>
+        <section id="store-details-panel" class="store-dialog-panel active">
+          <label>Nombre comercial<input name="name" maxlength="160" required placeholder="Ej. Librería Atlántica" /></label>
+          <label>Logo del comercio
+            <div class="store-logo-control">
+              <span class="store-logo-preview"><img id="store-logo-preview" alt="Vista previa del logo" hidden /><span id="store-logo-placeholder">Sin logo</span></span>
+              <input name="logo" type="file" accept="image/jpeg,image/png,image/webp" />
+            </div>
+            <small>JPG, PNG o WebP, máximo 5 MB. Se optimizará a WebP con un ancho máximo de 800 px.</small>
+          </label>
+          <label>Código interno<input name="code" maxlength="40" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{1,39}" placeholder="LIBRERIA_ATLANTICA" /><small>Identificador único; letras, números, guiones y guion bajo.</small></label>
+          <label>Alias reconocibles en el ticket<textarea name="aliases" rows="4" placeholder="Un alias por línea&#10;Librería Atlántica SL&#10;LIB ATLANTICA"></textarea><small>Añade nombres fiscales o abreviaturas que pueda leer el OCR.</small></label>
+          <label class="switch-row"><span><strong>Comercio activo</strong><small>Sus tickets pueden validarse y recibir puntos.</small></span><input name="active" type="checkbox" checked /></label>
+          <p id="store-form-error" class="form-error" role="alert"></p>
+          <div class="dialog-actions" id="store-details-actions"><button class="secondary-button" id="cancel-store" type="button">Cancelar</button><button class="primary-button" type="submit">Guardar comercio</button></div>
+        </section>
+        <section id="store-training-panel" class="store-dialog-panel training-panel" hidden>
+          <div class="training-intro">
+            <div><strong>Ejemplos verificados</strong><p>Estos tickets se usan únicamente para medir el OCR. No generan puntos ni aparecen en la actividad de usuarios.</p></div>
+            <button class="secondary-button" id="evaluate-all-training" type="button">Evaluar todos</button>
           </div>
-          <small>JPG, PNG o WebP, máximo 5 MB. Se optimizará a WebP con un ancho máximo de 800 px.</small>
-        </label>
-        <label>Código interno<input name="code" maxlength="40" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{1,39}" placeholder="LIBRERIA_ATLANTICA" /><small>Identificador único; letras, números, guiones y guion bajo.</small></label>
-        <label>Alias reconocibles en el ticket<textarea name="aliases" rows="4" placeholder="Un alias por línea&#10;Librería Atlántica SL&#10;LIB ATLANTICA"></textarea><small>Añade nombres fiscales o abreviaturas que pueda leer el OCR.</small></label>
-        <label class="switch-row"><span><strong>Comercio activo</strong><small>Sus tickets pueden validarse y recibir puntos.</small></span><input name="active" type="checkbox" checked /></label>
-        <p id="store-form-error" class="form-error" role="alert"></p>
-        <div class="dialog-actions"><button class="secondary-button" id="cancel-store" type="button">Cancelar</button><button class="primary-button" type="submit">Guardar comercio</button></div>
+          <label class="training-file-picker">Añadir tickets de prueba
+            <input id="training-files" type="file" accept="image/jpeg,image/png,image/webp" multiple />
+            <small>Selecciona varias imágenes y completa los valores correctos de cada una.</small>
+          </label>
+          <div id="training-drafts" class="training-drafts"></div>
+          <p id="training-form-error" class="form-error" role="alert"></p>
+          <div class="training-summary" id="training-summary"></div>
+          <div id="training-samples" class="training-samples"></div>
+        </section>
       </form>
     </dialog>
     <dialog id="tier-dialog">
