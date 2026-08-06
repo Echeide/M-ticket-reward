@@ -13,6 +13,11 @@ import {
   reversalIdempotencyKey,
   rewardIdempotencyKey,
 } from './domain/rewards';
+import {
+  databaseTimestampAfter,
+  rewardMaxAttempts,
+  rewardRetryDelaySeconds,
+} from './domain/reward-delivery';
 import { findMatchingStore, normalizeStoreInput } from './domain/store';
 import {
   compareTrainingResult,
@@ -47,6 +52,8 @@ import {
   exchangeLaunchCode,
   grantTicketPoints,
   RtalesApiError,
+  RtalesTransportError,
+  retryAfterSeconds,
   revokeTicketPoints,
 } from './integrations/rtales';
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from './platform/crypto';
@@ -319,6 +326,7 @@ const PUBLIC_REASON_MESSAGES: Record<string, string> = {
   INVALID_DATE: 'No se pudo reconocer una fecha válida.',
   FUTURE_DATE: 'La fecha está fuera del periodo permitido.',
   TICKET_TOO_OLD: 'La fecha está fuera del periodo permitido.',
+  RTALES_DELIVERY_FAILED: 'No hemos podido añadir los puntos. El ticket sigue registrado y puedes reintentar la asignación.',
 };
 
 function publicReceiptMessage(row: ReceiptRow): string {
@@ -327,6 +335,9 @@ function publicReceiptMessage(row: ReceiptRow): string {
   if (reason) return PUBLIC_REASON_MESSAGES[reason]!;
   if (row.status === 'REVOKED') return 'El ticket fue anulado tras la revisión antifraude.';
   if (row.status === 'REVOKE_PENDING') return 'La anulación de los puntos está en proceso.';
+  if (row.status === 'REWARD_PENDING') {
+    return `Estamos asignando ${row.points_awarded} puntos. Puedes cerrar esta pantalla y consultar el resultado más tarde.`;
+  }
   if (row.status === 'REWARD_FAILED') return 'No hemos podido completar la asignación de puntos.';
   return '';
 }
@@ -334,6 +345,8 @@ function publicReceiptMessage(row: ReceiptRow): string {
 function publicReceiptView(row: ReceiptRow) {
   const verificationRequired = row.status === 'REWARD_FAILED' &&
     row.validation_reasons.includes('OCR_VERIFICATION_REQUIRED');
+  const retryableReward = row.status === 'REWARD_FAILED' &&
+    row.validation_reasons.includes('RTALES_DELIVERY_FAILED');
   return {
     id: row.id,
     publicId: row.public_id,
@@ -349,6 +362,7 @@ function publicReceiptView(row: ReceiptRow) {
     },
     reward: { pointsAwarded: row.points_awarded },
     verificationRequired,
+    retryableReward,
     message: publicReceiptMessage(row),
     createdAt: row.created_at,
     rewardedAt: row.rewarded_at,
@@ -603,6 +617,56 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
       if (!session) return { response: error('Sesión no válida', 401) };
       const receipt = await loadOwnedReceipt(client, receiptId, session, true);
       if (!receipt) return { response: error('Ticket no encontrado', 404) };
+      if (receipt.status === 'REWARDED') {
+        return {
+          response: json({
+            success: true,
+            status: 'REWARDED',
+            points: receipt.points_awarded,
+          }),
+        };
+      }
+      if (receipt.status === 'REWARD_PENDING') {
+        return {
+          response: json({
+            success: true,
+            status: 'REWARD_PENDING',
+            points: receipt.points_awarded,
+          }, 202),
+        };
+      }
+      if (
+        receipt.status === 'REWARD_FAILED' &&
+        receipt.validation_reasons.includes('RTALES_DELIVERY_FAILED')
+      ) {
+        const failed = await client.query<{ id: string }>(
+          `UPDATE reward_outbox SET status = 'PENDING', attempt_count = 0,
+             next_attempt_at = NOW(), locked_until = NULL, last_error = NULL,
+             updated_at = NOW()
+           WHERE id = (
+             SELECT id FROM reward_outbox
+              WHERE receipt_id = $1 AND operation = 'GRANT' AND status = 'FAILED'
+              ORDER BY created_at DESC LIMIT 1
+           )
+           RETURNING id`,
+          [receiptId],
+        );
+        if (!failed.rows[0]) return { response: error('No hay una asignación recuperable', 409) };
+        outboxId = failed.rows[0].id;
+        await client.query(
+          `UPDATE receipts SET status = 'REWARD_PENDING', validation_reasons = '[]'::jsonb,
+             review_status = 'CLEARED', reviewed_at = NOW(), reviewed_by = 'SYSTEM',
+             updated_at = NOW() WHERE id = $1`,
+          [receiptId],
+        );
+        return {
+          response: json({
+            success: true,
+            status: 'REWARD_PENDING',
+            points: receipt.points_awarded,
+          }, 202),
+        };
+      }
       if (receipt.status !== 'READY_FOR_CONFIRMATION') {
         return { response: error('El ticket no está listo para confirmar', 409) };
       }
@@ -826,27 +890,73 @@ async function purgeReceipt(env: Env, receiptId: string, managerEmail: string): 
   return true;
 }
 
-async function processOutbox(env: Env, outboxId: string): Promise<void> {
+async function markOutboxTerminalFailure(env: Env, outboxId: string, failure: string): Promise<void> {
+  await withDatabase(env, async (client) => inTransaction(client, async () => {
+    const failed = await client.query<{ receipt_id: string; operation: 'GRANT' | 'REVOKE' }>(
+      `UPDATE reward_outbox SET status = 'FAILED', last_error = $2,
+         locked_until = NULL, updated_at = NOW()
+       WHERE id = $1 AND status IN ('PENDING', 'PROCESSING')
+       RETURNING receipt_id, operation`,
+      [outboxId, failure.slice(0, 500)],
+    );
+    const outbox = failed.rows[0];
+    if (!outbox) return;
+    if (outbox.operation === 'GRANT') {
+      await client.query(
+        `UPDATE receipts SET status = 'REWARD_FAILED',
+           validation_reasons = $2::jsonb, review_status = 'CLEARED',
+           reviewed_at = NOW(), reviewed_by = 'SYSTEM', updated_at = NOW()
+         WHERE id = $1 AND status = 'REWARD_PENDING'`,
+        [outbox.receipt_id, JSON.stringify(['RTALES_DELIVERY_FAILED'])],
+      );
+    } else {
+      await client.query(
+        `UPDATE receipts SET status = 'REWARDED', updated_at = NOW()
+         WHERE id = $1 AND status = 'REVOKE_PENDING'`,
+        [outbox.receipt_id],
+      );
+    }
+  }));
+}
+
+async function scheduleOutboxRetry(
+  env: Env,
+  outboxId: string,
+  attempt: number,
+  failure: string,
+  retryAfter = 0,
+): Promise<number | null> {
+  if (attempt >= rewardMaxAttempts(env)) {
+    await markOutboxTerminalFailure(env, outboxId, failure);
+    return null;
+  }
+  const delaySeconds = rewardRetryDelaySeconds(attempt, retryAfter);
+  await withDatabase(env, (client) => client.query(
+    `UPDATE reward_outbox SET status = 'PENDING', last_error = $2,
+       next_attempt_at = $3, locked_until = NULL, updated_at = NOW()
+     WHERE id = $1 AND status = 'PROCESSING'`,
+    [outboxId, failure.slice(0, 500), databaseTimestampAfter(delaySeconds)],
+  ).then(() => undefined));
+  return delaySeconds;
+}
+
+async function processOutbox(env: Env, outboxId: string): Promise<number | null> {
+  const maxAttempts = rewardMaxAttempts(env);
   const claimed = await withDatabase(env, async (client) =>
     inTransaction(client, async () => {
       const result = await client.query<{
         id: string; receipt_id: string; operation: 'GRANT' | 'REVOKE';
-        idempotency_key: string; payload: Record<string, unknown>;
+        idempotency_key: string; payload: Record<string, unknown>; attempt_count: number;
       }>(
-        `SELECT id, receipt_id, operation, idempotency_key, payload
-           FROM reward_outbox
-          WHERE id = $1 AND next_attempt_at <= NOW()
-            AND (status = 'PENDING' OR (status = 'PROCESSING' AND locked_until < NOW()))
-          FOR UPDATE`,
-        [outboxId],
+        `UPDATE reward_outbox SET status = 'PROCESSING', attempt_count = attempt_count + 1,
+           locked_until = NOW() + INTERVAL '45 seconds', updated_at = NOW()
+         WHERE id = $1 AND next_attempt_at <= NOW() AND attempt_count < $2
+           AND (status = 'PENDING' OR (status = 'PROCESSING' AND locked_until < NOW()))
+         RETURNING id, receipt_id, operation, idempotency_key, payload, attempt_count`,
+        [outboxId, maxAttempts],
       );
       const row = result.rows[0];
       if (!row) return null;
-      await client.query(
-        `UPDATE reward_outbox SET status = 'PROCESSING', attempt_count = attempt_count + 1,
-           locked_until = NOW() + INTERVAL '45 seconds', updated_at = NOW() WHERE id = $1`,
-        [outboxId],
-      );
       const receipt = await client.query<ReceiptRow & SessionRow>(
         `SELECT r.*, s.rtales_game_session_id, s.player_token_encrypted,
                 s.parent_origin, s.display_name
@@ -857,45 +967,47 @@ async function processOutbox(env: Env, outboxId: string): Promise<void> {
       return { outbox: row, receipt: receipt.rows[0] };
     }),
   );
-  if (!claimed?.receipt) return;
+  if (!claimed?.receipt) return null;
 
   const { outbox, receipt } = claimed;
-  const delivery = outbox.operation === 'GRANT'
-    ? await grantTicketPoints(env, {
-        gameSessionId: receipt.rtales_game_session_id,
-        playerToken: await decryptSecret(receipt.player_token_encrypted, env.DATA_ENCRYPTION_KEY),
-        receiptId: receipt.id,
-        publicId: receipt.public_id,
-        points: receipt.points_awarded,
-        totalCents: receipt.total_cents || 0,
-        idempotencyKey: outbox.idempotency_key,
-      })
-    : await revokeTicketPoints(env, {
-        resultId: receipt.rtales_result_id || '',
-        receiptId: receipt.id,
-        reason: String(outbox.payload.reason || 'Fraude detectado'),
-        managerEmail: String(outbox.payload.managerEmail || ''),
-        idempotencyKey: outbox.idempotency_key,
-      });
+  let delivery: Awaited<ReturnType<typeof grantTicketPoints>>;
+  try {
+    delivery = outbox.operation === 'GRANT'
+      ? await grantTicketPoints(env, {
+          gameSessionId: receipt.rtales_game_session_id,
+          playerToken: await decryptSecret(receipt.player_token_encrypted, env.DATA_ENCRYPTION_KEY),
+          receiptId: receipt.id,
+          publicId: receipt.public_id,
+          points: receipt.points_awarded,
+          totalCents: receipt.total_cents || 0,
+          idempotencyKey: outbox.idempotency_key,
+        })
+      : await revokeTicketPoints(env, {
+          resultId: receipt.rtales_result_id || '',
+          receiptId: receipt.id,
+          reason: String(outbox.payload.reason || 'Fraude detectado'),
+          managerEmail: String(outbox.payload.managerEmail || ''),
+          idempotencyKey: outbox.idempotency_key,
+        });
+  } catch (caught) {
+    const failure = caught instanceof RtalesTransportError ? caught.code : 'RTALES_NETWORK_ERROR';
+    return scheduleOutboxRetry(env, outboxId, outbox.attempt_count, failure);
+  }
 
   if (!delivery.response.ok || !delivery.payload.success) {
     const retryable = delivery.response.status >= 500 || [408, 425, 429].includes(delivery.response.status);
-    await withDatabase(env, (client) => client.query(
-      `UPDATE reward_outbox SET status = $2, last_error = $3,
-         next_attempt_at = NOW() + (LEAST(3600, POWER(2, attempt_count) * 5)::text || ' seconds')::interval,
-         locked_until = NULL, updated_at = NOW() WHERE id = $1`,
-      [outboxId, retryable ? 'PENDING' : 'FAILED', String(delivery.payload.error || `HTTP_${delivery.response.status}`).slice(0, 500)],
-    ).then(() => undefined));
-    if (retryable) throw new Error('RTALES_RETRYABLE_DELIVERY');
-    await withDatabase(env, (client) => client.query(
-      `UPDATE receipts SET status = $2,
-         review_status = CASE WHEN $3 = 'GRANT' THEN 'PENDING' ELSE review_status END,
-         reviewed_at = CASE WHEN $3 = 'GRANT' THEN NULL ELSE reviewed_at END,
-         reviewed_by = CASE WHEN $3 = 'GRANT' THEN NULL ELSE reviewed_by END,
-         updated_at = NOW() WHERE id = $1`,
-      [receipt.id, outbox.operation === 'GRANT' ? 'REWARD_FAILED' : 'REWARDED', outbox.operation],
-    ).then(() => undefined));
-    return;
+    const failure = String(delivery.payload.error || `HTTP_${delivery.response.status}`);
+    if (retryable) {
+      return scheduleOutboxRetry(
+        env,
+        outboxId,
+        outbox.attempt_count,
+        failure,
+        delivery.response.status === 429 ? retryAfterSeconds(delivery.response) : 0,
+      );
+    }
+    await markOutboxTerminalFailure(env, outboxId, failure);
+    return null;
   }
 
   const resultPayload = (delivery.payload.result || delivery.payload.reversal) as Record<string, unknown> | undefined;
@@ -922,6 +1034,7 @@ async function processOutbox(env: Env, outboxId: string): Promise<void> {
   if (outbox.operation === 'REVOKE' && receipt.deletion_requested_at) {
     await purgeReceipt(env, receipt.id, receipt.deletion_requested_by || 'SYSTEM');
   }
+  return null;
 }
 
 function adminFilters(url: URL) {
@@ -2470,18 +2583,30 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
 }
 
 async function requeueDueOutbox(env: Env): Promise<void> {
+  const maxAttempts = rewardMaxAttempts(env);
   const ids = await withDatabase(env, async (client) => {
+    const exhausted = await client.query<{ id: string }>(
+      `SELECT id FROM reward_outbox
+        WHERE status IN ('PENDING', 'PROCESSING') AND attempt_count >= $1
+        LIMIT 100`,
+      [maxAttempts],
+    );
     const result = await client.query<{ id: string }>(
       `UPDATE reward_outbox SET status = 'PENDING', locked_until = NULL, updated_at = NOW()
-        WHERE status = 'PROCESSING' AND locked_until < NOW()
+        WHERE status = 'PROCESSING' AND locked_until < NOW() AND attempt_count < $1
         RETURNING id`,
+      [maxAttempts],
     );
     const due = await client.query<{ id: string }>(
-      `SELECT id FROM reward_outbox WHERE status = 'PENDING' AND next_attempt_at <= NOW() LIMIT 100`,
+      `SELECT id FROM reward_outbox
+        WHERE status = 'PENDING' AND next_attempt_at <= NOW() AND attempt_count < $1
+        LIMIT 100`,
+      [maxAttempts],
     );
-    return Array.from(new Set([...result.rows, ...due.rows].map((row) => row.id)));
+    return { exhausted: exhausted.rows, due: Array.from(new Set([...result.rows, ...due.rows].map((row) => row.id))) };
   });
-  await Promise.all(ids.map((outboxId) => env.REWARD_JOBS.send({ kind: 'DELIVER_REWARD', outboxId })));
+  await Promise.all(ids.exhausted.map(({ id }) => markOutboxTerminalFailure(env, id, 'RTALES_MAX_ATTEMPTS')));
+  await Promise.all(ids.due.map((outboxId) => env.REWARD_JOBS.send({ kind: 'DELIVER_REWARD', outboxId })));
 }
 
 async function requeueStuckOcr(env: Env): Promise<void> {
@@ -2508,12 +2633,21 @@ export default {
     for (const message of batch.messages) {
       try {
         if (message.body.kind === 'OCR_RECEIPT') await processOcr(env, message.body.receiptId);
-        else await processOutbox(env, message.body.outboxId);
+        else {
+          const retryDelaySeconds = await processOutbox(env, message.body.outboxId);
+          if (retryDelaySeconds !== null) {
+            message.retry({ delaySeconds: retryDelaySeconds });
+            continue;
+          }
+        }
         message.ack();
       } catch (caught) {
         console.error('Queue job failed', message.body, caught);
         if (message.body.kind === 'OCR_RECEIPT' && message.attempts >= 8) {
           await markOcrFailed(env, message.body.receiptId);
+          message.ack();
+        } else if (message.body.kind === 'DELIVER_REWARD' && message.attempts >= rewardMaxAttempts(env)) {
+          await markOutboxTerminalFailure(env, message.body.outboxId, 'REWARD_JOB_FAILED');
           message.ack();
         } else {
           message.retry();

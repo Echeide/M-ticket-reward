@@ -13,6 +13,8 @@ export interface Env {
   RTALES_BASE_URL: string;
   RTALES_PARENT_ORIGINS: string;
   RTALES_EXTERNAL_GAME_TOKEN: string;
+  RTALES_TIMEOUT_MS?: string;
+  RTALES_REWARD_MAX_ATTEMPTS?: string;
   DATA_ENCRYPTION_KEY: string;
   OCR_PROVIDER?: string;
   OCR_MODEL: string;

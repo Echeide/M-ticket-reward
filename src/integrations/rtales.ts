@@ -16,23 +16,65 @@ export class RtalesApiError extends Error {
   }
 }
 
+export class RtalesTransportError extends Error {
+  constructor(public readonly code: 'RTALES_TIMEOUT' | 'RTALES_NETWORK_ERROR') {
+    super(code);
+    this.name = 'RtalesTransportError';
+  }
+}
+
+function rtalesTimeoutMs(env: Env): number {
+  const configured = Number.parseInt(env.RTALES_TIMEOUT_MS || '', 10);
+  if (!Number.isFinite(configured)) return 10_000;
+  return Math.min(30_000, Math.max(1_000, configured));
+}
+
+function rtalesTransportError(pathname: string, caught: unknown): RtalesTransportError {
+  const name = caught instanceof Error ? caught.name : '';
+  const timedOut = ['TimeoutError', 'AbortError'].includes(name);
+  const code = timedOut ? 'RTALES_TIMEOUT' : 'RTALES_NETWORK_ERROR';
+  console.error('Rtales request failed', { pathname, code });
+  return new RtalesTransportError(code);
+}
+
+export function retryAfterSeconds(response: Response, now = Date.now()): number {
+  const value = response.headers.get('retry-after');
+  if (!value) return 0;
+  const seconds = Number.parseInt(value, 10);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(3600, seconds);
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return 0;
+  return Math.min(3600, Math.max(0, Math.ceil((timestamp - now) / 1000)));
+}
+
 async function rtalesRequest(
   env: Env,
   pathname: string,
   body: unknown,
   idempotencyKey?: string,
 ): Promise<{ response: Response; payload: RtalesResponse }> {
-  const response = await fetch(new URL(pathname, env.RTALES_BASE_URL), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.RTALES_EXTERNAL_GAME_TOKEN}`,
-      'Content-Type': 'application/json',
-      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
-    },
-    body: JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    response = await fetch(new URL(pathname, env.RTALES_BASE_URL), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.RTALES_EXTERNAL_GAME_TOKEN}`,
+        'Content-Type': 'application/json',
+        ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(rtalesTimeoutMs(env)),
+    });
+  } catch (caught) {
+    throw rtalesTransportError(pathname, caught);
+  }
   const contentType = response.headers.get('content-type') || '';
-  const rawPayload = await response.text();
+  let rawPayload = '';
+  try {
+    rawPayload = await response.text();
+  } catch (caught) {
+    throw rtalesTransportError(pathname, caught);
+  }
   let payload: RtalesResponse = {};
   try {
     payload = JSON.parse(rawPayload) as RtalesResponse;

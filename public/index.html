@@ -73,18 +73,6 @@
         <p>Cuando termine la subida podrás seguir su estado desde «Mis tickets».</p>
       </section>
 
-      <section class="screen" data-screen="registered" aria-live="polite">
-        <div class="status-icon success">✓</div>
-        <p class="eyebrow">Ticket registrado</p>
-        <h2>Seguimos procesándolo</h2>
-        <p>No necesitas volver a subirlo. Puedes esperar aquí o consultar el resultado más tarde desde «Mis tickets».</p>
-        <p class="reference">Referencia: <strong id="registered-reference"></strong></p>
-        <button class="primary-button button-with-icon" data-action="open-history" type="button">
-          <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
-          Ver mis tickets
-        </button>
-      </section>
-
       <section class="screen" data-screen="not-receipt">
         <div class="status-icon danger">!</div>
         <h2>No parece un ticket de compra</h2>
@@ -112,12 +100,6 @@
         <div class="ocr-validation-badge" id="ocr-validation-badge">Comprobando…</div>
         <button class="primary-button" id="confirm-ocr" type="button">Continuar y obtener puntos</button>
         <button class="secondary-button" id="retry-ocr" data-action="retry" type="button">Volver a escanear</button>
-      </section>
-
-      <section class="screen" data-screen="reward-processing" aria-live="polite">
-        <div class="spinner"></div>
-        <h2>Validando y asignando puntos</h2>
-        <p>No cierres esta pantalla hasta que confirmemos la recompensa.</p>
       </section>
 
       <section class="screen" data-screen="final">

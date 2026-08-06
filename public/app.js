@@ -10,6 +10,7 @@ const state = {
   appSettings: {},
   pollGeneration: 0,
 };
+const notifiedRewardReceipts = new Set();
 
 const HOME_SETTING_TARGETS = {
   'home.eyebrow': '#home-eyebrow',
@@ -275,28 +276,6 @@ async function upload(file) {
   await openHistory();
 }
 
-async function pollUntilReady() {
-  const generation = ++state.pollGeneration;
-  for (let attempt = 0; attempt < 140; attempt += 1) {
-    const payload = await api(`/api/receipts/${state.receiptId}`);
-    if (generation !== state.pollGeneration) return;
-    state.receipt = payload.receipt;
-    if (payload.receipt.status === 'READY_FOR_CONFIRMATION') {
-      showOcrReview(payload.receipt);
-      return show('ocr-review');
-    }
-    if (payload.receipt.status === 'NOT_A_RECEIPT') return show('not-receipt');
-    if (payload.receipt.status === 'DUPLICATE') return show('duplicate');
-    if (payload.receipt.status === 'REWARDED') return finish(payload.receipt);
-    if (['AUTO_REJECTED', 'REWARD_FAILED', 'REVOKE_PENDING', 'REVOKED'].includes(payload.receipt.status)) {
-      return showTicketDetail(payload.receipt);
-    }
-    if (attempt === 24) showRegistered(payload.receipt);
-    await new Promise((resolve) => setTimeout(resolve, attempt < 24 ? 1200 : 5000));
-  }
-  if (generation === state.pollGeneration) showRegistered(state.receipt);
-}
-
 async function resumeReceipt(receipt) {
   state.receipt = receipt;
   state.receiptId = receipt.id;
@@ -312,14 +291,8 @@ async function resumeReceipt(receipt) {
   if (['AUTO_REJECTED', 'REWARD_FAILED', 'REVOKE_PENDING', 'REVOKED'].includes(receipt.status)) {
     return showTicketDetail(receipt);
   }
-  if (['OCR_QUEUED', 'OCR_PROCESSING'].includes(receipt.status)) return openHistory();
-  show(receipt.status === 'REWARD_PENDING' ? 'reward-processing' : 'processing');
-  await pollUntilReady();
-}
-
-function showRegistered(receipt) {
-  document.querySelector('#registered-reference').textContent = receipt?.publicId || '';
-  show('registered');
+  if (['OCR_QUEUED', 'OCR_PROCESSING', 'REWARD_PENDING'].includes(receipt.status)) return openHistory();
+  return openHistory();
 }
 
 function showOcrReview(receipt) {
@@ -408,21 +381,44 @@ function matchStore(name) {
 }
 
 async function confirmReceipt() {
-  show('reward-processing');
-  const payload = await api(`/api/receipts/${state.receiptId}/confirm`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: '{}',
-  });
-  if (payload.status === 'DUPLICATE') return show('duplicate');
-  if (payload.status === 'AUTO_REJECTED') {
-    document.querySelector('#ocr-validation-title').textContent = 'No podemos validar este ticket';
-    document.querySelector('#ocr-validation-message').textContent = 'La validación automática ha rechazado el ticket. Vuelve a escanearlo con una imagen más clara.';
-    document.querySelector('#confirm-ocr').hidden = true;
-    document.querySelector('#retry-ocr').hidden = false;
-    return show('ocr-review');
+  const button = document.querySelector('#confirm-ocr');
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Registrando solicitud…';
+  try {
+    const payload = await api(`/api/receipts/${state.receiptId}/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    if (payload.status === 'DUPLICATE') return show('duplicate');
+    if (payload.status === 'AUTO_REJECTED') {
+      document.querySelector('#ocr-validation-title').textContent = 'No podemos validar este ticket';
+      document.querySelector('#ocr-validation-message').textContent = 'La validación automática ha rechazado el ticket. Vuelve a escanearlo con una imagen más clara.';
+      document.querySelector('#confirm-ocr').hidden = true;
+      document.querySelector('#retry-ocr').hidden = false;
+      return show('ocr-review');
+    }
+    if (payload.status === 'REWARDED') {
+      const receiptPayload = await api(`/api/receipts/${state.receiptId}`);
+      return finish(receiptPayload.receipt);
+    }
+    await openHistory();
+  } finally {
+    button.disabled = false;
+    button.textContent = originalLabel;
   }
-  await pollUntilReady();
+}
+
+function notifyRewardCompleted(receipt) {
+  if (receipt.id !== state.receiptId || notifiedRewardReceipts.has(receipt.id)) return;
+  notifiedRewardReceipts.add(receipt.id);
+  if (state.parentOrigin && window.parent !== window) {
+    window.parent.postMessage({
+      type: 'EXTERNAL_GAME_COMPLETED',
+      rewards: { pointsAwarded: receipt.reward.pointsAwarded, cards: [] },
+    }, state.parentOrigin);
+  }
 }
 
 function finish(receipt) {
@@ -431,12 +427,7 @@ function finish(receipt) {
   document.querySelector('#points-awarded').textContent = receipt.reward.pointsAwarded;
   document.querySelector('#receipt-reference').textContent = receipt.publicId;
   show('final');
-  if (state.parentOrigin && window.parent !== window) {
-    window.parent.postMessage({
-      type: 'EXTERNAL_GAME_COMPLETED',
-      rewards: { pointsAwarded: receipt.reward.pointsAwarded, cards: [] },
-    }, state.parentOrigin);
-  }
+  notifyRewardCompleted(receipt);
 }
 
 function statusMeta(status, verificationRequired = false) {
@@ -485,6 +476,10 @@ async function openHistory() {
   list.append(loading);
   const payload = await api('/api/receipts');
   renderHistory(payload.receipts);
+  const completedReceipt = payload.receipts.find((receipt) => (
+    receipt.id === state.receiptId && receipt.status === 'REWARDED'
+  ));
+  if (completedReceipt) notifyRewardCompleted(completedReceipt);
   monitorHistory(generation, payload.receipts).catch((caught) => {
     console.warn('No se pudo actualizar automáticamente el listado de tickets', caught);
   });
@@ -537,6 +532,10 @@ async function monitorHistory(generation, initialReceipts) {
     if (nextSignature !== signature) {
       announceHistoryChanges(receipts, payload.receipts);
       renderHistory(payload.receipts);
+      const completedReceipt = payload.receipts.find((receipt) => (
+        receipt.id === state.receiptId && receipt.status === 'REWARDED'
+      ));
+      if (completedReceipt) notifyRewardCompleted(completedReceipt);
       signature = nextSignature;
     }
     receipts = payload.receipts;
@@ -581,7 +580,7 @@ function renderHistory(receipts) {
 
     const chip = document.createElement('span');
     chip.className = `ticket-status ${meta.tone}`;
-    chip.textContent = receipt.status === 'REWARDED'
+    chip.textContent = ['REWARD_PENDING', 'REWARDED'].includes(receipt.status)
       ? `${meta.label} · +${receipt.reward.pointsAwarded} pts`
       : meta.label;
 
@@ -623,6 +622,27 @@ function showTicketDetail(receipt) {
     action.textContent = 'Revisar y continuar';
     action.hidden = false;
     action.onclick = () => resumeReceipt(receipt).catch(showError);
+  } else if (receipt.retryableReward) {
+    action.textContent = 'Reintentar asignación';
+    action.hidden = false;
+    action.onclick = async () => {
+      action.disabled = true;
+      action.textContent = 'Registrando solicitud…';
+      state.receiptId = receipt.id;
+      sessionStorage.setItem('ticket-receipt-id', receipt.id);
+      try {
+        await api(`/api/receipts/${receipt.id}/confirm`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+        await openHistory();
+      } catch (caught) {
+        action.disabled = false;
+        action.textContent = 'Reintentar asignación';
+        showError(caught);
+      }
+    };
   }
   show('ticket-detail');
 }

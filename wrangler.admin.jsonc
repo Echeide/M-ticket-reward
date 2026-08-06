@@ -39,6 +39,8 @@
     "ADMIN_ONLY": "true",
     "RTALES_BASE_URL": "https://rtales.app",
     "RTALES_PARENT_ORIGINS": "'none'",
+    "RTALES_TIMEOUT_MS": "10000",
+    "RTALES_REWARD_MAX_ATTEMPTS": "8",
     "OCR_PROVIDER": "workers-ai",
     "OCR_MODEL": "@cf/meta/llama-3.2-11b-vision-instruct",
     "OCR_WORKERS_AI_FORMAT": "chat",
