@@ -209,7 +209,7 @@ async function bootstrap() {
     if (state.parentOrigin) sessionStorage.setItem('ticket-parent-origin', state.parentOrigin);
     history.replaceState({}, '', location.pathname);
   }
-  if (!state.sessionToken) throw new Error('Abre este módulo desde Rtales para comenzar');
+  if (!state.sessionToken) throw new Error('Abre este módulo desde el sistema para comenzar');
   const [stores, configuredTexts] = await Promise.all([
     api('/api/stores'),
     api('/api/home-settings').catch(() => ({ settings: {} })),
@@ -591,10 +591,10 @@ function showError(caught) {
     const expired = ['RTALES_LAUNCH_EXPIRED', 'RTALES_LAUNCH_CONFLICT'].includes(caught?.code);
     const retryable = caught?.status === 429 || caught?.status >= 500;
     document.querySelector('#connection-error-title').textContent = expired
-      ? 'La conexión con Rtales ha caducado'
-      : 'No se pudo conectar con Rtales';
+      ? 'La conexión con el sistema ha caducado'
+      : 'No se pudo conectar con el sistema';
     document.querySelector('#connection-error-message').textContent = expired
-      ? 'Vuelve a iniciar el juego desde Rtales para obtener una sesión nueva.'
+      ? 'Vuelve a abrir el módulo desde el sistema para obtener una sesión nueva.'
       : (caught instanceof Error ? caught.message : 'No hemos podido preparar tu sesión.');
     document.querySelector('[data-action="retry-connection"]').hidden = !retryable;
     document.querySelector('[data-action="close-game"]').hidden = retryable;
