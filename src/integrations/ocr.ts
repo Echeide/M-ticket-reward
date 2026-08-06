@@ -16,6 +16,7 @@ function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
   const currency = ['€', 'EURO', 'EUROS'].includes(rawCurrency) || !/^[A-Z]{3}$/.test(rawCurrency)
     ? 'EUR'
     : rawCurrency;
+  const purchaseDateTime = String(value.purchaseDateTime || '').trim();
   return {
     isReceipt: value.isReceipt === true,
     confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
@@ -23,6 +24,9 @@ function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
     headerText: String(value.headerText || '').trim().slice(0, 2_000),
     ticketNumber: String(value.ticketNumber || '').trim(),
     purchaseDate: String(value.purchaseDate || '').trim(),
+    purchaseDateTime: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(purchaseDateTime)
+      ? purchaseDateTime
+      : undefined,
     totalCents: Number.isInteger(total) ? total : undefined,
     currency,
     rawText: String(value.rawText || '').slice(0, 8_000),
@@ -58,6 +62,7 @@ export async function readReceipt(
       headerText: 'Tienda asociada',
       ticketNumber: `DEMO-${Date.now().toString(36).toUpperCase()}`,
       purchaseDate: new Date().toISOString().slice(0, 10),
+      purchaseDateTime: new Date().toISOString().slice(0, 16),
       totalCents: 7500,
       currency: 'EUR',
       rawText: 'Resultado OCR simulado para desarrollo local',
@@ -67,7 +72,8 @@ export async function readReceipt(
   const storeReference = authorizedStoreReference(authorizedStores);
   const prompt = `Analiza la imagen como un ticket de compra y devuelve exclusivamente un objeto JSON con:
 isReceipt (boolean), confidence (0..1), storeName, headerText, ticketNumber,
-purchaseDate (YYYY-MM-DD), totalCents (entero), currency y rawText.
+purchaseDate (YYYY-MM-DD), purchaseDateTime (YYYY-MM-DDTHH:mm si aparece una hora impresa;
+si no aparece, cadena vacía), totalCents (entero), currency y rawText.
 
 Reglas obligatorias para storeName:
 - Es el comercio emisor del ticket, nunca un producto, artículo, marca del listado de compra,

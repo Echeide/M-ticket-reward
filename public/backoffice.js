@@ -165,9 +165,9 @@ function selectedSetting() {
 }
 
 function settingEditorValue(setting) {
-  return setting.format === 'rich'
-    ? document.querySelector('#setting-rich-value').value
-    : document.querySelector('#setting-plain-value').value;
+  if (setting.format === 'rich') return document.querySelector('#setting-rich-value').value;
+  if (setting.format === 'datetime') return document.querySelector('#setting-datetime-value').value;
+  return document.querySelector('#setting-plain-value').value;
 }
 
 function updateSettingPreview() {
@@ -176,6 +176,7 @@ function updateSettingPreview() {
   const preview = document.querySelector('#setting-preview-content');
   const value = settingEditorValue(setting);
   if (setting.format === 'rich') renderSettingFormattedText(preview, value);
+  else if (setting.format === 'datetime') preview.textContent = value ? value.replace('T', ' · ') : 'Sin límite';
   else preview.textContent = value;
 }
 
@@ -184,12 +185,16 @@ function renderSettingEditor() {
   if (!setting) return;
   const plainField = document.querySelector('#setting-plain-field');
   const richField = document.querySelector('#setting-rich-field');
+  const datetimeField = document.querySelector('#setting-datetime-field');
   const plainInput = document.querySelector('#setting-plain-value');
   const richInput = document.querySelector('#setting-rich-value');
+  const datetimeInput = document.querySelector('#setting-datetime-value');
   plainField.hidden = setting.format !== 'plain';
   richField.hidden = setting.format !== 'rich';
+  datetimeField.hidden = setting.format !== 'datetime';
   plainInput.value = setting.format === 'plain' ? setting.value : '';
   richInput.value = setting.format === 'rich' ? setting.value : '';
+  datetimeInput.value = setting.format === 'datetime' ? setting.value : '';
   plainInput.maxLength = setting.maxLength;
   richInput.maxLength = setting.maxLength;
   document.querySelector('#setting-help').textContent = setting.help;
@@ -604,6 +609,7 @@ document.querySelector('#cancel-tier').addEventListener('click', () => document.
 document.querySelector('#setting-select').addEventListener('change', renderSettingEditor);
 document.querySelector('#setting-plain-value').addEventListener('input', updateSettingPreview);
 document.querySelector('#setting-rich-value').addEventListener('input', updateSettingPreview);
+document.querySelector('#setting-datetime-value').addEventListener('input', updateSettingPreview);
 document.querySelector('#setting-form').addEventListener('submit', saveSetting);
 document.querySelector('[name="review"]').value = 'PENDING';
 updateFilterCount();

@@ -17,6 +17,7 @@ import {
   APP_SETTING_DEFINITIONS,
   appSettingsWithDefaults,
   normalizeAppSettingValue,
+  validateAppSettingPeriod,
 } from '../src/domain/app-settings';
 
 const fields = {
@@ -66,6 +67,24 @@ test('automatic validation only accepts receipt dates within three calendar days
   assert.deepEqual(validateDate('2026-08-01').reasons, ['TICKET_TOO_OLD']);
   assert.deepEqual(validateDate('2026-08-09').reasons, ['FUTURE_DATE']);
   assert.deepEqual(validateDate('2026-02-30').reasons, ['INVALID_DATE']);
+});
+
+test('configured campaign dates replace the default three-day ticket window', () => {
+  const validatePeriod = (purchaseDate: string, purchaseDateTime?: string) => validateReceiptAutomatically({
+    fields: { ...fields, purchaseDate },
+    ocr: { ...fields, purchaseDate, purchaseDateTime, isReceipt: true, confidence: 0.92 },
+    storeActive: true,
+    duplicate: false,
+    now: new Date('2026-08-05T12:00:00Z'),
+    allowedPurchaseStart: '2026-07-01T09:00',
+    allowedPurchaseEnd: '2026-09-30T22:00',
+  });
+
+  assert.equal(validatePeriod('2026-07-10').approved, true);
+  assert.deepEqual(validatePeriod('2026-06-30').reasons, ['TICKET_TOO_OLD']);
+  assert.deepEqual(validatePeriod('2026-10-01').reasons, ['FUTURE_DATE']);
+  assert.equal(validatePeriod('2026-09-30', '2026-09-30T21:59').approved, true);
+  assert.deepEqual(validatePeriod('2026-09-30', '2026-09-30T22:01').reasons, ['FUTURE_DATE']);
 });
 
 test('only fully valid OCR results wait for player confirmation', () => {
@@ -183,4 +202,11 @@ test('application settings validate keys, normalize line endings and enforce lim
   assert.throws(() => normalizeAppSettingValue('unknown.setting', 'valor'), /APP_SETTING_UNKNOWN/);
   assert.throws(() => normalizeAppSettingValue('home.title', 12), /APP_SETTING_VALUE_INVALID/);
   assert.throws(() => normalizeAppSettingValue('home.scanButton', 'x'.repeat(101)), /APP_SETTING_TOO_LONG/);
+  assert.equal(normalizeAppSettingValue('validation.startAt', '2026-08-01T09:30'), '2026-08-01T09:30');
+  assert.equal(normalizeAppSettingValue('validation.endAt', ''), '');
+  assert.throws(() => normalizeAppSettingValue('validation.startAt', '2026-02-30T09:30'), /APP_SETTING_DATETIME_INVALID/);
+  assert.throws(() => validateAppSettingPeriod({
+    'validation.startAt': '2026-09-01T09:00',
+    'validation.endAt': '2026-08-01T09:00',
+  }), /APP_SETTING_PERIOD_INVALID/);
 });

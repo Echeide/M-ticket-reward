@@ -7,6 +7,7 @@ const state = {
   receiptId: sessionStorage.getItem('ticket-receipt-id') || '',
   receipt: null,
   stores: [],
+  appSettings: {},
   pollGeneration: 0,
 };
 
@@ -50,6 +51,7 @@ function renderFormattedText(node, value) {
 }
 
 function applyHomeSettings(settings) {
+  state.appSettings = settings;
   for (const [key, selector] of Object.entries(HOME_SETTING_TARGETS)) {
     if (typeof settings[key] === 'string') document.querySelector(selector).textContent = settings[key];
   }
@@ -318,7 +320,10 @@ function showRegistered(receipt) {
 function showOcrReview(receipt) {
   const fields = receipt.fields;
   const store = matchStore(fields.storeName);
-  const validDate = isPurchaseDateWithinDays(fields.purchaseDate, 3);
+  const validDate = isPurchaseDateAllowed(fields.purchaseDate);
+  const hasConfiguredPeriod = Boolean(
+    state.appSettings['validation.startAt'] || state.appSettings['validation.endAt'],
+  );
   const valid = Boolean(
     store && fields.ticketNumber && validDate &&
     Number.isInteger(fields.totalCents) && fields.totalCents > 0
@@ -334,7 +339,9 @@ function showOcrReview(receipt) {
   document.querySelector('#ocr-validation-message').textContent = valid
     ? 'Los datos necesarios se han reconocido correctamente y no pueden modificarse.'
     : !validDate
-      ? 'La fecha debe corresponder al día actual, con un margen máximo de 3 días. Vuelve a escanear el ticket.'
+      ? hasConfiguredPeriod
+        ? 'La fecha del ticket está fuera del periodo válido configurado. Vuelve a escanear el ticket.'
+        : 'La fecha debe corresponder al día actual, con un margen máximo de 3 días. Vuelve a escanear el ticket.'
       : 'Falta algún dato obligatorio o el comercio no está autorizado. Prueba con una foto más clara.';
   const badge = document.querySelector('#ocr-validation-badge');
   badge.textContent = valid ? '✓ Ticket válido' : '! Escaneo no válido';
@@ -343,7 +350,7 @@ function showOcrReview(receipt) {
   document.querySelector('#retry-ocr').hidden = valid;
 }
 
-function isPurchaseDateWithinDays(value, maximumDifferenceDays) {
+function isPurchaseDateAllowed(value) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''));
   if (!match) return false;
   const year = Number(match[1]);
@@ -356,12 +363,21 @@ function isPurchaseDateWithinDays(value, maximumDifferenceDays) {
     purchaseDate.getUTCMonth() !== month - 1 ||
     purchaseDate.getUTCDate() !== day
   ) return false;
+  const startAt = String(state.appSettings['validation.startAt'] || '');
+  const endAt = String(state.appSettings['validation.endAt'] || '');
+  if (startAt || endAt) {
+    const startTimestamp = startAt ? Date.parse(`${startAt.slice(0, 10)}T00:00:00Z`) : null;
+    const endTimestamp = endAt ? Date.parse(`${endAt.slice(0, 10)}T00:00:00Z`) : null;
+    if (startTimestamp !== null && purchaseTimestamp < startTimestamp) return false;
+    if (endTimestamp !== null && purchaseTimestamp > endTimestamp) return false;
+    return true;
+  }
   const todayParts = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Atlantic/Canary', year: 'numeric', month: '2-digit', day: '2-digit',
   }).formatToParts(new Date());
   const todayPart = (type) => Number(todayParts.find((item) => item.type === type)?.value);
   const todayTimestamp = Date.UTC(todayPart('year'), todayPart('month') - 1, todayPart('day'));
-  return Math.abs(todayTimestamp - purchaseTimestamp) / 86_400_000 <= maximumDifferenceDays;
+  return Math.abs(todayTimestamp - purchaseTimestamp) / 86_400_000 <= 3;
 }
 
 function matchStore(name) {

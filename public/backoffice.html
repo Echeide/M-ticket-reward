@@ -84,6 +84,10 @@
             <textarea id="setting-rich-value" name="richValue" rows="8" maxlength="4000"></textarea>
             <small>Formato disponible: <code>**texto en negrita**</code> y <code>[texto del enlace](https://ejemplo.com)</code>.</small>
           </label>
+          <label id="setting-datetime-field" hidden>Fecha y hora
+            <input id="setting-datetime-value" name="datetimeValue" type="datetime-local" step="60" />
+            <small>Se aplicará usando el horario de Canarias. Déjalo vacío para no establecer este límite.</small>
+          </label>
           <div class="setting-preview">
             <span>Vista previa</span>
             <div id="setting-preview-content"></div>

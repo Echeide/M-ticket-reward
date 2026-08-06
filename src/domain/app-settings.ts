@@ -1,4 +1,4 @@
-export type AppSettingFormat = 'plain' | 'rich';
+export type AppSettingFormat = 'plain' | 'rich' | 'datetime';
 
 export type AppSettingDefinition = {
   key: string;
@@ -11,6 +11,24 @@ export type AppSettingDefinition = {
 };
 
 export const APP_SETTING_DEFINITIONS: readonly AppSettingDefinition[] = [
+  {
+    key: 'validation.startAt',
+    group: 'Validación de tickets',
+    label: 'Inicio del periodo válido',
+    help: 'Si se define, no se autorizarán tickets anteriores a esta fecha y hora (horario de Canarias).',
+    format: 'datetime',
+    defaultValue: '',
+    maxLength: 16,
+  },
+  {
+    key: 'validation.endAt',
+    group: 'Validación de tickets',
+    label: 'Fin del periodo válido',
+    help: 'Si se define, no se autorizarán tickets posteriores a esta fecha y hora (horario de Canarias).',
+    format: 'datetime',
+    defaultValue: '',
+    maxLength: 16,
+  },
   {
     key: 'home.eyebrow',
     group: 'Portada',
@@ -95,5 +113,26 @@ export function normalizeAppSettingValue(key: string, value: unknown): string {
   if (typeof value !== 'string') throw new Error('APP_SETTING_VALUE_INVALID');
   const normalized = value.replace(/\r\n?/g, '\n');
   if (normalized.length > definition.maxLength) throw new Error('APP_SETTING_TOO_LONG');
+  if (definition.format === 'datetime' && normalized) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(normalized);
+    if (!match) throw new Error('APP_SETTING_DATETIME_INVALID');
+    const date = new Date(Date.UTC(
+      Number(match[1]), Number(match[2]) - 1, Number(match[3]),
+      Number(match[4]), Number(match[5]),
+    ));
+    if (
+      date.getUTCFullYear() !== Number(match[1]) ||
+      date.getUTCMonth() !== Number(match[2]) - 1 ||
+      date.getUTCDate() !== Number(match[3]) ||
+      date.getUTCHours() !== Number(match[4]) ||
+      date.getUTCMinutes() !== Number(match[5])
+    ) throw new Error('APP_SETTING_DATETIME_INVALID');
+  }
   return definition.format === 'plain' ? normalized.trim() : normalized;
+}
+
+export function validateAppSettingPeriod(settings: Record<string, string>): void {
+  const startAt = settings['validation.startAt'] || '';
+  const endAt = settings['validation.endAt'] || '';
+  if (startAt && endAt && startAt > endAt) throw new Error('APP_SETTING_PERIOD_INVALID');
 }

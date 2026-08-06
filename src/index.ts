@@ -19,6 +19,7 @@ import {
   appSettingsWithDefaults,
   normalizeAppSettingValue,
   settingDefinition,
+  validateAppSettingPeriod,
 } from './domain/app-settings';
 import { readReceipt } from './integrations/ocr';
 import {
@@ -376,16 +377,18 @@ async function handleStores(request: Request, env: Env): Promise<Response> {
   });
 }
 
+async function loadAppSettings(client: DbClient): Promise<Record<string, string>> {
+  const result = await client.query<Pick<AppSettingRow, 'key' | 'value'>>(
+    'SELECT key, value FROM app_settings ORDER BY key ASC',
+  );
+  return appSettingsWithDefaults(result.rows);
+}
+
 async function handleHomeSettings(request: Request, env: Env): Promise<Response> {
   const session = await authenticatedSession(request, env);
   if (!session) return error('Sesión no válida', 401);
-  const rows = await withDatabase(env, async (client) => {
-    const result = await client.query<Pick<AppSettingRow, 'key' | 'value'>>(
-      "SELECT key, value FROM app_settings WHERE key LIKE 'home.%'",
-    );
-    return result.rows;
-  });
-  return json({ success: true, settings: appSettingsWithDefaults(rows) });
+  const settings = await withDatabase(env, loadAppSettings);
+  return json({ success: true, settings });
 }
 
 async function loadOwnedReceipt(
@@ -476,11 +479,14 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
           LIMIT 1`,
         [session.user_ref, fingerprint, receiptId, [...ACTIVE_DUPLICATE_STATUSES]],
       );
+      const appSettings = await loadAppSettings(client);
       const validation = validateReceiptAutomatically({
         fields,
         ocr: receipt.ocr_payload || { isReceipt: false, confidence: 0 },
         storeActive: selectedStore?.active === true,
         duplicate: Boolean(duplicate.rowCount),
+        allowedPurchaseStart: appSettings['validation.startAt'],
+        allowedPurchaseEnd: appSettings['validation.endAt'],
       });
       if (!validation.approved) {
         const status = validation.reasons.includes('DUPLICATE') ? 'DUPLICATE' : 'AUTO_REJECTED';
@@ -559,6 +565,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
   });
   const ocr = await readReceipt(env, ocrBytes, 'image/webp', stores);
   await withDatabase(env, async (client) => {
+    const appSettings = await loadAppSettings(client);
     const selectedStore = findMatchingStore(stores, ocr);
     const fields: ReceiptFields = {
       storeId: selectedStore?.id || '',
@@ -581,6 +588,8 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
       ocr,
       storeActive: selectedStore?.active === true,
       duplicate: Boolean(duplicate?.rowCount),
+      allowedPurchaseStart: appSettings['validation.startAt'],
+      allowedPurchaseEnd: appSettings['validation.endAt'],
     });
     const status = receiptStatusAfterOcr(validation);
     await client.query(
@@ -1264,13 +1273,7 @@ function appSettingView(definition: typeof APP_SETTING_DEFINITIONS[number], valu
 async function handleAdminSettings(request: Request, env: Env): Promise<Response> {
   const manager = managerIdentity(request, env);
   if (!manager) return error('Acceso de gestor requerido', 401);
-  const rows = await withDatabase(env, async (client) => {
-    const result = await client.query<Pick<AppSettingRow, 'key' | 'value'>>(
-      'SELECT key, value FROM app_settings ORDER BY key ASC',
-    );
-    return result.rows;
-  });
-  const values = appSettingsWithDefaults(rows);
+  const values = await withDatabase(env, loadAppSettings);
   return json({
     success: true,
     manager,
@@ -1289,6 +1292,8 @@ async function handleAdminSettingUpdate(
   const body = await readJson(request);
   const value = normalizeAppSettingValue(settingKey, body.value);
   const updated = await withDatabase(env, (client) => inTransaction(client, async () => {
+    const currentValues = await loadAppSettings(client);
+    validateAppSettingPeriod({ ...currentValues, [settingKey]: value });
     const currentResult = await client.query<Pick<AppSettingRow, 'value'>>(
       'SELECT value FROM app_settings WHERE key = $1 LIMIT 1',
       [settingKey],
@@ -1411,6 +1416,8 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       APP_SETTING_UNKNOWN: 'El ajuste seleccionado no existe',
       APP_SETTING_VALUE_INVALID: 'El contenido del ajuste no es válido',
       APP_SETTING_TOO_LONG: 'El texto supera la longitud permitida',
+      APP_SETTING_DATETIME_INVALID: 'La fecha y hora no tienen un formato válido',
+      APP_SETTING_PERIOD_INVALID: 'La fecha de inicio debe ser anterior a la fecha de fin',
     };
     return error(validationErrors[message] || 'No se pudo completar la operación', validationErrors[message] ? 400 : 500);
   }
