@@ -90,6 +90,18 @@
         <button class="primary-button" data-action="retry">Escanear otro ticket</button>
       </section>
 
+      <section class="screen" data-screen="user-banned" role="alert">
+        <div class="status-icon danger">!</div>
+        <p class="eyebrow">Acceso suspendido</p>
+        <h2>No puedes enviar más tickets</h2>
+        <p id="user-banned-message">Tu acceso al envío de tickets está suspendido. Contacta con la organización si consideras que se trata de un error.</p>
+        <button class="secondary-button button-with-icon" data-action="open-history" type="button">
+          <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
+          Ver mis tickets
+        </button>
+        <button class="primary-button" data-action="close-game" type="button">Volver al sistema</button>
+      </section>
+
       <section class="screen form-screen" data-screen="ocr-review">
         <p class="eyebrow">Resultado del escaneo</p>
         <h2 id="ocr-validation-title">Datos reconocidos</h2>
@@ -179,6 +191,6 @@
         <button class="primary-button" data-action="close-game">Volver al sistema</button>
       </section>
     </main>
-    <script type="module" src="/app.js?v=auto-rewards-2"></script>
+    <script type="module" src="/app.js?v=ban-status-1"></script>
   </body>
 </html>

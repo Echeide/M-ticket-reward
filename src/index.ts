@@ -525,6 +525,22 @@ async function activeUserBan(client: DbClient, externalUserId: string | null): P
   return result.rows[0] || null;
 }
 
+async function handlePublicSession(request: Request, env: Env): Promise<Response> {
+  const session = await authenticatedSession(request, env);
+  if (!session) return error('Sesión no válida', 401);
+  const ban = await withDatabase(env, (client) => activeUserBan(client, session.external_user_id));
+  return json({
+    success: true,
+    access: ban
+      ? {
+          canUpload: false,
+          code: 'USER_BANNED',
+          message: 'Tu acceso al envío de tickets está suspendido. Contacta con la organización si consideras que se trata de un error.',
+        }
+      : { canUpload: true },
+  });
+}
+
 async function recordUserOffense(
   client: DbClient,
   receipt: Pick<ReceiptRow, 'id' | 'public_id' | 'external_user_id'>,
@@ -3205,6 +3221,7 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       return error('Ruta no encontrada', 404);
     }
     if (request.method === 'POST' && url.pathname === '/api/session/exchange') return await handleExchange(request, env);
+    if (request.method === 'GET' && url.pathname === '/api/session') return await handlePublicSession(request, env);
     if (request.method === 'GET' && url.pathname === '/api/stores') return await handleStores(request, env);
     if (request.method === 'GET' && url.pathname === '/api/home-settings') return await handleHomeSettings(request, env);
     const publicStoreLogoMatch = url.pathname.match(/^\/api\/stores\/([^/]+)\/logo$/);

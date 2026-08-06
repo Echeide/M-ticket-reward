@@ -8,6 +8,7 @@ const state = {
   receipt: null,
   stores: [],
   appSettings: {},
+  canUpload: true,
   pollGeneration: 0,
 };
 const notifiedRewardReceipts = new Set();
@@ -162,8 +163,20 @@ async function api(path, options = {}) {
     headers: authHeaders(options.headers || {}),
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || 'No se pudo completar la operación');
+  if (!response.ok) {
+    throw Object.assign(new Error(payload.error || 'No se pudo completar la operación'), {
+      status: response.status,
+      code: payload.code || 'REQUEST_FAILED',
+    });
+  }
   return payload;
+}
+
+function showUserBan(message) {
+  state.canUpload = false;
+  document.querySelector('#user-banned-message').textContent = message ||
+    'Tu acceso al envío de tickets está suspendido. Contacta con la organización si consideras que se trata de un error.';
+  show('user-banned');
 }
 
 async function responsePayload(response) {
@@ -216,13 +229,19 @@ async function bootstrap() {
     history.replaceState({}, '', location.pathname);
   }
   if (!state.sessionToken) throw new Error('Abre este módulo desde el sistema para comenzar');
-  const [stores, configuredTexts] = await Promise.all([
+  const [sessionStatus, stores, configuredTexts] = await Promise.all([
+    api('/api/session'),
     api('/api/stores'),
     api('/api/home-settings').catch(() => ({ settings: {} })),
   ]);
+  state.canUpload = sessionStatus.access?.canUpload !== false;
   state.stores = stores.stores;
   applyHomeSettings(configuredTexts.settings || {});
   renderStoreCarousel(state.stores);
+  if (!state.canUpload) {
+    showUserBan(sessionStatus.access?.message);
+    return;
+  }
   if (!state.receiptId) {
     const latest = await api('/api/receipts/latest');
     if (latest.receipt) {
@@ -266,6 +285,7 @@ async function optimizeTicketFile(file) {
 }
 
 async function upload(file) {
+  if (!state.canUpload) return showUserBan();
   show('processing');
   const optimizedFile = await optimizeTicketFile(file).catch(() => file);
   const form = new FormData();
@@ -670,7 +690,7 @@ function retry() {
   sessionStorage.removeItem('ticket-receipt-id');
   state.receipt = null;
   document.querySelectorAll('[data-ticket-input]').forEach((input) => { input.value = ''; });
-  show(state.sessionToken ? 'welcome' : 'connection-error');
+  show(state.sessionToken ? (state.canUpload ? 'welcome' : 'user-banned') : 'connection-error');
 }
 
 function closeGame() {
@@ -699,10 +719,16 @@ document.querySelectorAll('[data-action="open-history"]').forEach((button) => {
 });
 document.querySelector('[data-action="history-home"]').addEventListener('click', retry);
 document.querySelector('[data-action="refresh-history"]').addEventListener('click', () => openHistory().catch(showError));
-document.querySelector('[data-action="close-game"]').addEventListener('click', closeGame);
+document.querySelectorAll('[data-action="close-game"]').forEach((button) => {
+  button.addEventListener('click', closeGame);
+});
 document.querySelector('[data-action="retry-connection"]').addEventListener('click', retryConnection);
 
 function showError(caught) {
+  if (caught?.code === 'USER_BANNED') {
+    showUserBan(caught instanceof Error ? caught.message : '');
+    return;
+  }
   if (!state.sessionToken) {
     const expired = ['RTALES_LAUNCH_EXPIRED', 'RTALES_LAUNCH_CONFLICT'].includes(caught?.code);
     const retryable = caught?.status === 429 || caught?.status >= 500;
