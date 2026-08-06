@@ -138,6 +138,20 @@
           <div class="dialog-actions" id="store-details-actions"><button class="secondary-button" id="cancel-store" type="button">Cancelar</button><button class="primary-button" type="submit">Guardar comercio</button></div>
         </section>
         <section id="store-training-panel" class="store-dialog-panel training-panel" hidden>
+          <div class="training-add-options">
+            <label class="training-file-picker">Subir tickets de prueba
+              <input id="training-files" type="file" accept="image/jpeg,image/png,image/webp" multiple />
+              <small>Selecciona varias imágenes y completa sus valores correctos.</small>
+            </label>
+            <button class="secondary-button button-with-icon training-receipt-picker-button" id="open-training-receipts" type="button">
+              <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3Zm3 5h6M9 12h6"></path></svg>
+              <span>Buscar tickets subidos</span>
+            </button>
+          </div>
+          <div id="training-drafts" class="training-drafts"></div>
+          <p id="training-form-error" class="form-error" role="alert"></p>
+          <div class="training-summary" id="training-summary"></div>
+          <div id="training-samples" class="training-samples"></div>
           <div class="training-intro">
             <div><strong>Ejemplos verificados</strong><p>Sirven para medir el OCR y crear instrucciones específicas del comercio. No generan puntos ni aparecen en la actividad de usuarios.</p></div>
             <button class="secondary-button" id="evaluate-all-training" type="button">Evaluar todos</button>
@@ -163,20 +177,6 @@
             <p id="ocr-profile-error" class="form-error" role="alert"></p>
             <div class="dialog-actions"><button class="secondary-button" id="generate-ocr-profile" type="button">Generar desde ejemplos evaluados</button><button class="primary-button" id="save-ocr-profile" type="button">Guardar perfil</button></div>
           </section>
-          <div class="training-add-options">
-            <label class="training-file-picker">Subir tickets de prueba
-              <input id="training-files" type="file" accept="image/jpeg,image/png,image/webp" multiple />
-              <small>Selecciona varias imágenes y completa sus valores correctos.</small>
-            </label>
-            <button class="secondary-button button-with-icon training-receipt-picker-button" id="open-training-receipts" type="button">
-              <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3Zm3 5h6M9 12h6"></path></svg>
-              <span>Buscar tickets subidos</span>
-            </button>
-          </div>
-          <div id="training-drafts" class="training-drafts"></div>
-          <p id="training-form-error" class="form-error" role="alert"></p>
-          <div class="training-summary" id="training-summary"></div>
-          <div id="training-samples" class="training-samples"></div>
         </section>
       </form>
     </dialog>
