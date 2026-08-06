@@ -297,6 +297,7 @@ async function loadAdminUsers() {
   const payload = await request('/api/admin/users');
   state.adminUsers = payload.users;
   document.querySelector('#access-sync-warning').hidden = payload.accessConfigured;
+  document.querySelector('#invite-mail-warning').hidden = payload.mailConfigured;
   renderAdminUsers(payload.current, payload.backofficeUrl);
 }
 
@@ -312,7 +313,9 @@ async function saveAdminUser(event) {
     input.value = '';
     await loadAdminUsers();
     await navigator.clipboard.writeText(payload.backofficeUrl).catch(() => undefined);
-    showNotice(payload.accessSynced ? 'Administrador añadido y sincronizado con Access.' : 'Administrador añadido; enlace copiado.');
+    showNotice(payload.invitationSent
+      ? 'Administrador añadido; invitación enviada por correo.'
+      : 'Administrador añadido, pero no se pudo enviar la invitación; enlace copiado.');
   } catch (error) { errorNode.textContent = error instanceof Error ? error.message : 'No se pudo añadir el administrador'; }
 }
 

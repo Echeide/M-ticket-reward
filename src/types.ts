@@ -30,4 +30,8 @@ export interface Env {
   CLOUDFLARE_ACCESS_EMAIL_LIST_ID?: string;
   CLOUDFLARE_ACCESS_EMAIL_LIST_NAME?: string;
   ADMIN_BACKOFFICE_URL?: string;
+  MAILJET_API_KEY?: string;
+  MAILJET_SECRET_KEY?: string;
+  MAILJET_FROM_EMAIL?: string;
+  MAILJET_FROM_NAME?: string;
 }

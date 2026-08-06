@@ -42,6 +42,7 @@ import {
 } from './domain/app-settings';
 import { readReceipt } from './integrations/ocr';
 import { syncAdminAccessEmails } from './integrations/cloudflare-access';
+import { adminInvitationMailConfigured, sendAdminInvitation } from './integrations/mailjet';
 import {
   exchangeLaunchCode,
   grantTicketPoints,
@@ -2179,13 +2180,14 @@ async function handleAdminUsers(request: Request, env: Env): Promise<Response> {
   const current = await authorizedAdmin(request, env);
   if (!current) return error('Acceso de administrador requerido', 403);
   const accessConfigured = Boolean(env.CLOUDFLARE_ACCESS_API_TOKEN && env.CLOUDFLARE_ACCESS_EMAIL_LIST_ID && env.CLOUDFLARE_ACCOUNT_ID);
+  const mailConfigured = adminInvitationMailConfigured(env);
   const backofficeUrl = env.ADMIN_BACKOFFICE_URL || `${new URL(request.url).origin}/backoffice`;
   if (request.method === 'GET') {
     const users = await withDatabase(env, async (client) => {
       const result = await client.query<AdminUserRow>('SELECT * FROM admin_users WHERE active = TRUE ORDER BY role DESC, email ASC');
       return result.rows;
     });
-    return json({ success: true, current: adminUserView(current), users: users.map(adminUserView), accessConfigured, backofficeUrl });
+    return json({ success: true, current: adminUserView(current), users: users.map(adminUserView), accessConfigured, mailConfigured, backofficeUrl });
   }
   if (current.role !== 'SUPERADMIN') return error('Solo el superadministrador puede crear usuarios', 403);
   const body = await readJson(request);
@@ -2211,7 +2213,13 @@ async function handleAdminUsers(request: Request, env: Env): Promise<Response> {
     return inserted.rows[0]!;
   });
   const accessSynced = await syncAdminAccessEmails(env, await activeAdminEmails(env));
-  return json({ success: true, user: adminUserView(created), accessSynced, backofficeUrl }, 201);
+  let invitationSent = false;
+  try {
+    invitationSent = await sendAdminInvitation(env, { email, backofficeUrl, invitedBy: current.email });
+  } catch {
+    invitationSent = false;
+  }
+  return json({ success: true, user: adminUserView(created), accessSynced, invitationSent, backofficeUrl }, 201);
 }
 
 async function handleAdminUserDelete(request: Request, env: Env, userId: string): Promise<Response> {
