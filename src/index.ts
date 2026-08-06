@@ -33,6 +33,7 @@ import {
 } from './domain/ocr-profile';
 import { normalizeRewardTierInput } from './domain/reward-tier';
 import { normalizeAdminEmail, type AdminRole } from './domain/admin-user';
+import { shouldBanUser, userOffenseScore, USER_BAN_SCORE_THRESHOLD, type UserOffenseCategory } from './domain/user-ban';
 import {
   externalIdentityFromExchange,
   normalizeLookupCode,
@@ -236,6 +237,20 @@ type AdminUserRow = {
   created_by: string;
   created_at: string;
   last_accessed_at: string | null;
+};
+
+type UserBanRow = {
+  id: string;
+  external_user_id: string;
+  status: 'MONITORING' | 'ACTIVE' | 'LIFTING' | 'LIFTED';
+  offense_score: number;
+  reason: string | null;
+  banned_at: string | null;
+  banned_by: string | null;
+  lifting_at: string | null;
+  lifting_by: string | null;
+  lifted_at: string | null;
+  updated_at: string;
 };
 
 const ACTIVE_DUPLICATE_STATUSES = [
@@ -489,9 +504,90 @@ async function handleExchange(request: Request, env: Env): Promise<Response> {
   }, 201);
 }
 
+async function activeUserBan(client: DbClient, externalUserId: string | null): Promise<UserBanRow | null> {
+  if (!externalUserId) return null;
+  const result = await client.query<UserBanRow>(
+    `SELECT * FROM user_bans WHERE external_user_id = $1
+      AND status IN ('ACTIVE', 'LIFTING') LIMIT 1`,
+    [externalUserId],
+  );
+  return result.rows[0] || null;
+}
+
+async function recordUserOffense(
+  client: DbClient,
+  receipt: Pick<ReceiptRow, 'id' | 'public_id' | 'external_user_id'>,
+  category: UserOffenseCategory,
+  source: 'AUTOMATIC' | 'ADMIN',
+  actor: string,
+): Promise<UserBanRow | null> {
+  if (!receipt.external_user_id) return null;
+  const score = userOffenseScore(category);
+  const offense = await client.query<{ id: string }>(
+    `INSERT INTO user_offenses
+       (id, external_user_id, receipt_id, receipt_public_id, category, score, source)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT(receipt_id, category) DO NOTHING RETURNING id`,
+    [uuid(), receipt.external_user_id, receipt.id, receipt.public_id, category, score, source],
+  );
+  if (!offense.rowCount) return activeUserBan(client, receipt.external_user_id);
+  const result = await client.query<UserBanRow>(
+    `INSERT INTO user_bans
+       (id, external_user_id, status, offense_score, reason, banned_at, banned_by, updated_at)
+     VALUES ($1, $2, $3, $4, NULL, NULL, NULL, NOW())
+     ON CONFLICT(external_user_id) DO UPDATE SET
+       offense_score = CASE WHEN user_bans.status = 'LIFTED' THEN excluded.offense_score
+         ELSE user_bans.offense_score + excluded.offense_score END,
+       status = CASE WHEN (CASE WHEN user_bans.status = 'LIFTED' THEN excluded.offense_score
+         ELSE user_bans.offense_score + excluded.offense_score END) >= $5 THEN 'ACTIVE'
+         ELSE 'MONITORING' END,
+       reason = CASE WHEN (CASE WHEN user_bans.status = 'LIFTED' THEN excluded.offense_score
+         ELSE user_bans.offense_score + excluded.offense_score END) >= $5
+         THEN $6 ELSE NULL END,
+       banned_at = CASE WHEN (CASE WHEN user_bans.status = 'LIFTED' THEN excluded.offense_score
+         ELSE user_bans.offense_score + excluded.offense_score END) >= $5
+         THEN COALESCE(user_bans.banned_at, NOW()) ELSE NULL END,
+       banned_by = CASE WHEN (CASE WHEN user_bans.status = 'LIFTED' THEN excluded.offense_score
+         ELSE user_bans.offense_score + excluded.offense_score END) >= $5
+         THEN COALESCE(user_bans.banned_by, $7) ELSE NULL END,
+       lifting_at = NULL, lifting_by = NULL, lifted_at = NULL, updated_at = NOW()
+     RETURNING *`,
+    [uuid(), receipt.external_user_id, shouldBanUser(score) ? 'ACTIVE' : 'MONITORING', score,
+      USER_BAN_SCORE_THRESHOLD, `Límite automático de ${USER_BAN_SCORE_THRESHOLD} infracciones alcanzado`, actor],
+  );
+  return result.rows[0] || null;
+}
+
+async function clearAutomaticNonTicketOffense(
+  client: DbClient,
+  receiptId: string,
+  externalUserId: string | null,
+): Promise<void> {
+  if (!externalUserId) return;
+  const cleared = await client.query<{ id: string }>(
+    `UPDATE user_offenses SET active = FALSE, cleared_at = NOW()
+      WHERE receipt_id = $1 AND category = 'NOT_A_RECEIPT' AND source = 'AUTOMATIC'
+        AND active = TRUE RETURNING id`,
+    [receiptId],
+  );
+  if (!cleared.rowCount) return;
+  const score = await client.query<{ total: number }>(
+    `SELECT COALESCE(SUM(score), 0) AS total FROM user_offenses
+      WHERE external_user_id = $1 AND active = TRUE`, [externalUserId],
+  );
+  await client.query(
+    `UPDATE user_bans SET offense_score = $2, updated_at = NOW()
+      WHERE external_user_id = $1`, [externalUserId, Number(score.rows[0]?.total || 0)],
+  );
+}
+
 async function handleUpload(request: Request, env: Env): Promise<Response> {
   const session = await authenticatedSession(request, env);
   if (!session) return error('Sesión no válida', 401);
+  const ban = await withDatabase(env, (client) => activeUserBan(client, session.external_user_id));
+  if (ban) {
+    return error('Tu acceso al envío de tickets está suspendido. Contacta con la organización si consideras que se trata de un error.', 403, 'USER_BANNED');
+  }
   const form = await request.formData();
   const image = form.get('ticket');
   if (!(image instanceof File)) return error('Selecciona una imagen del ticket', 400);
@@ -841,13 +937,13 @@ async function enqueueRewardOutbox(env: Env, receiptId: string, outboxId: string
 
 async function processOcr(env: Env, receiptId: string): Promise<void> {
   const receipt = await withDatabase(env, async (client) => {
-    const result = await client.query<Pick<ReceiptRow, 'id' | 'session_id' | 'user_ref' | 'image_key' | 'image_content_type' | 'status'>>(
+    const result = await client.query<Pick<ReceiptRow, 'id' | 'public_id' | 'external_user_id' | 'session_id' | 'user_ref' | 'image_key' | 'image_content_type' | 'status'>>(
       `UPDATE receipts SET status = 'OCR_PROCESSING', ocr_started_at = NOW(),
           ocr_completed_at = NULL,
           ocr_job_attempt_count = ocr_job_attempt_count + 1,
           updated_at = NOW()
         WHERE id = $1 AND status IN ('OCR_QUEUED', 'OCR_PROCESSING')
-        RETURNING id, session_id, user_ref, image_key, image_content_type, status`,
+        RETURNING id, public_id, external_user_id, session_id, user_ref, image_key, image_content_type, status`,
       [receiptId],
     );
     return result.rows[0];
@@ -871,6 +967,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
   const ocrResult = await readReceipt(env, ocrBytes, receipt.image_content_type || 'image/webp', stores);
   const ocr = ocrResult.receipt;
   let rewardOutboxId = '';
+  let completedStatus = '';
   await withDatabase(env, async (client) => {
     const appSettings = await loadAppSettings(client);
     const selectedStore = findMatchingStore(stores, ocr);
@@ -921,6 +1018,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
       allowedPurchaseEnd: appSettings['validation.endAt'],
     });
     const status = receiptStatusAfterOcr(validation);
+    completedStatus = status;
     let points = 0;
     if (status === 'REWARD_PENDING') {
       const tiers = await client.query<{ id: string; minimum_cents: number; points: number; active: boolean }>(
@@ -967,6 +1065,15 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
       );
     }
   });
+  if (completedStatus === 'NOT_A_RECEIPT') {
+    await withDatabase(env, (client) => inTransaction(client, async () => {
+      await recordUserOffense(client, receipt, 'NOT_A_RECEIPT', 'AUTOMATIC', 'SYSTEM');
+    }));
+  } else if (completedStatus) {
+    await withDatabase(env, (client) => inTransaction(client, async () => {
+      await clearAutomaticNonTicketOffense(client, receipt.id, receipt.external_user_id);
+    }));
+  }
   await enqueueRewardOutbox(env, receiptId, rewardOutboxId);
 }
 
@@ -1459,12 +1566,30 @@ async function handleAdminReview(
   const body = await readJson(request);
   const action = String(body.action || '').toUpperCase();
   const reason = String(body.reason || '').trim().slice(0, 500);
-  if (!['CLEAR', 'REOPEN', 'REVOKE', 'MANUAL_APPROVE', 'CONFIRM_REJECTION'].includes(action)) return error('Acción no válida', 400);
+  if (!['CLEAR', 'REOPEN', 'REVOKE', 'MANUAL_APPROVE', 'CONFIRM_REJECTION', 'CONFIRM_FRAUD'].includes(action)) return error('Acción no válida', 400);
   let outboxId = '';
   const response = await withDatabase(env, (client) => inTransaction(client, async () => {
     const result = await client.query<ReceiptRow>('SELECT * FROM receipts WHERE id = $1 FOR UPDATE', [receiptId]);
     const receipt = result.rows[0];
     if (!receipt) return error('Ticket no encontrado', 404);
+    if (action === 'CONFIRM_FRAUD') {
+      const eligible = receipt.status === 'AUTO_REJECTED' ||
+        (receipt.status === 'REWARD_FAILED' && !receipt.rtales_result_id);
+      if (!eligible) return error('Este ticket no admite marcarse como fraude sin revocación', 409);
+      if (!reason) return error('Indica el motivo del fraude', 400);
+      await client.query(
+        `INSERT INTO receipt_reviews (id, receipt_id, action, manager_email, reason)
+         VALUES ($1, $2, 'FRAUD_CONFIRMED', $3, $4)`,
+        [uuid(), receiptId, managerEmail, reason],
+      );
+      await client.query(
+        `UPDATE receipts SET review_status = 'FRAUD', reviewed_at = NOW(),
+           reviewed_by = $2, updated_at = NOW() WHERE id = $1`,
+        [receiptId, managerEmail],
+      );
+      await recordUserOffense(client, receipt, 'CONFIRMED_FRAUD', 'ADMIN', managerEmail);
+      return json({ success: true, status: receipt.status });
+    }
     if (action === 'CONFIRM_REJECTION') {
       const verificationRequired = receipt.status === 'REWARD_FAILED' &&
         receipt.validation_reasons.includes('OCR_VERIFICATION_REQUIRED');
@@ -1623,6 +1748,7 @@ async function handleAdminReview(
       [outboxId, receiptId, reversalIdempotencyKey(receiptId),
         JSON.stringify({ reason: reason || 'Fraude detectado', managerEmail })],
     );
+    await recordUserOffense(client, receipt, 'CONFIRMED_FRAUD', 'ADMIN', managerEmail);
     return json({ success: true, status: 'REVOKE_PENDING' }, 202);
   }));
   if (outboxId) await env.REWARD_JOBS.send({ kind: 'DELIVER_REWARD', outboxId });
@@ -2518,6 +2644,110 @@ async function handleAdminUserDelete(request: Request, env: Env, userId: string)
   return json({ success: true, accessSynced });
 }
 
+async function cleanupLiftedBan(env: Env, externalUserId: string, managerEmail: string): Promise<boolean> {
+  const offenses = await withDatabase(env, async (client) => {
+    const result = await client.query<ReceiptRow>(
+      `SELECT r.* FROM user_offenses o JOIN receipts r ON r.id = o.receipt_id
+        WHERE o.external_user_id = $1 AND o.active = TRUE ORDER BY o.created_at ASC`,
+      [externalUserId],
+    );
+    return result.rows;
+  });
+  let pending = false;
+  for (const receipt of offenses) {
+    if (receipt.rtales_result_id && receipt.status !== 'REVOKED') {
+      let outboxId = '';
+      await withDatabase(env, (client) => inTransaction(client, async () => {
+        await client.query(
+          `UPDATE receipts SET status = 'REVOKE_PENDING', deletion_requested_at = NOW(),
+             deletion_requested_by = $2, updated_at = NOW() WHERE id = $1`,
+          [receipt.id, managerEmail],
+        );
+        const existing = await client.query<{ id: string; status: string }>(
+          `SELECT id, status FROM reward_outbox WHERE receipt_id = $1 AND operation = 'REVOKE'
+            ORDER BY created_at DESC LIMIT 1`, [receipt.id],
+        );
+        outboxId = existing.rows[0]?.id || uuid();
+        if (existing.rows[0]?.status === 'FAILED') {
+          await client.query(
+            `UPDATE reward_outbox SET status = 'PENDING', attempt_count = 0, next_attempt_at = NOW(),
+               locked_until = NULL, last_error = NULL, updated_at = NOW() WHERE id = $1`, [outboxId],
+          );
+        } else if (!existing.rows[0]) {
+          await client.query(
+            `INSERT INTO reward_outbox (id, receipt_id, operation, idempotency_key, payload)
+             VALUES ($1, $2, 'REVOKE', $3, $4::jsonb)`,
+            [outboxId, receipt.id, reversalIdempotencyKey(receipt.id), JSON.stringify({
+              reason: 'Limpieza de imágenes infractoras al desbanear', managerEmail,
+            })],
+          );
+        }
+      }));
+      await env.REWARD_JOBS.send({ kind: 'DELIVER_REWARD', outboxId });
+      pending = true;
+    } else {
+      await purgeReceipt(env, receipt.id, managerEmail);
+    }
+  }
+  if (pending) return false;
+  await withDatabase(env, (client) => inTransaction(client, async () => {
+    await client.query(
+      `UPDATE user_offenses SET active = FALSE, cleared_at = NOW()
+        WHERE external_user_id = $1 AND active = TRUE`, [externalUserId],
+    );
+    await client.query(
+      `UPDATE user_bans SET status = 'LIFTED', offense_score = 0, lifted_at = NOW(),
+         updated_at = NOW() WHERE external_user_id = $1 AND status = 'LIFTING'`, [externalUserId],
+    );
+  }));
+  return true;
+}
+
+async function handleAdminBans(request: Request, env: Env): Promise<Response> {
+  const manager = managerIdentity(request, env);
+  if (!manager) return error('Acceso de gestor requerido', 401);
+  const query = String(new URL(request.url).searchParams.get('q') || '').trim();
+  const normalized = normalizeLookupCode(query);
+  const bans = await withDatabase(env, async (client) => {
+    const result = await client.query<UserBanRow & {
+      rtales_lookup_code: string; display_name: string; email: string | null;
+      space_code: string; installation_id: string; offense_count: number;
+    }>(
+      `SELECT b.*, u.rtales_lookup_code, u.display_name, u.email, u.space_code, u.installation_id,
+          (SELECT COUNT(*) FROM user_offenses o WHERE o.external_user_id = b.external_user_id AND o.active = TRUE) AS offense_count
+        FROM user_bans b JOIN external_users u ON u.id = b.external_user_id
+       WHERE b.status IN ('ACTIVE', 'LIFTING')
+         AND ($1 = '' OR u.rtales_lookup_code_normalized = $1 OR u.display_name ILIKE $2)
+       ORDER BY b.banned_at DESC, b.updated_at DESC`,
+      [normalized, `%${query}%`],
+    );
+    return result.rows;
+  });
+  return json({ success: true, manager, bans: bans.map((ban) => ({
+    id: ban.id, externalUserId: ban.external_user_id, status: ban.status,
+    offenseScore: Number(ban.offense_score), offenseCount: Number(ban.offense_count),
+    reason: ban.reason, bannedAt: ban.banned_at, bannedBy: ban.banned_by,
+    lookupCode: ban.rtales_lookup_code, displayName: ban.display_name, email: ban.email,
+    spaceCode: ban.space_code, installationId: ban.installation_id,
+  })) });
+}
+
+async function handleAdminBanLift(request: Request, env: Env, banId: string): Promise<Response> {
+  const manager = managerIdentity(request, env);
+  if (!manager) return error('Acceso de gestor requerido', 401);
+  const ban = await withDatabase(env, async (client) => {
+    const result = await client.query<UserBanRow>(
+      `UPDATE user_bans SET status = 'LIFTING', lifting_at = NOW(), lifting_by = $2,
+         updated_at = NOW() WHERE id = $1 AND status IN ('ACTIVE', 'LIFTING') RETURNING *`,
+      [banId, manager],
+    );
+    return result.rows[0];
+  });
+  if (!ban) return error('Baneo no encontrado', 404);
+  const completed = await cleanupLiftedBan(env, ban.external_user_id, manager);
+  return json({ success: true, completed, status: completed ? 'LIFTED' : 'LIFTING' }, completed ? 200 : 202);
+}
+
 async function handleAdminSettingUpdate(
   request: Request,
   env: Env,
@@ -2679,6 +2909,13 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (url.pathname === '/api/admin/users' && ['GET', 'POST'].includes(request.method)) {
       return await handleAdminUsers(request, env);
     }
+    if (request.method === 'GET' && url.pathname === '/api/admin/bans') {
+      return await handleAdminBans(request, env);
+    }
+    const adminBanLiftMatch = url.pathname.match(/^\/api\/admin\/bans\/([^/]+)\/lift$/);
+    if (request.method === 'POST' && adminBanLiftMatch?.[1]) {
+      return await handleAdminBanLift(request, env, adminBanLiftMatch[1]);
+    }
     const adminUserMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
     if (request.method === 'DELETE' && adminUserMatch?.[1]) {
       return await handleAdminUserDelete(request, env, adminUserMatch[1]);
@@ -2791,6 +3028,19 @@ async function requeueStuckOcr(env: Env): Promise<void> {
   await Promise.all(receipts.map(({ id }) => env.OCR_JOBS.send({ kind: 'OCR_RECEIPT', receiptId: id })));
 }
 
+async function continueBanCleanups(env: Env): Promise<void> {
+  const bans = await withDatabase(env, async (client) => {
+    const result = await client.query<Pick<UserBanRow, 'external_user_id' | 'lifting_by'>>(
+      `SELECT external_user_id, lifting_by FROM user_bans
+        WHERE status = 'LIFTING' ORDER BY lifting_at ASC LIMIT 20`,
+    );
+    return result.rows;
+  });
+  for (const ban of bans) {
+    await cleanupLiftedBan(env, ban.external_user_id, ban.lifting_by || 'SYSTEM');
+  }
+}
+
 export default {
   fetch: handleFetch,
   async queue(batch: MessageBatch<JobMessage>, env: Env): Promise<void> {
@@ -2826,6 +3076,6 @@ export default {
     }
   },
   async scheduled(_controller: ScheduledController, env: Env, context: ExecutionContext): Promise<void> {
-    context.waitUntil(Promise.all([requeueDueOutbox(env), requeueStuckOcr(env)]));
+    context.waitUntil(Promise.all([requeueDueOutbox(env), requeueStuckOcr(env), continueBanCleanups(env)]));
   },
 } satisfies ExportedHandler<Env, JobMessage>;

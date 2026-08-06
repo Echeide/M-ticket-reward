@@ -13,6 +13,7 @@
     </header>
     <nav class="admin-tabs" aria-label="Áreas de gestión">
       <button class="active" data-admin-view="receipts">Revisión antifraude</button>
+      <button data-admin-view="bans">Baneos</button>
       <button data-admin-view="stores">Comercios autorizados</button>
       <button data-admin-view="tiers">Baremos de puntos</button>
       <button data-admin-view="settings">Ajustes</button>
@@ -40,6 +41,19 @@
         </nav>
       </section>
       <section id="review-panel" class="review-panel empty"><p>Selecciona un ticket para revisarlo.</p></section>
+    </main>
+    <main id="bans-view" class="bans-layout admin-view">
+      <section class="stores-heading">
+        <div><p class="eyebrow">Protección antifraude</p><h2>Usuarios baneados</h2><p>Se bloquea automáticamente al alcanzar 6 puntos: una imagen que no es un ticket suma 1 y un fraude confirmado suma 2.</p></div>
+      </section>
+      <form id="ban-search" class="ban-search">
+        <label><span class="visually-hidden">Buscar usuario baneado</span><input name="q" placeholder="Código de búsqueda o nombre" /></label>
+        <button class="primary-button" type="submit">Buscar</button>
+      </form>
+      <section class="store-list-card">
+        <div class="ban-list-head"><span>Usuario</span><span>Contexto</span><span>Infracciones</span><span>Estado</span><span></span></div>
+        <div id="ban-list"></div>
+      </section>
     </main>
     <main id="tiers-view" class="tiers-layout admin-view">
       <section class="stores-heading">

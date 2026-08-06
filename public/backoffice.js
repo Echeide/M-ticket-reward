@@ -1,5 +1,5 @@
 const state = {
-  rows: [], stores: [], tiers: [], settings: [], adminUsers: [], trainingSamples: [], trainingProfile: null, selected: null,
+  rows: [], stores: [], tiers: [], bans: [], settings: [], adminUsers: [], trainingSamples: [], trainingProfile: null, selected: null,
   pagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
   reviewing: false,
   token: sessionStorage.getItem('admin-token') || '',
@@ -161,6 +161,29 @@ async function loadTiers() {
       <button class="secondary-button edit-tier" data-id="${tier.id}" type="button">Editar</button>
     </article>`).join('') || '<p class="empty-state">Todavía no hay tramos configurados.</p>';
   document.querySelectorAll('.edit-tier').forEach((button) => button.addEventListener('click', () => openTierDialog(button.dataset.id)));
+}
+
+async function loadBans() {
+  const query = new URLSearchParams(new FormData(document.querySelector('#ban-search')));
+  const payload = await request(`/api/admin/bans?${query}`);
+  state.bans = payload.bans;
+  document.querySelector('#manager-email').textContent = payload.manager || '';
+  document.querySelector('#ban-list').innerHTML = state.bans.map((ban) => `
+    <article class="ban-row">
+      <span><strong class="ban-lookup-code">${escapeHtml(ban.lookupCode)}</strong><small>${escapeHtml(ban.displayName || 'Sin nombre')}${ban.email ? ` · ${escapeHtml(ban.email)}` : ''}</small></span>
+      <span><strong>${escapeHtml(ban.spaceCode || '—')}</strong><small>${escapeHtml(ban.installationId || '—')}</small></span>
+      <span><strong>${ban.offenseScore}/6 puntos</strong><small>${ban.offenseCount} registro(s)</small></span>
+      <span class="status-chip ${ban.status === 'LIFTING' ? 'reward_pending' : 'revoked'}">${ban.status === 'LIFTING' ? 'Limpiando' : 'Baneado'}</span>
+      <button class="secondary-button lift-ban" data-id="${escapeHtml(ban.id)}" type="button" ${ban.status === 'LIFTING' ? 'disabled' : ''}>Desbanear</button>
+    </article>`).join('') || '<p class="empty-state">No hay usuarios baneados.</p>';
+  document.querySelectorAll('.lift-ban').forEach((button) => button.addEventListener('click', () => liftBan(button.dataset.id)));
+}
+
+async function liftBan(id) {
+  if (!confirm('Se eliminarán las imágenes infractoras. Si hay puntos concedidos, primero se anularán. ¿Desbanear al usuario?')) return;
+  const result = await request(`/api/admin/bans/${id}/lift`, { method: 'POST' });
+  await loadBans();
+  showNotice(result.completed ? 'Usuario desbaneado e imágenes eliminadas.' : 'La anulación y limpieza están en proceso.');
 }
 
 function appendSettingText(parent, value) {
@@ -931,7 +954,9 @@ async function select(id, suppliedReceipt = null) {
   highlightSelectedRow();
   const reprocessable = canReprocess(receipt);
   const canRevoke = receipt.status === 'REWARDED' && Boolean(receipt.reward.resultId);
-  const canApproveManually = receipt.status === 'AUTO_REJECTED' || receipt.verificationRequired;
+  const canApproveManually = (receipt.status === 'AUTO_REJECTED' || receipt.verificationRequired) && receipt.review.status !== 'FRAUD';
+  const canConfirmFraud = receipt.review.status !== 'FRAUD' && (receipt.status === 'AUTO_REJECTED' ||
+    (receipt.status === 'REWARD_FAILED' && !receipt.reward.resultId));
   const reasons = Array.isArray(receipt.reasons) ? receipt.reasons : [];
   const activeStoreOptions = state.stores.filter((store) => store.active).map((store) =>
     `<option value="${escapeHtml(store.id)}" ${store.id === receipt.fields.storeId ? 'selected' : ''}>${escapeHtml(store.name)}</option>`).join('');
@@ -970,6 +995,7 @@ async function select(id, suppliedReceipt = null) {
               ? '<span class="review-complete">Este ticket está marcado como fraude.</span>'
               : ''}
         ${canRevoke ? '<button class="danger-button" id="revoke">Fraude: retirar puntos</button>' : ''}
+        ${canConfirmFraud ? '<button class="danger-button" id="confirm-fraud">Marcar como fraude</button>' : ''}
         ${canApproveManually ? '<button class="secondary-button" id="confirm-rejection">Confirmar rechazo</button><button class="primary-button" id="manual-approve">Corregir y conceder puntos</button>' : ''}
       </div>
       <dl class="ticket-secondary-data"><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Espacio</dt><dd>${escapeHtml(receipt.user.spaceCode || '—')}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Revisión</dt><dd>${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</dd></div><div><dt>OCR</dt><dd>${escapeHtml([receipt.ocrProcessing?.provider, receipt.ocrProcessing?.model].filter(Boolean).join(' · ') || '—')}</dd></div><div><dt>Proceso OCR</dt><dd>${receipt.ocrProcessing?.durationMs == null ? 'Sin resultado' : `${receipt.ocrProcessing.durationMs} ms · ${receipt.ocrProcessing.attemptCount} llamada(s)`} · ${receipt.ocrProcessing?.jobAttemptCount || 0} ejecución(es)</dd></div>${receipt.ocrProcessing?.lastError ? `<div><dt>Último error OCR</dt><dd>${escapeHtml(receipt.ocrProcessing.lastError)}</dd></div>` : ''}<div><dt>Creado</dt><dd>${escapeHtml(new Date(receipt.createdAt).toLocaleString('es-ES'))}</dd></div></dl>
@@ -994,6 +1020,7 @@ async function select(id, suppliedReceipt = null) {
   document.querySelector('#reopen-review')?.addEventListener('click', () => review('REOPEN'));
   document.querySelector('#revoke')?.addEventListener('click', () => review('REVOKE'));
   document.querySelector('#confirm-rejection')?.addEventListener('click', () => review('CONFIRM_REJECTION'));
+  document.querySelector('#confirm-fraud')?.addEventListener('click', () => review('CONFIRM_FRAUD'));
   document.querySelector('#manual-approve')?.addEventListener('click', () => review('MANUAL_APPROVE'));
   document.querySelector('#delete-ticket')?.addEventListener('click', deleteSelected);
   if (reprocessable) document.querySelector('#reprocess-ticket').addEventListener('click', reprocessSelected);
@@ -1058,6 +1085,8 @@ async function review(action) {
   if (action === 'MANUAL_APPROVE' && !reason) return alert('Indica el motivo de la validación manual.');
   if (action === 'MANUAL_APPROVE' && !confirm('Se guardarán las correcciones y se concederán los puntos. ¿Continuar?')) return;
   if (action === 'CONFIRM_REJECTION' && !confirm('El ticket permanecerá rechazado y no se concederán puntos. ¿Continuar?')) return;
+  if (action === 'CONFIRM_FRAUD' && !reason) return alert('Indica el motivo del fraude.');
+  if (action === 'CONFIRM_FRAUD' && !confirm('Se registrará una infracción por fraude para este usuario. ¿Continuar?')) return;
   if (action === 'REVOKE' && !reason) return alert('Indica el motivo de la revocación.');
   if (action === 'REVOKE' && !confirm('Se retirarán los puntos concedidos. ¿Continuar?')) return;
   state.reviewing = true;
@@ -1089,6 +1118,8 @@ async function review(action) {
       ? 'Ticket validado manualmente; se están asignando los puntos.'
       : action === 'CONFIRM_REJECTION'
         ? 'Rechazo confirmado; no se concederán puntos.'
+      : action === 'CONFIRM_FRAUD'
+        ? 'Fraude confirmado e infracción registrada.'
       : action === 'CLEAR'
         ? 'Ticket marcado como revisado.'
         : action === 'REOPEN'
@@ -1174,9 +1205,14 @@ document.querySelectorAll('[data-admin-view]').forEach((button) => button.addEve
   document.querySelectorAll('.admin-view').forEach((item) => item.classList.toggle('active', item.id === `${view}-view`));
   if (view === 'stores') await loadStores().catch((error) => alert(error.message));
   if (view === 'tiers') await loadTiers().catch((error) => alert(error.message));
+  if (view === 'bans') await loadBans().catch((error) => alert(error.message));
   if (view === 'settings') await Promise.all([loadSettings(), loadAdminUsers()]).catch((error) => alert(error.message));
 }));
 document.querySelector('#new-store').addEventListener('click', () => openStoreDialog());
+document.querySelector('#ban-search').addEventListener('submit', (event) => {
+  event.preventDefault();
+  loadBans().catch((error) => alert(error.message));
+});
 document.querySelector('#store-form').addEventListener('submit', saveStore);
 document.querySelectorAll('[data-store-panel]').forEach((button) => button.addEventListener('click', async () => {
   if (button.disabled) return;
