@@ -962,13 +962,15 @@ async function select(id, suppliedReceipt = null) {
       ${canApproveManually ? `<div class="manual-correction"><strong>Corrección manual</strong><label>Comercio<select id="manual-store"><option value="">Selecciona un comercio</option>${activeStoreOptions}</select></label><label>Número de ticket<input id="manual-ticket-number" value="${escapeHtml(receipt.fields.ticketNumber)}" /></label><label>Fecha<input id="manual-purchase-date" type="date" value="${escapeHtml(receipt.fields.purchaseDate)}" /></label><label>Importe (€)<input id="manual-total" type="number" min="0.01" step="0.01" value="${(receipt.fields.totalCents / 100).toFixed(2)}" /></label></div>` : ''}
       <label>Nota de revisión<textarea id="review-reason" rows="3" placeholder="${canApproveManually ? 'Obligatoria para validar manualmente' : `Opcional al marcar como revisado${canRevoke ? '; obligatoria para retirar puntos' : ''}`}"></textarea></label>
       <div class="review-actions">
-        ${receipt.review.status === 'PENDING'
+        ${receipt.review.status === 'PENDING' && !canApproveManually
           ? '<button class="primary-button" id="clear-review">Revisado</button>'
-          : receipt.review.status === 'CLEARED'
+          : receipt.review.status === 'CLEARED' && !canApproveManually
             ? `<span class="review-complete">Este ticket ya está resuelto.</span><button class="secondary-button reopen-review-button" id="reopen-review" type="button" aria-label="Volver a dejar pendiente" title="Volver a dejar pendiente"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5"></path><path d="M4 12h9a7 7 0 0 1 7 7"></path></svg></button>`
-            : '<span class="review-complete">Este ticket está marcado como fraude.</span>'}
+            : receipt.review.status === 'FRAUD'
+              ? '<span class="review-complete">Este ticket está marcado como fraude.</span>'
+              : ''}
         ${canRevoke ? '<button class="danger-button" id="revoke">Fraude: retirar puntos</button>' : ''}
-        ${canApproveManually ? '<button class="primary-button" id="manual-approve">Validar manualmente</button>' : ''}
+        ${canApproveManually ? '<button class="primary-button" id="manual-approve">Validar y guardar correcciones</button>' : ''}
       </div>
       <dl class="ticket-secondary-data"><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Espacio</dt><dd>${escapeHtml(receipt.user.spaceCode || '—')}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Revisión</dt><dd>${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</dd></div><div><dt>OCR</dt><dd>${escapeHtml([receipt.ocrProcessing?.provider, receipt.ocrProcessing?.model].filter(Boolean).join(' · ') || '—')}</dd></div><div><dt>Proceso OCR</dt><dd>${receipt.ocrProcessing?.durationMs == null ? '—' : `${receipt.ocrProcessing.durationMs} ms · ${receipt.ocrProcessing.attemptCount} intento(s)`}</dd></div><div><dt>Creado</dt><dd>${escapeHtml(new Date(receipt.createdAt).toLocaleString('es-ES'))}</dd></div></dl>
     </div>`;
