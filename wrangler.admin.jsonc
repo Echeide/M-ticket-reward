@@ -37,8 +37,10 @@
     "ADMIN_ONLY": "true",
     "RTALES_BASE_URL": "https://rtales.app",
     "RTALES_PARENT_ORIGINS": "'none'",
-    "OCR_MODEL": "@cf/llava-hf/llava-1.5-7b-hf",
+    "OCR_PROVIDER": "workers-ai",
+    "OCR_MODEL": "@cf/moondream/moondream3.1-9B-A2B",
     "OCR_MODE": "workers-ai",
+    "OCR_TIMEOUT_MS": "45000",
     "ALLOW_DEV_ADMIN": "false",
     "MAX_TICKET_BYTES": "10485760"
   }
