@@ -312,3 +312,41 @@ test('Workers AI chat format supports Llama vision with JSON mode', async () => 
   assert.equal(input.max_completion_tokens, undefined);
   assert.equal(input.task, undefined);
 });
+
+test('confident non-receipt images are rejected after one model call', async () => {
+  let calls = 0;
+  let prompt = '';
+  const env = {
+    OCR_MODE: 'workers-ai',
+    OCR_PROVIDER: 'workers-ai',
+    OCR_MODEL: '@cf/meta/llama-3.2-11b-vision-instruct',
+    OCR_WORKERS_AI_FORMAT: 'chat',
+    OCR_TIMEOUT_MS: '5000',
+    AI: {
+      async run(_model: string, input: Record<string, unknown>) {
+        calls += 1;
+        const messages = input.messages as Array<{ role: string; content: string }>;
+        prompt = messages.find((message) => message.role === 'user')?.content || '';
+        return { choices: [{ message: { content: JSON.stringify({
+          isReceipt: false,
+          confidence: 0.96,
+          storeName: '',
+          headerText: '',
+          ticketNumber: '',
+          purchaseDate: '',
+          totalCents: 0,
+          currency: 'EUR',
+          rawText: '',
+        }) } }] };
+      },
+    },
+  } as unknown as Env;
+
+  const result = await readReceipt(env, new Uint8Array([1, 2, 3]).buffer, 'image/webp');
+
+  assert.equal(calls, 1);
+  assert.equal(result.attemptCount, 1);
+  assert.equal(result.receipt.isReceipt, false);
+  assert.deepEqual(result.verificationIssues, []);
+  assert.match(prompt, /fotografía\s+personal, paisaje, objeto/i);
+});

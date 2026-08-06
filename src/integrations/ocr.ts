@@ -217,6 +217,11 @@ isReceipt (boolean), confidence (0..1), storeName, headerText, ticketNumber,
 ticketNumberText, purchaseDate (YYYY-MM-DD), purchaseDateTime (YYYY-MM-DDTHH:mm o cadena vacía),
 purchaseDateText, totalCents (entero), totalText, currency y rawText.
 
+Antes de extraer datos, decide si la imagen es realmente un ticket o recibo de compra. Una fotografía
+personal, paisaje, objeto, captura de pantalla, cartel, documento genérico o imagen sin estructura de
+ticket debe devolver isReceipt=false con la confianza de esa clasificación. En ese caso deja vacíos los
+demás campos y no intentes reinterpretar elementos de la imagen como comercio, fecha o importe.
+
 ticketNumberText, purchaseDateText y totalText deben ser transcripciones literales y breves de las
 líneas visibles que demuestran cada valor. Si no puedes ver esa evidencia, deja el valor y su texto vacíos.
 No deduzcas, completes ni inventes caracteres.${retry ? '\nEsta es una segunda comprobación: céntrate especialmente en FECHA, TOTAL COMPRA y número de DOCUMENTO/TICKET.' : ''}
@@ -315,6 +320,19 @@ export async function readReceipt(
   let issues = verifyOcr(receipt);
   let attemptCount = 1;
   let durationMs = response.durationMs;
+
+  // A confident negative classification must not trigger the expensive header and totals passes.
+  // Uncertain negatives still get the focused verification to avoid rejecting a poorly photographed receipt.
+  if (!receipt.isReceipt && receipt.confidence >= 0.8) {
+    return {
+      receipt,
+      provider: response.provider,
+      model: response.model,
+      attemptCount,
+      durationMs,
+      verificationIssues: [],
+    };
+  }
 
   if (receipt.confidence < 0.75 || !receipt.isReceipt || issues.length > 0) {
     const matchedStore = findMatchingStore(authorizedStores, receipt);
