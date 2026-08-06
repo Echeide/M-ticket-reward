@@ -13,6 +13,7 @@
     </header>
     <nav class="admin-tabs" aria-label="Áreas de gestión">
       <button class="active" data-admin-view="receipts">Revisión antifraude</button>
+      <button data-admin-view="users">Usuarios</button>
       <button data-admin-view="bans">Baneos</button>
       <button data-admin-view="stores">Comercios autorizados</button>
       <button data-admin-view="tiers">Baremos de puntos</button>
@@ -41,6 +42,24 @@
         </nav>
       </section>
       <section id="review-panel" class="review-panel empty"><p>Selecciona un ticket para revisarlo.</p></section>
+    </main>
+    <main id="users-view" class="ticket-users-layout admin-view">
+      <section class="filters-bar" aria-label="Búsqueda de usuarios">
+        <form id="ticket-user-search" class="filters-inline">
+          <label class="filter-search"><span class="visually-hidden">Buscar usuario</span><input name="q" placeholder="Buscar por ID de usuario, nombre o correo" /></label>
+          <button class="primary-button" type="submit">Buscar</button>
+          <button class="text-button" id="export-ticket-users" type="button">Exportar CSV</button>
+        </form>
+      </section>
+      <section class="ticket-users-card">
+        <div class="ticket-user-list-head"><span>Usuario</span><span>Subidos</span><span>Validados</span><span>Sin validar</span><span>Strikes</span><span>Compras autorizadas</span></div>
+        <div id="ticket-user-list"></div>
+        <nav class="receipt-pagination" id="ticket-user-pagination" aria-label="Paginación de usuarios" hidden>
+          <button class="secondary-button" id="previous-ticket-users" type="button">Anterior</button>
+          <span id="ticket-user-page-info">Página 1 de 1</span>
+          <button class="secondary-button" id="next-ticket-users" type="button">Siguiente</button>
+        </nav>
+      </section>
     </main>
     <main id="bans-view" class="bans-layout admin-view">
       <section class="filters-bar" aria-label="Búsqueda de usuarios baneados">
@@ -91,6 +110,17 @@
           <label>Fecha y hora de fin<input id="validation-end-at" type="datetime-local" step="60" /></label>
           <p id="validation-period-error" class="form-error" role="alert"></p>
           <div class="dialog-actions"><button class="primary-button" type="submit">Guardar periodo</button></div>
+        </form>
+      </section>
+      <section class="settings-card participation-limits-card">
+        <div class="settings-section-heading"><p class="eyebrow">Participación</p><h3>Límites de participación</h3><p>Introduce 0 para desactivar cualquiera de los límites.</p></div>
+        <form id="participation-limits-form" class="limits-form">
+          <label>Tickets diarios por usuario y establecimiento<input id="daily-store-ticket-limit" type="number" min="0" max="100" required /><small>Solo cuentan tickets válidos que puedan conceder puntos.</small></label>
+          <label>Subidas totales por usuario durante la campaña<input id="total-upload-limit" type="number" min="0" max="10000" required /><small>Incluye duplicados e imágenes rechazadas que hayan llegado a registrarse.</small></label>
+          <label>Puntos de infracción para banear<input id="ban-score-threshold" type="number" min="0" max="100" required /><small>El cambio se aplicará cuando se registre una nueva infracción.</small></label>
+          <aside class="ban-points-explanation"><strong>Cómo se calculan los puntos</strong><span>Imagen que no es un ticket: <b>+1 punto</b></span><span>Fraude confirmado: <b>+2 puntos</b></span><small>Los puntos se acumulan hasta que el usuario es desbaneado.</small></aside>
+          <p id="participation-limits-error" class="form-error" role="alert"></p>
+          <div class="dialog-actions"><button class="primary-button" type="submit">Guardar límites</button></div>
         </form>
       </section>
       <section class="settings-card">

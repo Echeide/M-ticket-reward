@@ -264,6 +264,10 @@ test('application settings validate keys, normalize line endings and enforce lim
   assert.throws(() => normalizeAppSettingValue('home.scanButton', 'x'.repeat(101)), /APP_SETTING_TOO_LONG/);
   assert.equal(normalizeAppSettingValue('validation.startAt', '2026-08-01T09:30'), '2026-08-01T09:30');
   assert.equal(normalizeAppSettingValue('validation.endAt', ''), '');
+  assert.equal(normalizeAppSettingValue('limits.dailyTicketsPerUserStore', '03'), '3');
+  assert.equal(normalizeAppSettingValue('limits.totalUploadsPerUser', '0'), '0');
+  assert.throws(() => normalizeAppSettingValue('limits.banScoreThreshold', '-1'), /APP_SETTING_INTEGER_INVALID/);
+  assert.throws(() => normalizeAppSettingValue('limits.dailyTicketsPerUserStore', '101'), /APP_SETTING_INTEGER_INVALID/);
   assert.throws(() => normalizeAppSettingValue('validation.startAt', '2026-02-30T09:30'), /APP_SETTING_DATETIME_INVALID/);
   assert.throws(() => validateAppSettingPeriod({
     'validation.startAt': '2026-09-01T09:00',

@@ -1,6 +1,7 @@
 const state = {
-  rows: [], stores: [], tiers: [], bans: [], settings: [], adminUsers: [], trainingSamples: [], trainingProfile: null, selected: null,
+  rows: [], stores: [], tiers: [], bans: [], ticketUsers: [], settings: [], adminUsers: [], trainingSamples: [], trainingProfile: null, selected: null,
   pagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
+  ticketUserPagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
   reviewing: false,
   token: sessionStorage.getItem('admin-token') || '',
 };
@@ -50,6 +51,7 @@ const reasonLabels = {
   INVALID_DATE: 'No se ha reconocido una fecha válida.',
   FUTURE_DATE: 'La fecha está fuera del periodo permitido.',
   TICKET_TOO_OLD: 'La fecha del ticket supera el periodo permitido.',
+  DAILY_STORE_LIMIT: 'El usuario alcanzó el límite diario para este establecimiento.',
   OCR_REPROCESS_REQUESTED: 'La nueva comprobación está en curso.',
 };
 
@@ -205,7 +207,7 @@ async function loadBans() {
     <article class="ban-row">
       <span><strong class="ban-lookup-code">${escapeHtml(ban.lookupCode)}</strong><small>${escapeHtml(ban.displayName || 'Sin nombre')}${ban.email ? ` · ${escapeHtml(ban.email)}` : ''}</small></span>
       <span><strong>${escapeHtml(ban.spaceCode || '—')}</strong><small>${escapeHtml(ban.installationId || '—')}</small></span>
-      <span><strong>${ban.offenseScore}/6 puntos</strong><small>${ban.offenseCount} registro(s)</small></span>
+      <span><strong>${ban.offenseScore}/${ban.banThreshold || '—'} puntos</strong><small>${ban.offenseCount} registro(s)</small></span>
       <span class="status-chip ${ban.status === 'LIFTING' ? 'reward_pending' : 'revoked'}">${ban.status === 'LIFTING' ? 'Limpiando' : 'Baneado'}</span>
       <button class="secondary-button lift-ban" data-id="${escapeHtml(ban.id)}" type="button" ${ban.status === 'LIFTING' ? 'disabled' : ''}>Desbanear</button>
     </article>`).join('') || '<p class="empty-state">No hay usuarios baneados.</p>';
@@ -217,6 +219,45 @@ async function liftBan(id) {
   const result = await request(`/api/admin/bans/${id}/lift`, { method: 'POST' });
   await loadBans();
   showNotice(result.completed ? 'Usuario desbaneado e imágenes eliminadas.' : 'La anulación y limpieza están en proceso.');
+}
+
+function ticketUserParams(page = state.ticketUserPagination.page) {
+  const params = new URLSearchParams(new FormData(document.querySelector('#ticket-user-search')));
+  for (const [key, value] of [...params]) if (!value) params.delete(key);
+  params.set('page', String(page));
+  return params;
+}
+
+async function loadTicketUsers(page = state.ticketUserPagination.page) {
+  const payload = await request(`/api/admin/ticket-users?${ticketUserParams(page)}`);
+  state.ticketUsers = payload.users;
+  state.ticketUserPagination = payload.pagination;
+  document.querySelector('#ticket-user-list').innerHTML = state.ticketUsers.map((user) => `
+    <article class="ticket-user-row">
+      <span><strong class="ban-lookup-code">${escapeHtml(user.lookupCode)}</strong><small>${escapeHtml(user.displayName || 'Sin nombre')}${user.email ? ` · ${escapeHtml(user.email)}` : ''}</small><small>${escapeHtml(user.spaceCode || '—')} · ${escapeHtml(user.installationId || '—')}</small></span>
+      <strong>${user.ticketsSubmitted}</strong>
+      <strong class="validated-count">${user.ticketsValidated}</strong>
+      <strong>${user.ticketsUnvalidated}</strong>
+      <strong class="${user.strikePoints ? 'strike-count' : ''}">${user.strikePoints}</strong>
+      <strong>${formatMoney(user.authorizedTotalCents)}</strong>
+    </article>`).join('') || '<p class="empty-state">No hay usuarios con tickets para esta búsqueda.</p>';
+  const pagination = state.ticketUserPagination;
+  document.querySelector('#ticket-user-page-info').textContent = `Página ${pagination.page} de ${pagination.totalPages}`;
+  document.querySelector('#previous-ticket-users').disabled = !pagination.hasPrevious;
+  document.querySelector('#next-ticket-users').disabled = !pagination.hasNext;
+  document.querySelector('#ticket-user-pagination').hidden = pagination.totalPages <= 1;
+}
+
+async function exportTicketUsers() {
+  const params = ticketUserParams(1);
+  params.delete('page');
+  const response = await fetch(`/api/admin/ticket-users.csv?${params}`, { headers: headers() });
+  if (!response.ok) return alert('No se pudo exportar el listado de usuarios.');
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(await response.blob());
+  link.download = 'usuarios-tickets.csv';
+  link.click();
+  URL.revokeObjectURL(link.href);
 }
 
 function appendSettingText(parent, value) {
@@ -290,11 +331,14 @@ async function loadSettings() {
   state.settings = payload.settings;
   document.querySelector('#validation-start-at').value = state.settings.find((item) => item.key === 'validation.startAt')?.value || '';
   document.querySelector('#validation-end-at').value = state.settings.find((item) => item.key === 'validation.endAt')?.value || '';
+  document.querySelector('#daily-store-ticket-limit').value = state.settings.find((item) => item.key === 'limits.dailyTicketsPerUserStore')?.value || '3';
+  document.querySelector('#total-upload-limit').value = state.settings.find((item) => item.key === 'limits.totalUploadsPerUser')?.value || '30';
+  document.querySelector('#ban-score-threshold').value = state.settings.find((item) => item.key === 'limits.banScoreThreshold')?.value || '6';
   document.querySelector('#manager-email').textContent = payload.manager || '';
   const select = document.querySelector('#setting-select');
   const previous = select.value;
   const groups = new Map();
-  for (const setting of state.settings.filter((item) => item.format !== 'datetime')) {
+  for (const setting of state.settings.filter((item) => ['plain', 'rich'].includes(item.format))) {
     if (!groups.has(setting.group)) groups.set(setting.group, []);
     groups.get(setting.group).push(setting);
   }
@@ -330,6 +374,27 @@ async function saveValidationPeriod(event) {
     showNotice('Periodo de validación actualizado.');
   } catch (error) {
     errorNode.textContent = error instanceof Error ? error.message : 'No se pudo guardar el periodo';
+  } finally { button.disabled = false; }
+}
+
+async function saveParticipationLimits(event) {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector('button[type="submit"]');
+  const errorNode = document.querySelector('#participation-limits-error');
+  button.disabled = true;
+  errorNode.textContent = '';
+  try {
+    await request('/api/admin/settings/participation-limits', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        dailyTicketsPerUserStore: document.querySelector('#daily-store-ticket-limit').value,
+        totalUploadsPerUser: document.querySelector('#total-upload-limit').value,
+        banScoreThreshold: document.querySelector('#ban-score-threshold').value,
+      }),
+    });
+    await loadSettings();
+    showNotice('Límites de participación actualizados.');
+  } catch (error) {
+    errorNode.textContent = error instanceof Error ? error.message : 'No se pudieron guardar los límites';
   } finally { button.disabled = false; }
 }
 
@@ -1239,12 +1304,24 @@ document.querySelectorAll('[data-admin-view]').forEach((button) => button.addEve
   if (view === 'stores') await loadStores().catch((error) => alert(error.message));
   if (view === 'tiers') await loadTiers().catch((error) => alert(error.message));
   if (view === 'bans') await loadBans().catch((error) => alert(error.message));
+  if (view === 'users') await loadTicketUsers(1).catch((error) => alert(error.message));
   if (view === 'settings') await Promise.all([loadSettings(), loadAdminUsers()]).catch((error) => alert(error.message));
 }));
 document.querySelector('#new-store').addEventListener('click', () => openStoreDialog());
 document.querySelector('#ban-search').addEventListener('submit', (event) => {
   event.preventDefault();
   loadBans().catch((error) => alert(error.message));
+});
+document.querySelector('#ticket-user-search').addEventListener('submit', (event) => {
+  event.preventDefault();
+  loadTicketUsers(1).catch((error) => alert(error.message));
+});
+document.querySelector('#export-ticket-users').addEventListener('click', exportTicketUsers);
+document.querySelector('#previous-ticket-users').addEventListener('click', () => {
+  if (state.ticketUserPagination.hasPrevious) loadTicketUsers(state.ticketUserPagination.page - 1).catch((error) => alert(error.message));
+});
+document.querySelector('#next-ticket-users').addEventListener('click', () => {
+  if (state.ticketUserPagination.hasNext) loadTicketUsers(state.ticketUserPagination.page + 1).catch((error) => alert(error.message));
 });
 document.querySelector('#store-form').addEventListener('submit', saveStore);
 document.querySelectorAll('[data-store-panel]').forEach((button) => button.addEventListener('click', async () => {
@@ -1314,6 +1391,7 @@ document.querySelector('#setting-select').addEventListener('change', renderSetti
 document.querySelector('#setting-plain-value').addEventListener('input', updateSettingPreview);
 document.querySelector('#setting-rich-value').addEventListener('input', updateSettingPreview);
 document.querySelector('#setting-form').addEventListener('submit', saveSetting);
+document.querySelector('#participation-limits-form').addEventListener('submit', saveParticipationLimits);
 document.querySelector('#validation-period-form').addEventListener('submit', saveValidationPeriod);
 document.querySelector('#admin-user-form').addEventListener('submit', saveAdminUser);
 document.querySelector('[name="review"]').value = 'PENDING';

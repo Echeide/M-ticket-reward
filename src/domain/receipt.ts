@@ -142,7 +142,7 @@ export function hasVerifiedPurchaseTime(ocr: OcrReceipt, purchaseDate = ocr.purc
   return Boolean(printedTime && `${printedTime[1]}:${printedTime[2]}` === purchaseDateTime.slice(11, 16));
 }
 
-function canaryDateTimeToTimestamp(value: string): number | null {
+export function canaryDateTimeToTimestamp(value: string): number | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
   if (!match) return null;
   const expected = {

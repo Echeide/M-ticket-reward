@@ -3,6 +3,7 @@ import { buildTicketFingerprint } from './domain/deduplication';
 import {
   type OcrReceipt,
   type ReceiptFields,
+  canaryDateTimeToTimestamp,
   canReprocessReceipt,
   isValidIsoDate,
   isValidPurchaseDateTime,
@@ -33,7 +34,7 @@ import {
 } from './domain/ocr-profile';
 import { normalizeRewardTierInput } from './domain/reward-tier';
 import { normalizeAdminEmail, type AdminRole } from './domain/admin-user';
-import { shouldBanUser, userOffenseScore, USER_BAN_SCORE_THRESHOLD, type UserOffenseCategory } from './domain/user-ban';
+import { shouldBanUser, userOffenseScore, type UserOffenseCategory } from './domain/user-ban';
 import {
   externalIdentityFromExchange,
   normalizeLookupCode,
@@ -43,6 +44,7 @@ import {
 import {
   APP_SETTING_DEFINITIONS,
   appSettingsWithDefaults,
+  numericAppSetting,
   normalizeAppSettingValue,
   settingDefinition,
   validateAppSettingPeriod,
@@ -244,6 +246,7 @@ type UserBanRow = {
   external_user_id: string;
   status: 'MONITORING' | 'ACTIVE' | 'LIFTING' | 'LIFTED';
   offense_score: number;
+  ban_threshold: number | null;
   reason: string | null;
   banned_at: string | null;
   banned_by: string | null;
@@ -356,6 +359,7 @@ const PUBLIC_REASON_MESSAGES: Record<string, string> = {
   INVALID_DATE: 'No se pudo reconocer una fecha válida.',
   FUTURE_DATE: 'La fecha está fuera del periodo permitido.',
   TICKET_TOO_OLD: 'La fecha está fuera del periodo permitido.',
+  DAILY_STORE_LIMIT: 'Has alcanzado el límite diario de tickets para este establecimiento.',
   RTALES_DELIVERY_FAILED: 'No hemos podido añadir los puntos. El ticket sigue registrado y puedes reintentar la asignación.',
 };
 
@@ -523,6 +527,8 @@ async function recordUserOffense(
 ): Promise<UserBanRow | null> {
   if (!receipt.external_user_id) return null;
   const score = userOffenseScore(category);
+  const settings = await loadAppSettings(client);
+  const threshold = numericAppSetting(settings, 'limits.banScoreThreshold');
   const offense = await client.query<{ id: string }>(
     `INSERT INTO user_offenses
        (id, external_user_id, receipt_id, receipt_public_id, category, score, source)
@@ -533,27 +539,37 @@ async function recordUserOffense(
   if (!offense.rowCount) return activeUserBan(client, receipt.external_user_id);
   const result = await client.query<UserBanRow>(
     `INSERT INTO user_bans
-       (id, external_user_id, status, offense_score, reason, banned_at, banned_by, updated_at)
-     VALUES ($1, $2, $3, $4, NULL, NULL, NULL, NOW())
+       (id, external_user_id, status, offense_score, reason, banned_at, banned_by, ban_threshold, updated_at)
+     VALUES ($1, $2, $3, $4, CASE WHEN $3 = 'ACTIVE' THEN $6 ELSE NULL END,
+       CASE WHEN $3 = 'ACTIVE' THEN NOW() ELSE NULL END,
+       CASE WHEN $3 = 'ACTIVE' THEN $7 ELSE NULL END,
+       CASE WHEN $3 = 'ACTIVE' THEN $5 ELSE NULL END, NOW())
      ON CONFLICT(external_user_id) DO UPDATE SET
        offense_score = CASE WHEN user_bans.status = 'LIFTED' THEN excluded.offense_score
          ELSE user_bans.offense_score + excluded.offense_score END,
-       status = CASE WHEN (CASE WHEN user_bans.status = 'LIFTED' THEN excluded.offense_score
+       status = CASE WHEN user_bans.status IN ('ACTIVE', 'LIFTING') THEN user_bans.status
+         WHEN $5 > 0 AND (CASE WHEN user_bans.status = 'LIFTED' THEN excluded.offense_score
          ELSE user_bans.offense_score + excluded.offense_score END) >= $5 THEN 'ACTIVE'
          ELSE 'MONITORING' END,
-       reason = CASE WHEN (CASE WHEN user_bans.status = 'LIFTED' THEN excluded.offense_score
+       reason = CASE WHEN user_bans.status IN ('ACTIVE', 'LIFTING') THEN user_bans.reason
+         WHEN $5 > 0 AND (CASE WHEN user_bans.status = 'LIFTED' THEN excluded.offense_score
          ELSE user_bans.offense_score + excluded.offense_score END) >= $5
          THEN $6 ELSE NULL END,
-       banned_at = CASE WHEN (CASE WHEN user_bans.status = 'LIFTED' THEN excluded.offense_score
+       banned_at = CASE WHEN user_bans.status IN ('ACTIVE', 'LIFTING') THEN user_bans.banned_at
+         WHEN $5 > 0 AND (CASE WHEN user_bans.status = 'LIFTED' THEN excluded.offense_score
          ELSE user_bans.offense_score + excluded.offense_score END) >= $5
          THEN COALESCE(user_bans.banned_at, NOW()) ELSE NULL END,
-       banned_by = CASE WHEN (CASE WHEN user_bans.status = 'LIFTED' THEN excluded.offense_score
+       banned_by = CASE WHEN user_bans.status IN ('ACTIVE', 'LIFTING') THEN user_bans.banned_by
+         WHEN $5 > 0 AND (CASE WHEN user_bans.status = 'LIFTED' THEN excluded.offense_score
          ELSE user_bans.offense_score + excluded.offense_score END) >= $5
          THEN COALESCE(user_bans.banned_by, $7) ELSE NULL END,
+       ban_threshold = CASE WHEN user_bans.status IN ('ACTIVE', 'LIFTING') THEN user_bans.ban_threshold
+         WHEN $5 > 0 AND (CASE WHEN user_bans.status = 'LIFTED' THEN excluded.offense_score
+         ELSE user_bans.offense_score + excluded.offense_score END) >= $5 THEN $5 ELSE NULL END,
        lifting_at = NULL, lifting_by = NULL, lifted_at = NULL, updated_at = NOW()
      RETURNING *`,
-    [uuid(), receipt.external_user_id, shouldBanUser(score) ? 'ACTIVE' : 'MONITORING', score,
-      USER_BAN_SCORE_THRESHOLD, `Límite automático de ${USER_BAN_SCORE_THRESHOLD} infracciones alcanzado`, actor],
+    [uuid(), receipt.external_user_id, threshold > 0 && shouldBanUser(score, threshold) ? 'ACTIVE' : 'MONITORING', score,
+      threshold, `Límite automático de ${threshold} puntos de infracción alcanzado`, actor],
   );
   return result.rows[0] || null;
 }
@@ -581,6 +597,84 @@ async function clearAutomaticNonTicketOffense(
   );
 }
 
+function databaseTimestamp(timestamp: number | null): string {
+  return timestamp === null ? '' : new Date(timestamp).toISOString().replace('T', ' ').slice(0, 19);
+}
+
+function uploadCampaign(settings: Record<string, string>) {
+  const start = settings['validation.startAt'] || '';
+  const end = settings['validation.endAt'] || '';
+  return {
+    key: `${start || 'OPEN'}|${end || 'OPEN'}`,
+    startAt: databaseTimestamp(canaryDateTimeToTimestamp(start)),
+    endAt: databaseTimestamp(canaryDateTimeToTimestamp(end)),
+  };
+}
+
+async function reserveUserUpload(client: DbClient, externalUserId: string | null): Promise<boolean> {
+  if (!externalUserId) return true;
+  const settings = await loadAppSettings(client);
+  const limit = numericAppSetting(settings, 'limits.totalUploadsPerUser');
+  if (limit === 0) return true;
+  const campaign = uploadCampaign(settings);
+  const reserved = await client.query<{ upload_count: number }>(
+    `INSERT INTO user_upload_counters (external_user_id, campaign_key, upload_count, updated_at)
+     SELECT $1, $2, COUNT(*) + 1, NOW() FROM receipts
+       WHERE external_user_id = $1
+         AND ($3 = '' OR created_at >= $3)
+         AND ($4 = '' OR created_at <= $4)
+       HAVING COUNT(*) < $5
+     ON CONFLICT(external_user_id, campaign_key) DO UPDATE SET
+       upload_count = user_upload_counters.upload_count + 1, updated_at = NOW()
+       WHERE user_upload_counters.upload_count < $5
+     RETURNING upload_count`,
+    [externalUserId, campaign.key, campaign.startAt, campaign.endAt, limit],
+  );
+  return Boolean(reserved.rowCount);
+}
+
+async function releaseUserUpload(client: DbClient, externalUserId: string | null): Promise<void> {
+  if (!externalUserId) return;
+  const settings = await loadAppSettings(client);
+  const campaign = uploadCampaign(settings);
+  await client.query(
+    `UPDATE user_upload_counters SET upload_count = CASE WHEN upload_count > 0 THEN upload_count - 1 ELSE 0 END,
+       updated_at = NOW() WHERE external_user_id = $1 AND campaign_key = $2`,
+    [externalUserId, campaign.key],
+  );
+}
+
+async function dailyStoreLimitReached(
+  client: DbClient,
+  externalUserId: string | null,
+  storeId: string,
+  settings: Record<string, string>,
+  excludeReceiptId: string,
+): Promise<boolean> {
+  const limit = numericAppSetting(settings, 'limits.dailyTicketsPerUserStore');
+  if (!externalUserId || !storeId || limit === 0) return false;
+  const dateParts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Atlantic/Canary', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(dateParts.find((item) => item.type === type)?.value);
+  const year = part('year');
+  const month = part('month');
+  const day = part('day');
+  const today = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  const tomorrowDate = new Date(Date.UTC(year, month - 1, day + 1));
+  const tomorrow = `${tomorrowDate.getUTCFullYear()}-${String(tomorrowDate.getUTCMonth() + 1).padStart(2, '0')}-${String(tomorrowDate.getUTCDate()).padStart(2, '0')}`;
+  const startAt = databaseTimestamp(canaryDateTimeToTimestamp(`${today}T00:00`));
+  const endAt = databaseTimestamp(canaryDateTimeToTimestamp(`${tomorrow}T00:00`));
+  const result = await client.query<{ total: number }>(
+    `SELECT COUNT(*) AS total FROM receipts
+      WHERE external_user_id = $1 AND store_id = $2 AND created_at >= $3 AND created_at < $4 AND id <> $5
+        AND (status IN ('REWARD_PENDING', 'REWARDED', 'REVOKE_PENDING') OR rtales_result_id IS NOT NULL)`,
+    [externalUserId, storeId, startAt, endAt, excludeReceiptId],
+  );
+  return Number(result.rows[0]?.total || 0) >= limit;
+}
+
 async function handleUpload(request: Request, env: Env): Promise<Response> {
   const session = await authenticatedSession(request, env);
   if (!session) return error('Sesión no válida', 401);
@@ -603,7 +697,14 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
   const ticketPublicId = publicId();
   const objectKey = `receipts/${session.user_ref}/${new Date().getUTCFullYear()}/${receiptId}/optimized.${storedImage.extension}`;
 
-  const duplicate = await withDatabase(env, async (client) => {
+  const uploadReserved = await withDatabase(env, (client) => reserveUserUpload(client, session.external_user_id));
+  if (!uploadReserved) {
+    return error('Has alcanzado el límite de subidas permitido durante esta campaña.', 429, 'USER_UPLOAD_LIMIT');
+  }
+
+  let duplicate = false;
+  try {
+    duplicate = await withDatabase(env, async (client) => {
     const existing = await client.query(
       `SELECT id FROM receipts
         WHERE user_ref = $1 AND image_sha256 = $2 AND status = ANY($3::text[])
@@ -644,8 +745,13 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
         session.external_user_id,
       ],
     );
-    return Boolean(existing.rowCount);
-  });
+      return Boolean(existing.rowCount);
+    });
+  } catch (uploadError) {
+    await env.TICKETS.delete(objectKey).catch(() => undefined);
+    await withDatabase(env, (client) => releaseUserUpload(client, session.external_user_id)).catch(() => undefined);
+    throw uploadError;
+  }
 
   if (!duplicate) await env.OCR_JOBS.send({ kind: 'OCR_RECEIPT', receiptId });
   return json({ success: true, receiptId, publicId: ticketPublicId, status: duplicate ? 'DUPLICATE' : 'OCR_QUEUED' }, 202);
@@ -836,6 +942,12 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
         allowedPurchaseStart: appSettings['validation.startAt'],
         allowedPurchaseEnd: appSettings['validation.endAt'],
       });
+      if (validation.approved && await dailyStoreLimitReached(
+        client, session.external_user_id, fields.storeId, appSettings, receiptId,
+      )) {
+        validation.approved = false;
+        validation.reasons.push('DAILY_STORE_LIMIT');
+      }
       if (!validation.approved) {
         const status = validation.reasons.includes('DUPLICATE') ? 'DUPLICATE' : 'AUTO_REJECTED';
         await client.query(
@@ -1017,7 +1129,14 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
       allowedPurchaseStart: appSettings['validation.startAt'],
       allowedPurchaseEnd: appSettings['validation.endAt'],
     });
-    const status = receiptStatusAfterOcr(validation);
+    let status = receiptStatusAfterOcr(validation);
+    if (status === 'REWARD_PENDING' && await dailyStoreLimitReached(
+      client, receipt.external_user_id, fields.storeId, appSettings, receiptId,
+    )) {
+      validation.approved = false;
+      validation.reasons.push('DAILY_STORE_LIMIT');
+      status = 'AUTO_REJECTED';
+    }
     completedStatus = status;
     let points = 0;
     if (status === 'REWARD_PENDING') {
@@ -1428,6 +1547,117 @@ async function handleAdminCsv(request: Request, env: Env): Promise<Response> {
   });
 }
 
+type TicketUserSummaryRow = {
+  external_user_id: string;
+  rtales_lookup_code: string;
+  display_name: string;
+  email: string | null;
+  space_code: string;
+  installation_id: string;
+  tickets_submitted: number;
+  tickets_validated: number;
+  tickets_unvalidated: number;
+  strike_points: number;
+  authorized_total_cents: number;
+  last_submission_at: string;
+};
+
+function ticketUserSummaryQuery(url: URL, pagination?: { limit: number; offset: number }) {
+  const search = String(url.searchParams.get('q') || '').trim();
+  const normalized = normalizeLookupCode(search);
+  const pageClause = pagination ? ` LIMIT ${pagination.limit} OFFSET ${pagination.offset}` : '';
+  return {
+    values: [normalized, `%${search}%`],
+    sql: `SELECT u.id AS external_user_id, u.rtales_lookup_code, u.display_name, u.email,
+        u.space_code, u.installation_id,
+        COUNT(r.id) AS tickets_submitted,
+        SUM(CASE WHEN r.status = 'REWARDED' THEN 1 ELSE 0 END) AS tickets_validated,
+        SUM(CASE WHEN r.status <> 'REWARDED' THEN 1 ELSE 0 END) AS tickets_unvalidated,
+        COALESCE((SELECT SUM(o.score) FROM user_offenses o
+          WHERE o.external_user_id = u.id AND o.active = TRUE), 0) AS strike_points,
+        COALESCE(SUM(CASE WHEN r.status = 'REWARDED' THEN r.total_cents ELSE 0 END), 0) AS authorized_total_cents,
+        MAX(r.created_at) AS last_submission_at
+      FROM receipts r JOIN player_sessions s ON s.id = r.session_id
+      JOIN external_users u ON u.id = COALESCE(r.external_user_id, s.external_user_id)
+      WHERE ($1 = '' OR u.rtales_lookup_code_normalized = $1
+        OR u.display_name ILIKE $2 OR COALESCE(u.email, '') ILIKE $2)
+      GROUP BY u.id, u.rtales_lookup_code, u.rtales_lookup_code_normalized, u.display_name,
+        u.email, u.space_code, u.installation_id
+      ORDER BY CASE WHEN u.rtales_lookup_code_normalized = $1 THEN 0 ELSE 1 END,
+        last_submission_at DESC, u.id DESC${pageClause}`,
+  };
+}
+
+function ticketUserView(row: TicketUserSummaryRow) {
+  return {
+    lookupCode: row.rtales_lookup_code,
+    displayName: row.display_name,
+    email: row.email,
+    spaceCode: row.space_code,
+    installationId: row.installation_id,
+    ticketsSubmitted: Number(row.tickets_submitted),
+    ticketsValidated: Number(row.tickets_validated),
+    ticketsUnvalidated: Number(row.tickets_unvalidated),
+    strikePoints: Number(row.strike_points),
+    authorizedTotalCents: Number(row.authorized_total_cents),
+    lastSubmissionAt: row.last_submission_at,
+  };
+}
+
+async function handleAdminTicketUsers(request: Request, env: Env): Promise<Response> {
+  const manager = managerIdentity(request, env);
+  if (!manager) return error('Acceso de gestor requerido', 401);
+  const url = new URL(request.url);
+  const requestedPage = Math.max(1, Number.parseInt(url.searchParams.get('page') || '1', 10) || 1);
+  const pageSize = 50;
+  const baseQuery = ticketUserSummaryQuery(url);
+  const total = await withDatabase(env, async (client) => {
+    const result = await client.query<{ total: number }>(
+      `SELECT COUNT(*) AS total FROM (${baseQuery.sql}) ticket_users`, baseQuery.values,
+    );
+    return Number(result.rows[0]?.total || 0);
+  });
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(requestedPage, totalPages);
+  const query = ticketUserSummaryQuery(url, { limit: pageSize, offset: (page - 1) * pageSize });
+  const users = await withDatabase(env, async (client) => {
+    const result = await client.query<TicketUserSummaryRow>(query.sql, query.values);
+    return result.rows;
+  });
+  return json({
+    success: true,
+    users: users.map(ticketUserView),
+    pagination: {
+      page, pageSize, total, totalPages,
+      hasPrevious: page > 1, hasNext: page < totalPages,
+    },
+  });
+}
+
+async function handleAdminTicketUsersCsv(request: Request, env: Env): Promise<Response> {
+  const manager = managerIdentity(request, env);
+  if (!manager) return error('Acceso de gestor requerido', 401);
+  const query = ticketUserSummaryQuery(new URL(request.url));
+  const users = await withDatabase(env, async (client) => {
+    const result = await client.query<TicketUserSummaryRow>(query.sql, query.values);
+    return result.rows;
+  });
+  const header = ['ID usuario', 'Nombre', 'Correo', 'Espacio', 'Instalación', 'Tickets subidos',
+    'Tickets validados', 'Tickets sin validar', 'Strikes', 'Compras autorizadas EUR', 'Última subida'];
+  const lines = users.map((user) => [
+    user.rtales_lookup_code, user.display_name, user.email || '', user.space_code, user.installation_id,
+    user.tickets_submitted, user.tickets_validated, user.tickets_unvalidated, user.strike_points,
+    (Number(user.authorized_total_cents) / 100).toFixed(2), user.last_submission_at,
+  ].map(csvCell).join(','));
+  return new Response(`\uFEFF${header.map(csvCell).join(',')}\n${lines.join('\n')}`, {
+    headers: {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="usuarios-tickets-${new Date().toISOString().slice(0, 10)}.csv"`,
+      'Cache-Control': 'no-store',
+    },
+  });
+}
+
 async function handleAdminImage(request: Request, env: Env, receiptId: string): Promise<Response> {
   if (!managerIdentity(request, env)) return error('Acceso de gestor requerido', 401);
   const receipt = await withDatabase(env, async (client) => {
@@ -1654,6 +1884,10 @@ async function handleAdminReview(
         [receipt.user_ref, fingerprint, receiptId, [...ACTIVE_DUPLICATE_STATUSES]],
       );
       if (duplicate.rowCount) return error('Este ticket ya había sido utilizado', 409);
+      const appSettings = await loadAppSettings(client);
+      if (await dailyStoreLimitReached(
+        client, receipt.external_user_id, store.id, appSettings, receiptId,
+      )) return error('El usuario ya alcanzó el límite diario para este establecimiento', 409, 'DAILY_STORE_LIMIT');
       const tiers = await client.query<{ id: string; minimum_cents: number; points: number; active: boolean }>(
         'SELECT id, minimum_cents, points, active FROM reward_tiers WHERE active = TRUE',
       );
@@ -2514,6 +2748,8 @@ function appSettingView(definition: typeof APP_SETTING_DEFINITIONS[number], valu
     format: definition.format,
     value,
     maxLength: definition.maxLength,
+    minimum: definition.minimum,
+    maximum: definition.maximum,
   };
 }
 
@@ -2708,7 +2944,8 @@ async function handleAdminBans(request: Request, env: Env): Promise<Response> {
   if (!manager) return error('Acceso de gestor requerido', 401);
   const query = String(new URL(request.url).searchParams.get('q') || '').trim();
   const normalized = normalizeLookupCode(query);
-  const bans = await withDatabase(env, async (client) => {
+  const { bans, configuredThreshold } = await withDatabase(env, async (client) => {
+    const settings = await loadAppSettings(client);
     const result = await client.query<UserBanRow & {
       rtales_lookup_code: string; display_name: string; email: string | null;
       space_code: string; installation_id: string; offense_count: number;
@@ -2721,11 +2958,12 @@ async function handleAdminBans(request: Request, env: Env): Promise<Response> {
        ORDER BY b.banned_at DESC, b.updated_at DESC`,
       [normalized, `%${query}%`],
     );
-    return result.rows;
+    return { bans: result.rows, configuredThreshold: numericAppSetting(settings, 'limits.banScoreThreshold') };
   });
   return json({ success: true, manager, bans: bans.map((ban) => ({
     id: ban.id, externalUserId: ban.external_user_id, status: ban.status,
     offenseScore: Number(ban.offense_score), offenseCount: Number(ban.offense_count),
+    banThreshold: Number(ban.ban_threshold ?? configuredThreshold),
     reason: ban.reason, bannedAt: ban.banned_at, bannedBy: ban.banned_by,
     lookupCode: ban.rtales_lookup_code, displayName: ban.display_name, email: ban.email,
     spaceCode: ban.space_code, installationId: ban.installation_id,
@@ -2809,6 +3047,36 @@ async function handleAdminValidationPeriod(request: Request, env: Env): Promise<
   return json({ success: true, startAt, endAt });
 }
 
+async function handleAdminParticipationLimits(request: Request, env: Env): Promise<Response> {
+  const manager = managerIdentity(request, env);
+  if (!manager) return error('Acceso de gestor requerido', 401);
+  const body = await readJson(request);
+  const updates = [
+    ['limits.dailyTicketsPerUserStore', normalizeAppSettingValue('limits.dailyTicketsPerUserStore', body.dailyTicketsPerUserStore)],
+    ['limits.totalUploadsPerUser', normalizeAppSettingValue('limits.totalUploadsPerUser', body.totalUploadsPerUser)],
+    ['limits.banScoreThreshold', normalizeAppSettingValue('limits.banScoreThreshold', body.banScoreThreshold)],
+  ] as const;
+  await withDatabase(env, (client) => inTransaction(client, async () => {
+    for (const [key, value] of updates) {
+      const definition = settingDefinition(key);
+      const current = await client.query<Pick<AppSettingRow, 'value'>>(
+        'SELECT value FROM app_settings WHERE key = $1 LIMIT 1', [key],
+      );
+      await client.query(
+        `INSERT INTO app_settings (key, value, updated_at, updated_by) VALUES ($1, $2, NOW(), $3)
+         ON CONFLICT(key) DO UPDATE SET value = $2, updated_at = NOW(), updated_by = $3`,
+        [key, value, manager],
+      );
+      await client.query(
+        `INSERT INTO app_setting_audit_log (id, setting_key, manager_email, previous_value, new_value)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [uuid(), key, manager, current.rows[0]?.value ?? definition.defaultValue, value],
+      );
+    }
+  }));
+  return json({ success: true, limits: Object.fromEntries(updates) });
+}
+
 async function handleFetch(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   try {
@@ -2842,6 +3110,8 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'POST' && confirmMatch?.[1]) return await handleConfirm(request, env, confirmMatch[1]);
     if (request.method === 'GET' && url.pathname === '/api/admin/receipts') return await handleAdminList(request, env);
     if (request.method === 'GET' && url.pathname === '/api/admin/receipts.csv') return await handleAdminCsv(request, env);
+    if (request.method === 'GET' && url.pathname === '/api/admin/ticket-users.csv') return await handleAdminTicketUsersCsv(request, env);
+    if (request.method === 'GET' && url.pathname === '/api/admin/ticket-users') return await handleAdminTicketUsers(request, env);
     const adminReceiptMatch = url.pathname.match(/^\/api\/admin\/receipts\/([^/]+)$/);
     if (request.method === 'GET' && adminReceiptMatch?.[1]) return await handleAdminReceipt(request, env, adminReceiptMatch[1]);
     if (request.method === 'DELETE' && adminReceiptMatch?.[1]) return await handleAdminReceiptDelete(request, env, adminReceiptMatch[1]);
@@ -2905,6 +3175,9 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     }
     if (request.method === 'PATCH' && url.pathname === '/api/admin/settings/validation-period') {
       return await handleAdminValidationPeriod(request, env);
+    }
+    if (request.method === 'PATCH' && url.pathname === '/api/admin/settings/participation-limits') {
+      return await handleAdminParticipationLimits(request, env);
     }
     if (url.pathname === '/api/admin/users' && ['GET', 'POST'].includes(request.method)) {
       return await handleAdminUsers(request, env);
@@ -2976,6 +3249,7 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       APP_SETTING_TOO_LONG: 'El texto supera la longitud permitida',
       APP_SETTING_DATETIME_INVALID: 'La fecha y hora no tienen un formato válido',
       APP_SETTING_PERIOD_INVALID: 'La fecha de inicio debe ser anterior a la fecha de fin',
+      APP_SETTING_INTEGER_INVALID: 'El límite debe ser un número entero dentro del rango permitido',
       ADMIN_EMAIL_INVALID: 'Introduce un correo electrónico válido',
       SUPERADMIN_DELETE_FORBIDDEN: 'El superadministrador actual no se puede eliminar',
     };

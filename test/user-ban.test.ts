@@ -12,3 +12,8 @@ test('six non-ticket images trigger a user ban', () => {
 test('three confirmed frauds carry the same ban score', () => {
   assert.equal(userOffenseScore('CONFIRMED_FRAUD') * 3, USER_BAN_SCORE_THRESHOLD);
 });
+
+test('the configurable threshold preserves points and zero disables automatic bans', () => {
+  assert.equal(shouldBanUser(4, 4), true);
+  assert.equal(shouldBanUser(100, 0), false);
+});

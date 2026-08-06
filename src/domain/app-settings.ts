@@ -1,4 +1,4 @@
-export type AppSettingFormat = 'plain' | 'rich' | 'datetime';
+export type AppSettingFormat = 'plain' | 'rich' | 'datetime' | 'integer';
 
 export type AppSettingDefinition = {
   key: string;
@@ -8,6 +8,8 @@ export type AppSettingDefinition = {
   format: AppSettingFormat;
   defaultValue: string;
   maxLength: number;
+  minimum?: number;
+  maximum?: number;
 };
 
 export const APP_SETTING_DEFINITIONS: readonly AppSettingDefinition[] = [
@@ -28,6 +30,39 @@ export const APP_SETTING_DEFINITIONS: readonly AppSettingDefinition[] = [
     format: 'datetime',
     defaultValue: '',
     maxLength: 16,
+  },
+  {
+    key: 'limits.dailyTicketsPerUserStore',
+    group: 'Límites de participación',
+    label: 'Tickets diarios por usuario y establecimiento',
+    help: 'Máximo de tickets válidos por día para un usuario en un mismo establecimiento. Usa 0 para desactivarlo.',
+    format: 'integer',
+    defaultValue: '3',
+    maxLength: 5,
+    minimum: 0,
+    maximum: 100,
+  },
+  {
+    key: 'limits.totalUploadsPerUser',
+    group: 'Límites de participación',
+    label: 'Subidas totales por usuario durante la campaña',
+    help: 'Máximo de imágenes registradas durante el periodo de campaña actual. Usa 0 para desactivarlo.',
+    format: 'integer',
+    defaultValue: '30',
+    maxLength: 5,
+    minimum: 0,
+    maximum: 10_000,
+  },
+  {
+    key: 'limits.banScoreThreshold',
+    group: 'Límites de participación',
+    label: 'Puntos de infracción para banear',
+    help: 'El usuario será baneado al alcanzar esta puntuación. Usa 0 para desactivar nuevos baneos automáticos.',
+    format: 'integer',
+    defaultValue: '6',
+    maxLength: 3,
+    minimum: 0,
+    maximum: 100,
   },
   {
     key: 'home.eyebrow',
@@ -113,6 +148,14 @@ export function normalizeAppSettingValue(key: string, value: unknown): string {
   if (typeof value !== 'string') throw new Error('APP_SETTING_VALUE_INVALID');
   const normalized = value.replace(/\r\n?/g, '\n');
   if (normalized.length > definition.maxLength) throw new Error('APP_SETTING_TOO_LONG');
+  if (definition.format === 'integer') {
+    if (!/^\d+$/.test(normalized)) throw new Error('APP_SETTING_INTEGER_INVALID');
+    const number = Number(normalized);
+    if (!Number.isSafeInteger(number) || number < (definition.minimum ?? 0) || number > (definition.maximum ?? Number.MAX_SAFE_INTEGER)) {
+      throw new Error('APP_SETTING_INTEGER_INVALID');
+    }
+    return String(number);
+  }
   if (definition.format === 'datetime' && normalized) {
     const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(normalized);
     if (!match) throw new Error('APP_SETTING_DATETIME_INVALID');
@@ -129,6 +172,12 @@ export function normalizeAppSettingValue(key: string, value: unknown): string {
     ) throw new Error('APP_SETTING_DATETIME_INVALID');
   }
   return definition.format === 'plain' ? normalized.trim() : normalized;
+}
+
+export function numericAppSetting(settings: Record<string, string>, key: string): number {
+  const definition = settingDefinition(key);
+  const value = Number(settings[key] ?? definition.defaultValue);
+  return Number.isSafeInteger(value) ? value : Number(definition.defaultValue);
 }
 
 export function validateAppSettingPeriod(settings: Record<string, string>): void {
