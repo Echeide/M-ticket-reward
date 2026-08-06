@@ -1,5 +1,6 @@
 import type { OcrReceipt } from '../domain/receipt';
 import type { StoreIdentity } from '../domain/store';
+import { prepareOcrRegions } from '../platform/image';
 import type { Env } from '../types';
 import { createOcrProvider } from './ocr-provider';
 
@@ -28,6 +29,8 @@ function parseJsonObject(value: string): Record<string, unknown> {
 export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
   const confidence = Number(value.confidence);
   const total = Number(value.totalCents);
+  const totalText = String(value.totalText || '').trim().slice(0, 300);
+  const normalizedTotal = Number.isInteger(total) && total > 0 ? total : centsFromEvidence(totalText);
   const rawCurrency = String(value.currency || 'EUR').trim().toUpperCase();
   const currency = ['€', 'EURO', 'EUROS'].includes(rawCurrency) || !/^[A-Z]{3}$/.test(rawCurrency)
     ? 'EUR'
@@ -43,13 +46,13 @@ export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
     purchaseDateTime: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(purchaseDateTime)
       ? purchaseDateTime
       : undefined,
-    totalCents: Number.isInteger(total) && total > 0 ? total : undefined,
+    totalCents: normalizedTotal && normalizedTotal > 0 ? normalizedTotal : undefined,
     currency,
     rawText: String(value.rawText || '').slice(0, 8_000),
     evidence: {
       ticketNumberText: String(value.ticketNumberText || '').trim().slice(0, 300),
       purchaseDateText: String(value.purchaseDateText || '').trim().slice(0, 300),
-      totalText: String(value.totalText || '').trim().slice(0, 300),
+      totalText,
     },
   };
 }
@@ -140,6 +143,47 @@ Usa exclusivamente la fecha impresa. El total es el importe final pagado, no sub
 Expresa el importe en céntimos y transcribe en rawText las líneas relevantes de cabecera, documento, fecha y total.`;
 }
 
+function regionPrompt(storeReference: string, region: 'header' | 'totals'): string {
+  const focus = region === 'header'
+    ? `Esta imagen muestra la CABECERA y primera parte del ticket. Localiza el comercio, la línea de
+DOCUMENTO/TICKET/FACTURA y la FECHA/HORA. No confundas dirección, centro, caja, vendedor u operación
+con el número del ticket.`
+    : `Esta imagen muestra la parte INFERIOR del ticket. Localiza el TOTAL COMPRA o importe final
+pagado. No uses subtotales, ahorro, cambio, efectivo entregado ni importes de líneas de producto.`;
+  return `${focus}
+
+Devuelve exclusivamente JSON válido con: isReceipt, confidence, storeName, headerText,
+ticketNumber, ticketNumberText, purchaseDate (YYYY-MM-DD), purchaseDateTime, purchaseDateText,
+totalCents (entero), totalText, currency y rawText.
+
+Los campos *Text deben ser transcripciones literales de la imagen. Deja vacíos los valores que no
+aparezcan en este recorte; no deduzcas ni inventes caracteres. Comercios autorizados: ${storeReference}.`;
+}
+
+function mergeRegionResults(
+  initial: OcrReceipt,
+  header: OcrReceipt,
+  totals: OcrReceipt,
+): OcrReceipt {
+  return {
+    isReceipt: initial.isReceipt || header.isReceipt || totals.isReceipt,
+    confidence: Math.min(initial.confidence, header.confidence, totals.confidence),
+    storeName: header.storeName || initial.storeName || '',
+    headerText: header.headerText || initial.headerText || '',
+    ticketNumber: header.ticketNumber || initial.ticketNumber || '',
+    purchaseDate: header.purchaseDate || initial.purchaseDate || '',
+    purchaseDateTime: header.purchaseDateTime || initial.purchaseDateTime,
+    totalCents: totals.totalCents || initial.totalCents,
+    currency: totals.currency || initial.currency || 'EUR',
+    rawText: [header.rawText, totals.rawText, initial.rawText].filter(Boolean).join('\n').slice(0, 8_000),
+    evidence: {
+      ticketNumberText: header.evidence?.ticketNumberText || initial.evidence?.ticketNumberText || '',
+      purchaseDateText: header.evidence?.purchaseDateText || initial.evidence?.purchaseDateText || '',
+      totalText: totals.evidence?.totalText || initial.evidence?.totalText || '',
+    },
+  };
+}
+
 export async function readReceipt(
   env: Env,
   bytes: ArrayBuffer,
@@ -168,6 +212,7 @@ export async function readReceipt(
 
   const provider = createOcrProvider(env);
   const storeReference = authorizedStoreReference(authorizedStores);
+  const startedAt = Date.now();
   let response = await provider.extract({
     bytes, contentType, prompt: extractionPrompt(storeReference, false),
   });
@@ -177,13 +222,23 @@ export async function readReceipt(
   let durationMs = response.durationMs;
 
   if (receipt.confidence < 0.75 || !receipt.isReceipt || issues.length > 0) {
-    response = await provider.extract({
-      bytes, contentType, prompt: extractionPrompt(storeReference, true),
-    });
-    receipt = normalizeOcr(parseJsonObject(response.text));
+    const regions = await prepareOcrRegions(env, bytes);
+    const [headerResponse, totalsResponse] = await Promise.all([
+      provider.extract({
+        bytes: regions.header, contentType: 'image/webp', prompt: regionPrompt(storeReference, 'header'),
+      }),
+      provider.extract({
+        bytes: regions.totals, contentType: 'image/webp', prompt: regionPrompt(storeReference, 'totals'),
+      }),
+    ]);
+    receipt = mergeRegionResults(
+      receipt,
+      normalizeOcr(parseJsonObject(headerResponse.text)),
+      normalizeOcr(parseJsonObject(totalsResponse.text)),
+    );
     issues = verifyOcr(receipt);
-    attemptCount = 2;
-    durationMs += response.durationMs;
+    attemptCount = 3;
+    durationMs = Date.now() - startedAt;
   }
 
   return {

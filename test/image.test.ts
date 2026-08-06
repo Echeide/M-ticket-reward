@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { optimizeStoreLogo } from '../src/platform/image';
+import { optimizeStoreLogo, prepareOcrRegions } from '../src/platform/image';
 import type { Env } from '../src/types';
 
 test('store logos are converted to WebP at a maximum width of 800 pixels', async () => {
@@ -33,4 +33,32 @@ test('store logos are converted to WebP at a maximum width of 800 pixels', async
   assert.equal(result.height, 200);
   assert.equal(result.contentType, 'image/webp');
   assert.equal(result.bytes.byteLength, 3);
+});
+
+test('OCR fallback crops header and totals without rescaling the ticket width', async () => {
+  const transforms: unknown[] = [];
+  const transformer = {
+    transform(options: unknown) {
+      transforms.push(options);
+      return transformer;
+    },
+    output() {
+      return { response: () => new Response(new Uint8Array([1, 2, 3])) };
+    },
+  };
+  const env = {
+    IMAGES: {
+      info: async () => ({ width: 1200, height: 1600, format: 'image/webp' }),
+      input: () => transformer,
+    },
+  } as unknown as Env;
+
+  const regions = await prepareOcrRegions(env, new Uint8Array([4, 5, 6]).buffer);
+
+  assert.deepEqual(transforms, [
+    { width: 1200, height: 1088, fit: 'cover', gravity: 'top', sharpen: 1 },
+    { width: 1200, height: 1088, fit: 'cover', gravity: 'bottom', sharpen: 1 },
+  ]);
+  assert.equal(regions.header.byteLength, 3);
+  assert.equal(regions.totals.byteLength, 3);
 });

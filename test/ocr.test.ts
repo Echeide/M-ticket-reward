@@ -67,7 +67,7 @@ test('OCR provider reads nested and streamed Workers AI responses', async () => 
   assert.equal(await providerResponseText(stream), '{"ok":true}');
 });
 
-test('OCR retries an incomplete reading and returns verified second result', async () => {
+test('OCR retries an incomplete reading with focused regions', async () => {
   const requests: Record<string, unknown>[] = [];
   const answers = [
     {
@@ -79,7 +79,8 @@ test('OCR retries an incomplete reading and returns verified second result', asy
       currency: 'EUR',
       rawText: 'TOTAL COMPRA 15,99',
     },
-    validExtraction,
+    { ...validExtraction, totalCents: '', totalText: '' },
+    { ...validExtraction, ticketNumber: '', ticketNumberText: '', purchaseDate: '', purchaseDateText: '' },
   ];
   const env = {
     OCR_MODE: 'workers-ai',
@@ -92,6 +93,16 @@ test('OCR retries an incomplete reading and returns verified second result', asy
         return { answer: JSON.stringify(answers[requests.length - 1]) };
       },
     },
+    IMAGES: {
+      info: async () => ({ width: 1200, height: 1600, format: 'image/webp' }),
+      input: () => {
+        const transformer = {
+          transform: () => transformer,
+          output: () => ({ response: () => new Response(new Uint8Array([4, 5, 6])) }),
+        };
+        return transformer;
+      },
+    },
   } as unknown as Env;
 
   const result = await readReceipt(
@@ -101,12 +112,13 @@ test('OCR retries an incomplete reading and returns verified second result', asy
     [{ name: 'Hiperdino', aliases: ['Dinosol'] }],
   );
 
-  assert.equal(result.attemptCount, 2);
+  assert.equal(result.attemptCount, 3);
   assert.equal(result.provider, 'workers-ai');
   assert.equal(result.receipt.purchaseDate, '2026-08-06');
   assert.equal(result.receipt.totalCents, 1592);
   assert.deepEqual(result.verificationIssues, []);
   assert.equal(requests[0]!.task, 'query');
   assert.match(String(requests[0]!.image), /^data:image\/webp;base64,/);
-  assert.match(String(requests[1]!.question), /segunda comprobación/i);
+  assert.match(String(requests[1]!.question), /CABECERA/i);
+  assert.match(String(requests[2]!.question), /parte INFERIOR/i);
 });

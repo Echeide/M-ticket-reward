@@ -106,3 +106,21 @@ export async function prepareOcrImage(env: Env, image: ArrayBuffer): Promise<Arr
     .output({ format: 'image/webp', quality: 70 });
   return result.response().arrayBuffer();
 }
+
+export async function prepareOcrRegions(
+  env: Env,
+  image: ArrayBuffer,
+): Promise<{ header: ArrayBuffer; totals: ArrayBuffer }> {
+  const info = await env.IMAGES.info(new Blob([image]).stream());
+  if (!('width' in info) || info.format === 'image/svg+xml') throw new Error('IMAGE_INVALID');
+  const regionHeight = Math.max(1, Math.round(info.height * 0.68));
+  const crop = async (gravity: 'top' | 'bottom') => {
+    const result = await env.IMAGES
+      .input(new Blob([image]).stream())
+      .transform({ width: info.width, height: regionHeight, fit: 'cover', gravity, sharpen: 1 })
+      .output({ format: 'image/webp', quality: 82 });
+    return result.response().arrayBuffer();
+  };
+  const [header, totals] = await Promise.all([crop('top'), crop('bottom')]);
+  return { header, totals };
+}
