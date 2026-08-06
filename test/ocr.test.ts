@@ -47,6 +47,20 @@ test('OCR verification accepts a printed time as identity when the receipt has n
   assert.deepEqual(verifyOcr(receipt), []);
 });
 
+test('OCR normalization combines Llama time-only output with the verified purchase date', () => {
+  const receipt = normalizeOcr({
+    ...validExtraction,
+    ticketNumber: '',
+    ticketNumberText: '',
+    purchaseDate: '06/08/2026',
+    purchaseDateTime: '09:01',
+    purchaseDateText: 'Fecha 06/08/2026 Hora 09:01',
+  });
+  assert.equal(receipt.purchaseDate, '2026-08-06');
+  assert.equal(receipt.purchaseDateTime, '2026-08-06T09:01');
+  assert.deepEqual(verifyOcr(receipt), []);
+});
+
 test('OCR verification rejects a receipt with neither printed number nor matching time', () => {
   const receipt = normalizeOcr({
     ...validExtraction,

@@ -45,6 +45,11 @@ export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
     ? 'EUR'
     : rawCurrency;
   const purchaseDateTime = String(value.purchaseDateTime || '').trim();
+  const normalizedDateTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(purchaseDateTime)
+    ? purchaseDateTime
+    : /^\d{2}:\d{2}$/.test(purchaseDateTime) && /^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)
+      ? `${normalizedDate}T${purchaseDateTime}`
+      : undefined;
   return {
     isReceipt: value.isReceipt === true,
     confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
@@ -52,9 +57,7 @@ export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
     headerText: String(value.headerText || '').trim().slice(0, 2_000),
     ticketNumber: evidencedTicketNumber || String(value.ticketNumber || '').trim(),
     purchaseDate: normalizedDate,
-    purchaseDateTime: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(purchaseDateTime)
-      ? purchaseDateTime
-      : undefined,
+    purchaseDateTime: normalizedDateTime,
     totalCents: normalizedTotal && normalizedTotal > 0 ? normalizedTotal : undefined,
     currency,
     rawText: String(value.rawText || '').slice(0, 8_000),
