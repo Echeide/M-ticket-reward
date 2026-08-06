@@ -46,19 +46,60 @@ async function withTimeout<T>(operation: Promise<T>, milliseconds: number): Prom
   }
 }
 
-function responseText(payload: Record<string, unknown>): string {
-  const direct = payload.answer ?? payload.description ?? payload.response ?? payload.result;
-  if (typeof direct === 'string') return direct;
-  const choices = Array.isArray(payload.choices) ? payload.choices : [];
+async function textFromEventStream(value: string): Promise<string | null> {
+  const dataLines = value.split(/\r?\n/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trim())
+    .filter((line) => line && line !== '[DONE]');
+  if (!dataLines.length) return value.trim() || null;
+  const chunks: string[] = [];
+  for (const line of dataLines) {
+    try {
+      const text = await extractResponseText(JSON.parse(line));
+      if (text) chunks.push(text);
+    } catch {
+      chunks.push(line);
+    }
+  }
+  return chunks.join('') || null;
+}
+
+async function extractResponseText(payload: unknown): Promise<string | null> {
+  if (typeof payload === 'string') return textFromEventStream(payload);
+  if (payload instanceof Response) {
+    const contentType = payload.headers.get('content-type') || '';
+    if (contentType.includes('json')) return extractResponseText(await payload.json());
+    return textFromEventStream(await payload.text());
+  }
+  if (payload instanceof ReadableStream) {
+    return textFromEventStream(await new Response(payload).text());
+  }
+  if (Array.isArray(payload)) {
+    const parts = await Promise.all(payload.map(extractResponseText));
+    return parts.filter(Boolean).join('') || null;
+  }
+  if (!payload || typeof payload !== 'object') return null;
+
+  const record = payload as Record<string, unknown>;
+  const choices = Array.isArray(record.choices) ? record.choices : [];
   const choice = choices[0] as Record<string, unknown> | undefined;
   const message = choice?.message as Record<string, unknown> | undefined;
-  if (typeof message?.content === 'string') return message.content;
-  if (Array.isArray(message?.content)) {
-    return message.content
-      .map((part) => (part && typeof part === 'object' ? String((part as Record<string, unknown>).text || '') : ''))
-      .join('');
+  if (message?.content !== undefined) {
+    const text = await extractResponseText(message.content);
+    if (text) return text;
   }
-  throw new Error('OCR_PROVIDER_EMPTY_RESPONSE');
+  for (const key of ['answer', 'description', 'response', 'result', 'output', 'data']) {
+    if (record[key] === undefined || record[key] === null) continue;
+    const text = await extractResponseText(record[key]);
+    if (text) return text;
+  }
+  return null;
+}
+
+export async function providerResponseText(payload: unknown): Promise<string> {
+  const text = await extractResponseText(payload);
+  if (!text) throw new Error('OCR_PROVIDER_EMPTY_RESPONSE');
+  return text;
 }
 
 class WorkersAiOcrProvider implements OcrProvider {
@@ -79,7 +120,7 @@ class WorkersAiOcrProvider implements OcrProvider {
       timeoutMs(this.env),
     );
     return {
-      text: responseText(result),
+      text: await providerResponseText(result),
       provider: 'workers-ai',
       model: this.env.OCR_MODEL,
       durationMs: Date.now() - startedAt,
@@ -123,7 +164,7 @@ class OpenAiCompatibleOcrProvider implements OcrProvider {
       if (!response.ok) throw new Error(`OCR_PROVIDER_HTTP_${response.status}`);
       const payload = await response.json() as Record<string, unknown>;
       return {
-        text: responseText(payload),
+        text: await providerResponseText(payload),
         provider: 'openai-compatible',
         model: this.env.OCR_MODEL,
         durationMs: Date.now() - startedAt,

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { normalizeOcr, readReceipt, verifyOcr } from '../src/integrations/ocr';
+import { providerResponseText } from '../src/integrations/ocr-provider';
 import type { Env } from '../src/types';
 
 const validExtraction = {
@@ -50,6 +51,20 @@ test('OCR verification rejects unsupported critical fields', () => {
     'UNVERIFIED_DATE',
     'MISSING_TOTAL',
   ]);
+});
+
+test('OCR provider reads nested and streamed Workers AI responses', async () => {
+  const nested = await providerResponseText({ response: { answer: '{"ok":true}' } });
+  assert.equal(nested, '{"ok":true}');
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: {"answer":"{\\"ok\\":"}\n\n'));
+      controller.enqueue(new TextEncoder().encode('data: {"answer":"true}"}\n\ndata: [DONE]\n\n'));
+      controller.close();
+    },
+  });
+  assert.equal(await providerResponseText(stream), '{"ok":true}');
 });
 
 test('OCR retries an incomplete reading and returns verified second result', async () => {
