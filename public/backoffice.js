@@ -818,6 +818,12 @@ async function select(id, suppliedReceipt = null) {
   panel.className = 'review-panel';
   panel.innerHTML = `
     <div class="ticket-image-wrap">
+      <button class="image-delete-button" id="delete-ticket" type="button"
+        aria-label="Eliminar ticket" title="Eliminar ticket">
+        <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="m19 6-1 14H6L5 6"></path><path d="M10 11v5M14 11v5"></path>
+        </svg>
+      </button>
       <button class="image-reprocess-button" id="reprocess-ticket" type="button"
         aria-label="Volver a comprobar el ticket" title="${reprocessable ? 'Volver a comprobar el ticket' : 'No disponible para tickets con puntos asignados o duplicados'}"
         ${reprocessable ? '' : 'disabled'}>
@@ -830,7 +836,7 @@ async function select(id, suppliedReceipt = null) {
     <div class="review-data">
       <p class="eyebrow">${escapeHtml(receipt.publicId)}</p>
       <h2>${escapeHtml(receipt.fields.storeName || 'Sin tienda')}</h2>
-      <dl><div><dt>Usuario</dt><dd>${escapeHtml(receipt.user.displayName || receipt.user.subject)}</dd></div><div class="lookup-code-field"><dt>Código de búsqueda</dt><dd>${escapeHtml(receipt.user.lookupCode || 'Histórico sin código')}</dd></div><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Espacio</dt><dd>${escapeHtml(receipt.user.spaceCode || '—')}</dd></div><div><dt>Número</dt><dd>${escapeHtml(receipt.fields.ticketNumber || '—')}</dd></div><div><dt>Fecha</dt><dd>${escapeHtml(receipt.fields.purchaseDate || '—')}</dd></div><div><dt>Importe</dt><dd>${formatMoney(receipt.fields.totalCents)}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Estado</dt><dd>${escapeHtml(receiptStatusLabel(receipt))}</dd></div><div><dt>Revisión</dt><dd>${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</dd></div><div><dt>OCR</dt><dd>${escapeHtml(receipt.ocrProcessing?.model || '—')}</dd></div><div><dt>Proceso OCR</dt><dd>${receipt.ocrProcessing?.durationMs == null ? '—' : `${receipt.ocrProcessing.durationMs} ms · ${receipt.ocrProcessing.attemptCount} intento(s)`}</dd></div></dl>
+      <dl><div><dt>Usuario</dt><dd>${escapeHtml(receipt.user.displayName || receipt.user.subject)}</dd></div><div class="lookup-code-field"><dt>Código de búsqueda</dt><dd>${escapeHtml(receipt.user.lookupCode || 'Histórico sin código')}</dd></div><div><dt>Número</dt><dd>${escapeHtml(receipt.fields.ticketNumber || '—')}</dd></div><div><dt>Fecha</dt><dd>${escapeHtml(receipt.fields.purchaseDate || '—')}</dd></div><div><dt>Importe</dt><dd>${formatMoney(receipt.fields.totalCents)}</dd></div><div><dt>Estado</dt><dd>${escapeHtml(receiptStatusLabel(receipt))}</dd></div></dl>
       ${reasons.length ? `<div class="review-reasons"><strong>Comprobación automática</strong><ul>${reasons.map((reason) => `<li>${escapeHtml(reasonLabels[reason] || reason)}</li>`).join('')}</ul></div>` : ''}
       ${canApproveManually ? `<div class="manual-correction"><strong>Corrección manual</strong><label>Comercio<select id="manual-store"><option value="">Selecciona un comercio</option>${activeStoreOptions}</select></label><label>Número de ticket<input id="manual-ticket-number" value="${escapeHtml(receipt.fields.ticketNumber)}" /></label><label>Fecha<input id="manual-purchase-date" type="date" value="${escapeHtml(receipt.fields.purchaseDate)}" /></label><label>Importe (€)<input id="manual-total" type="number" min="0.01" step="0.01" value="${(receipt.fields.totalCents / 100).toFixed(2)}" /></label></div>` : ''}
       <label>Nota de revisión<textarea id="review-reason" rows="3" placeholder="${canApproveManually ? 'Obligatoria para validar manualmente' : `Opcional al marcar como revisado${canRevoke ? '; obligatoria para retirar puntos' : ''}`}"></textarea></label>
@@ -843,6 +849,7 @@ async function select(id, suppliedReceipt = null) {
         ${canRevoke ? '<button class="danger-button" id="revoke">Fraude: retirar puntos</button>' : ''}
         ${canApproveManually ? '<button class="primary-button" id="manual-approve">Validar manualmente</button>' : ''}
       </div>
+      <dl class="ticket-secondary-data"><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Identidad Rtales</dt><dd>${escapeHtml(receipt.user.subject || '—')}</dd></div><div><dt>Espacio</dt><dd>${escapeHtml(receipt.user.spaceCode || '—')}</dd></div><div><dt>Instalación</dt><dd>${escapeHtml(receipt.user.installationId || '—')}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Revisión</dt><dd>${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</dd></div><div><dt>OCR</dt><dd>${escapeHtml([receipt.ocrProcessing?.provider, receipt.ocrProcessing?.model].filter(Boolean).join(' · ') || '—')}</dd></div><div><dt>Proceso OCR</dt><dd>${receipt.ocrProcessing?.durationMs == null ? '—' : `${receipt.ocrProcessing.durationMs} ms · ${receipt.ocrProcessing.attemptCount} intento(s)`}</dd></div><div><dt>Creado</dt><dd>${escapeHtml(new Date(receipt.createdAt).toLocaleString('es-ES'))}</dd></div></dl>
     </div>`;
   const image = await fetch(`/api/admin/receipts/${id}/image`, { headers: headers() });
   if (image.ok) {
@@ -854,7 +861,31 @@ async function select(id, suppliedReceipt = null) {
   document.querySelector('#reopen-review')?.addEventListener('click', () => review('REOPEN'));
   document.querySelector('#revoke')?.addEventListener('click', () => review('REVOKE'));
   document.querySelector('#manual-approve')?.addEventListener('click', () => review('MANUAL_APPROVE'));
+  document.querySelector('#delete-ticket')?.addEventListener('click', deleteSelected);
   if (reprocessable) document.querySelector('#reprocess-ticket').addEventListener('click', reprocessSelected);
+}
+
+async function deleteSelected() {
+  if (state.reviewing || !state.selected) return;
+  if (!confirm('Se eliminarán la imagen, el registro y su historial. Si tiene puntos concedidos, primero se anularán. ¿Continuar?')) return;
+  const receiptId = state.selected.id;
+  const button = document.querySelector('#delete-ticket');
+  button.disabled = true;
+  try {
+    const result = await request(`/api/admin/receipts/${receiptId}`, { method: 'DELETE' });
+    state.selected = null;
+    await load();
+    highlightSelectedRow();
+    const panel = document.querySelector('#review-panel');
+    panel.className = 'review-panel empty';
+    panel.innerHTML = '<p>Selecciona un ticket para revisarlo.</p>';
+    showNotice(result.pendingReversal
+      ? 'Se están anulando los puntos; el ticket se eliminará al terminar.'
+      : 'Ticket eliminado.');
+  } catch (error) {
+    button.disabled = false;
+    alert(error instanceof Error ? error.message : 'No se pudo eliminar el ticket');
+  }
 }
 
 async function reprocessSelected() {

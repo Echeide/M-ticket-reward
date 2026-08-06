@@ -113,6 +113,8 @@ type ReceiptRow = {
   created_at: string;
   rewarded_at: string | null;
   revoked_at: string | null;
+  deletion_requested_at: string | null;
+  deletion_requested_by: string | null;
 };
 
 type StoreRow = {
@@ -783,6 +785,33 @@ async function markOcrFailed(env: Env, receiptId: string): Promise<void> {
   });
 }
 
+async function purgeReceipt(env: Env, receiptId: string, managerEmail: string): Promise<boolean> {
+  const receipt = await withDatabase(env, async (client) => {
+    const result = await client.query<ReceiptRow>('SELECT * FROM receipts WHERE id = $1 LIMIT 1', [receiptId]);
+    return result.rows[0] || null;
+  });
+  if (!receipt) return false;
+  await env.TICKETS.delete(receipt.image_key);
+  await withDatabase(env, (client) => inTransaction(client, async () => {
+    await client.query(
+      `INSERT INTO receipt_deletion_audit (id, receipt_id, public_id, manager_email, snapshot)
+       VALUES ($1, $2, $3, $4, $5::jsonb) ON CONFLICT(receipt_id) DO NOTHING`,
+      [uuid(), receipt.id, receipt.public_id, managerEmail, JSON.stringify({
+        userRef: receipt.user_ref, lookupCode: receipt.rtales_lookup_code_snapshot,
+        status: receipt.status, storeId: receipt.store_id, storeName: receipt.store_name,
+        ticketNumber: receipt.ticket_number, purchaseDate: receipt.purchase_date,
+        totalCents: receipt.total_cents, pointsAwarded: receipt.points_awarded,
+        resultId: receipt.rtales_result_id, reversalId: receipt.rtales_reversal_id,
+        createdAt: receipt.created_at,
+      })],
+    );
+    await client.query('DELETE FROM receipt_reviews WHERE receipt_id = $1', [receiptId]);
+    await client.query('DELETE FROM reward_outbox WHERE receipt_id = $1', [receiptId]);
+    await client.query('DELETE FROM receipts WHERE id = $1', [receiptId]);
+  }));
+  return true;
+}
+
 async function processOutbox(env: Env, outboxId: string): Promise<void> {
   const claimed = await withDatabase(env, async (client) =>
     inTransaction(client, async () => {
@@ -876,6 +905,9 @@ async function processOutbox(env: Env, outboxId: string): Promise<void> {
       );
     }
   }));
+  if (outbox.operation === 'REVOKE' && receipt.deletion_requested_at) {
+    await purgeReceipt(env, receipt.id, receipt.deletion_requested_by || 'SYSTEM');
+  }
 }
 
 function adminFilters(url: URL) {
@@ -1091,6 +1123,68 @@ async function handleAdminReprocess(request: Request, env: Env, receiptId: strin
     throw caught;
   }
   return json({ success: true, status: 'OCR_QUEUED' }, 202);
+}
+
+async function handleAdminReceiptDelete(request: Request, env: Env, receiptId: string): Promise<Response> {
+  const managerEmail = managerIdentity(request, env);
+  if (!managerEmail) return error('Acceso de gestor requerido', 401);
+  let outboxId = '';
+  const decision = await withDatabase(env, (client) => inTransaction(client, async () => {
+    const result = await client.query<ReceiptRow>('SELECT * FROM receipts WHERE id = $1 FOR UPDATE', [receiptId]);
+    const receipt = result.rows[0];
+    if (!receipt) return 'NOT_FOUND';
+
+    const activeGrant = await client.query<{ status: string }>(
+      `SELECT status FROM reward_outbox WHERE receipt_id = $1 AND operation = 'GRANT'
+       AND status IN ('PENDING', 'PROCESSING') LIMIT 1`, [receiptId],
+    );
+    if (activeGrant.rows[0]?.status === 'PROCESSING') return 'BUSY';
+    if (activeGrant.rows[0]?.status === 'PENDING') {
+      await client.query("DELETE FROM reward_outbox WHERE receipt_id = $1 AND operation = 'GRANT' AND status = 'PENDING'", [receiptId]);
+    }
+
+    if (receipt.rtales_result_id && receipt.status !== 'REVOKED') {
+      await client.query(
+        `UPDATE receipts SET status = 'REVOKE_PENDING', deletion_requested_at = NOW(),
+          deletion_requested_by = $2, updated_at = NOW() WHERE id = $1`,
+        [receiptId, managerEmail],
+      );
+      const existing = await client.query<{ id: string; status: string }>(
+        `SELECT id, status FROM reward_outbox WHERE receipt_id = $1 AND operation = 'REVOKE'
+         ORDER BY created_at DESC LIMIT 1`, [receiptId],
+      );
+      if (existing.rows[0]?.status === 'DELIVERED') return 'PURGE';
+      outboxId = existing.rows[0]?.id || uuid();
+      if (existing.rows[0]?.status === 'FAILED') {
+        await client.query(
+          `UPDATE reward_outbox SET status = 'PENDING', attempt_count = 0, last_error = NULL,
+             next_attempt_at = NOW(), locked_until = NULL, payload = $2::jsonb, updated_at = NOW()
+           WHERE id = $1`,
+          [outboxId, JSON.stringify({
+            reason: 'Ticket eliminado por un administrador', managerEmail, deleteAfterReversal: true,
+          })],
+        );
+      } else if (!existing.rows[0]) {
+        await client.query(
+          `INSERT INTO reward_outbox (id, receipt_id, operation, idempotency_key, payload)
+           VALUES ($1, $2, 'REVOKE', $3, $4::jsonb)`,
+          [outboxId, receiptId, reversalIdempotencyKey(receiptId), JSON.stringify({
+            reason: 'Ticket eliminado por un administrador', managerEmail, deleteAfterReversal: true,
+          })],
+        );
+      }
+      return 'REVOKE';
+    }
+    return 'PURGE';
+  }));
+  if (decision === 'NOT_FOUND') return error('Ticket no encontrado', 404);
+  if (decision === 'BUSY') return error('La concesión está procesándose; vuelve a intentarlo en unos segundos', 409);
+  if (decision === 'REVOKE') {
+    await env.JOBS.send({ kind: 'DELIVER_REWARD', outboxId });
+    return json({ success: true, pendingReversal: true }, 202);
+  }
+  await purgeReceipt(env, receiptId, managerEmail);
+  return json({ success: true, deleted: true });
 }
 
 async function handleAdminReview(
@@ -2129,6 +2223,7 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'GET' && url.pathname === '/api/admin/receipts.csv') return await handleAdminCsv(request, env);
     const adminReceiptMatch = url.pathname.match(/^\/api\/admin\/receipts\/([^/]+)$/);
     if (request.method === 'GET' && adminReceiptMatch?.[1]) return await handleAdminReceipt(request, env, adminReceiptMatch[1]);
+    if (request.method === 'DELETE' && adminReceiptMatch?.[1]) return await handleAdminReceiptDelete(request, env, adminReceiptMatch[1]);
     if (url.pathname === '/api/admin/stores' && ['GET', 'POST'].includes(request.method)) {
       return await handleAdminStores(request, env);
     }
