@@ -34,6 +34,10 @@
         <path d="m6 6 12 12" />
         <path d="M18 6 6 18" />
       </symbol>
+      <symbol id="icon-arrow-left" viewBox="0 0 24 24">
+        <path d="m15 18-6-6 6-6" />
+        <path d="M9 12h11" />
+      </symbol>
     </svg>
     <main class="public-shell">
       <section class="screen active" data-screen="connecting" aria-live="polite">
@@ -95,11 +99,16 @@
         <p class="eyebrow">Acceso suspendido</p>
         <h2>No puedes enviar más tickets</h2>
         <p id="user-banned-message">Tu acceso al envío de tickets está suspendido. Contacta con la organización si consideras que se trata de un error.</p>
-        <button class="secondary-button button-with-icon" data-action="open-history" type="button">
-          <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
-          Ver mis tickets
-        </button>
-        <button class="primary-button" data-action="close-game" type="button">Volver al sistema</button>
+        <div class="user-banned-actions">
+          <button class="secondary-button button-with-icon" data-action="open-history" type="button">
+            <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
+            Ver mis tickets
+          </button>
+          <button class="primary-button button-with-icon" data-action="close-game" type="button">
+            <svg class="button-icon" aria-hidden="true"><use href="#icon-arrow-left"></use></svg>
+            Volver al sistema
+          </button>
+        </div>
       </section>
 
       <section class="screen form-screen" data-screen="ocr-review">
