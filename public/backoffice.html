@@ -69,9 +69,19 @@
     </main>
     <main id="settings-view" class="settings-layout admin-view">
       <section class="stores-heading">
-        <div><p class="eyebrow">Configuración</p><h2>Ajustes</h2><p>Edita los textos de la aplicación desde un único selector. Aquí podremos incorporar más opciones en el futuro.</p></div>
+        <div><p class="eyebrow">Configuración</p><h2>Ajustes</h2><p>Gestiona el periodo de campaña, los textos públicos y los accesos al backoffice.</p></div>
+      </section>
+      <section class="settings-card settings-period-card">
+        <div class="settings-section-heading"><p class="eyebrow">Campaña</p><h3>Periodo de validación</h3><p>Horario de Canarias. Los límites pueden dejarse vacíos.</p></div>
+        <form id="validation-period-form" class="period-form">
+          <label>Fecha y hora de inicio<input id="validation-start-at" type="datetime-local" step="60" /></label>
+          <label>Fecha y hora de fin<input id="validation-end-at" type="datetime-local" step="60" /></label>
+          <p id="validation-period-error" class="form-error" role="alert"></p>
+          <div class="dialog-actions"><button class="primary-button" type="submit">Guardar periodo</button></div>
+        </form>
       </section>
       <section class="settings-card">
+        <div class="settings-section-heading"><p class="eyebrow">Contenido</p><h3>Textos de la aplicación</h3><p>Selecciona el elemento que quieres editar y comprueba su vista previa.</p></div>
         <form id="setting-form">
           <label>Texto a editar
             <select id="setting-select" name="key" aria-describedby="setting-help"></select>
@@ -84,10 +94,6 @@
             <textarea id="setting-rich-value" name="richValue" rows="8" maxlength="4000"></textarea>
             <small>Formato disponible: <code>**texto en negrita**</code> y <code>[texto del enlace](https://ejemplo.com)</code>.</small>
           </label>
-          <label id="setting-datetime-field" hidden>Fecha y hora
-            <input id="setting-datetime-value" name="datetimeValue" type="datetime-local" step="60" />
-            <small>Se aplicará usando el horario de Canarias. Déjalo vacío para no establecer este límite.</small>
-          </label>
           <div class="setting-preview">
             <span>Vista previa</span>
             <div id="setting-preview-content"></div>
@@ -95,6 +101,16 @@
           <p id="setting-form-error" class="form-error" role="alert"></p>
           <div class="dialog-actions"><button class="primary-button" type="submit">Guardar texto</button></div>
         </form>
+      </section>
+      <section class="settings-card admin-users-card">
+        <div class="settings-section-heading"><p class="eyebrow">Seguridad</p><h3>Usuarios del backoffice</h3><p>Cloudflare Access autentica el correo; aquí se determina quién está autorizado y su rol.</p></div>
+        <div id="access-sync-warning" class="access-sync-warning" hidden>La sincronización automática con la lista de Cloudflare Access no está configurada. Podrás copiar el enlace, pero el correo debe estar permitido también en Access.</div>
+        <form id="admin-user-form" class="admin-user-form">
+          <label>Correo del nuevo administrador<input id="admin-user-email" type="email" autocomplete="off" placeholder="persona@empresa.com" required /></label>
+          <button class="primary-button" type="submit">Añadir administrador</button>
+          <p id="admin-user-error" class="form-error" role="alert"></p>
+        </form>
+        <div id="admin-user-list" class="admin-user-list"></div>
       </section>
     </main>
 
@@ -181,6 +197,7 @@
         <div class="dialog-heading"><div><p class="eyebrow">Revisión antifraude</p><h2>Filtrar tickets</h2></div><button class="icon-button" id="close-filters-dialog" type="button" aria-label="Cerrar">×</button></div>
         <div class="filter-dialog-grid">
           <label class="filter-store">Comercio autorizado<select id="store-filter" name="store" form="filters"><option value="">Todos los comercios</option></select></label>
+          <label class="filter-store">Espacio o instalación<input name="space" form="filters" placeholder="GCX26" /></label>
           <label>Estado<select name="status" form="filters">
             <option value="">Todos los estados</option>
             <option value="OCR_QUEUED">En espera de lectura</option>

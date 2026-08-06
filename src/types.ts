@@ -24,4 +24,9 @@ export interface Env {
   ADMIN_ONLY?: string;
   DEV_ADMIN_TOKEN?: string;
   MAX_TICKET_BYTES: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  CLOUDFLARE_ACCESS_API_TOKEN?: string;
+  CLOUDFLARE_ACCESS_EMAIL_LIST_ID?: string;
+  CLOUDFLARE_ACCESS_EMAIL_LIST_NAME?: string;
+  ADMIN_BACKOFFICE_URL?: string;
 }

@@ -28,30 +28,36 @@
     <main class="public-shell">
       <section class="screen active" data-screen="connecting" aria-live="polite">
         <div class="spinner"></div>
-        <h2>Conectando con Rtales</h2>
+        <h2>Conectando con el sistema</h2>
         <p>Estamos preparando tu sesión de tickets.</p>
       </section>
 
-      <section class="screen" data-screen="welcome">
-        <p class="eyebrow" id="home-eyebrow">Premios por tus compras</p>
-        <h1 id="home-title">Escanea tus tickets y gana puntos</h1>
-        <section class="store-carousel" id="store-carousel" aria-label="Comercios asociados" hidden>
-          <p class="store-carousel-title" id="home-carousel-label">Disponible en comercios asociados</p>
-          <div class="store-carousel-viewport"><div class="store-carousel-track" id="store-carousel-track"></div></div>
-        </section>
-        <div class="lead formatted-copy" id="home-description">Escanea los tickets de compra en las tiendas asociadas y gana puntos para canjear en nuestro catálogo de regalos.</div>
-        <div class="welcome-actions">
-          <label class="primary-button capture-button button-with-icon">
-            <input id="ticket-input" data-ticket-input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" />
-            <svg class="button-icon" aria-hidden="true"><use href="#icon-camera"></use></svg>
-            <span id="home-scan-label">Escanear ticket</span>
-          </label>
-          <button class="secondary-button button-with-icon" data-action="open-history" type="button">
-            <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
-            <span id="home-history-label">Mis tickets</span>
-          </button>
+      <section class="screen welcome-screen" data-screen="welcome">
+        <header class="welcome-title-section">
+          <p class="eyebrow" id="home-eyebrow">Premios por tus compras</p>
+          <h1 id="home-title">Escanea tus tickets y gana puntos</h1>
+        </header>
+        <div class="welcome-content-section">
+          <section class="store-carousel" id="store-carousel" aria-label="Comercios asociados" hidden>
+            <p class="store-carousel-title" id="home-carousel-label">Disponible en comercios asociados</p>
+            <div class="store-carousel-viewport"><div class="store-carousel-track" id="store-carousel-track"></div></div>
+          </section>
+          <div class="lead formatted-copy" id="home-description">Escanea los tickets de compra en las tiendas asociadas y gana puntos para canjear en nuestro catálogo de regalos.</div>
         </div>
-        <div class="privacy-note formatted-copy" id="home-privacy-note">La imagen se almacena de forma privada y puede ser revisada para prevenir fraude.</div>
+        <footer class="welcome-action-section">
+          <div class="welcome-actions">
+            <label class="primary-button capture-button button-with-icon">
+              <input id="ticket-input" data-ticket-input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" />
+              <svg class="button-icon" aria-hidden="true"><use href="#icon-camera"></use></svg>
+              <span id="home-scan-label">Escanear ticket</span>
+            </label>
+            <button class="secondary-button button-with-icon" data-action="open-history" type="button">
+              <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
+              <span id="home-history-label">Mis tickets</span>
+            </button>
+          </div>
+          <div class="privacy-note formatted-copy" id="home-privacy-note">La imagen se almacena de forma privada y puede ser revisada para prevenir fraude.</div>
+        </footer>
       </section>
 
       <section class="screen" data-screen="processing" aria-live="polite">
@@ -173,10 +179,10 @@
 
       <section class="screen" data-screen="connection-error" role="alert">
         <div class="status-icon danger">!</div>
-        <h2 id="connection-error-title">No se pudo conectar con Rtales</h2>
+        <h2 id="connection-error-title">No se pudo conectar con el sistema</h2>
         <p id="connection-error-message">No hemos podido preparar tu sesión.</p>
         <button class="primary-button" data-action="retry-connection" hidden>Reintentar conexión</button>
-        <button class="primary-button" data-action="close-game">Volver a Rtales</button>
+        <button class="primary-button" data-action="close-game">Volver al sistema</button>
       </section>
     </main>
     <script type="module" src="/app.js"></script>

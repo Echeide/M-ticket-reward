@@ -21,6 +21,13 @@ import {
   type TrainingEvaluationMatches,
 } from './domain/training-sample';
 import { normalizeRewardTierInput } from './domain/reward-tier';
+import { normalizeAdminEmail, type AdminRole } from './domain/admin-user';
+import {
+  externalIdentityFromExchange,
+  normalizeLookupCode,
+  publicExternalPlayer,
+  upsertExternalUser,
+} from './domain/external-user';
 import {
   APP_SETTING_DEFINITIONS,
   appSettingsWithDefaults,
@@ -29,6 +36,7 @@ import {
   validateAppSettingPeriod,
 } from './domain/app-settings';
 import { readReceipt } from './integrations/ocr';
+import { syncAdminAccessEmails } from './integrations/cloudflare-access';
 import {
   exchangeLaunchCode,
   grantTicketPoints,
@@ -50,18 +58,24 @@ import type { Env, JobMessage } from './types';
 
 type SessionRow = {
   id: string;
+  external_user_id: string | null;
   user_ref: string;
+  rtales_lookup_code: string | null;
   rtales_game_session_id: string;
   player_token_encrypted: string;
   parent_origin: string | null;
   display_name: string | null;
   user_email: string | null;
+  language: string | null;
+  space_code: string | null;
+  installation_id: string | null;
 };
 
 type ReceiptRow = {
   id: string;
   public_id: string;
   session_id: string;
+  external_user_id: string | null;
   user_ref: string;
   image_key: string;
   image_content_type: string;
@@ -89,6 +103,10 @@ type ReceiptRow = {
   reviewed_by: string | null;
   user_display_name?: string | null;
   user_email?: string | null;
+  user_lookup_code?: string | null;
+  user_space_code?: string | null;
+  user_installation_id?: string | null;
+  rtales_lookup_code_snapshot: string | null;
   points_awarded: number;
   rtales_result_id: string | null;
   rtales_reversal_id: string | null;
@@ -188,6 +206,16 @@ type AppSettingRow = {
   updated_by: string | null;
 };
 
+type AdminUserRow = {
+  id: string;
+  email: string;
+  role: AdminRole;
+  active: boolean;
+  created_by: string;
+  created_at: string;
+  last_accessed_at: string | null;
+};
+
 const ACTIVE_DUPLICATE_STATUSES = [
   'OCR_QUEUED',
   'OCR_PROCESSING',
@@ -248,8 +276,11 @@ function receiptView(row: ReceiptRow, includeManagerFields = false) {
     ...(includeManagerFields ? {
       user: {
         subject: row.user_ref,
+        lookupCode: row.user_lookup_code || row.rtales_lookup_code_snapshot || '',
         displayName: row.user_display_name || '',
         email: row.user_email || '',
+        spaceCode: row.user_space_code || '',
+        installationId: row.user_installation_id || '',
       },
     } : {}),
     reward: {
@@ -322,7 +353,8 @@ async function authenticatedSession(
   const query = async (database: DbClient) => {
     const result = await database.query<SessionRow>(
       `SELECT id, user_ref, rtales_game_session_id, player_token_encrypted,
-              parent_origin, display_name, user_email
+              external_user_id, rtales_lookup_code, parent_origin, display_name, user_email,
+              language, space_code, installation_id
          FROM player_sessions
         WHERE access_token_hash = $1 AND expires_at > NOW()
         LIMIT 1`,
@@ -338,41 +370,56 @@ async function handleExchange(request: Request, env: Env): Promise<Response> {
   const launchCode = String(body.launchCode || '').trim();
   if (!launchCode.startsWith('rtgl_')) return error('Código de lanzamiento inválido', 400);
   const exchange = await exchangeLaunchCode(env, launchCode);
-  const player = exchange.player as Record<string, unknown> | undefined;
-  const playerSubject = String(player?.subject || '').trim();
-  if (!playerSubject) {
-    return error('Rtales todavía no entrega player.subject para identificar al usuario', 503, 'PLAYER_SUBJECT_REQUIRED');
+  let identity;
+  try {
+    identity = externalIdentityFromExchange(exchange);
+  } catch (caught) {
+    const code = caught instanceof Error ? caught.message : 'RTALES_IDENTITY_REQUIRED';
+    return error('Respuesta de identidad incompleta del sistema', 502, code);
   }
   const gameSessionId = String(exchange.gameSessionId || '');
   const playerToken = String(exchange.playerToken || '');
-  if (!gameSessionId || !playerToken) return error('Respuesta incompleta de Rtales', 502);
+  if (!gameSessionId || !playerToken) return error('Respuesta incompleta del sistema', 502);
 
   const sessionToken = `tkts_${randomToken()}`;
   const sessionId = uuid();
   const parentOrigin = allowedParentOrigin(body.parentOrigin, env);
   const encryptedPlayerToken = await encryptSecret(playerToken, env.DATA_ENCRYPTION_KEY);
-  await withDatabase(env, async (client) => {
+  await withDatabase(env, (client) => inTransaction(client, async () => {
+    const externalUser = await upsertExternalUser(client, identity, uuid());
     await client.query(
       `INSERT INTO player_sessions
-         (id, access_token_hash, user_ref, rtales_game_session_id,
-          player_token_encrypted, parent_origin, display_name, user_email, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW() + INTERVAL '24 hours')`,
+         (id, access_token_hash, external_user_id, user_ref, rtales_lookup_code,
+          rtales_game_session_id, player_token_encrypted, parent_origin, display_name,
+          user_email, language, space_code, installation_id, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+         NOW() + INTERVAL '24 hours')
+       ON CONFLICT(rtales_game_session_id) DO UPDATE SET
+         access_token_hash = $2, external_user_id = $3, user_ref = $4,
+         rtales_lookup_code = $5, player_token_encrypted = $7, parent_origin = $8,
+         display_name = $9, user_email = $10, language = $11, space_code = $12,
+         installation_id = $13, expires_at = NOW() + INTERVAL '24 hours'`,
       [
         sessionId,
         await sha256Hex(sessionToken),
-        playerSubject,
+        externalUser.id,
+        identity.subject,
+        identity.lookupCode,
         gameSessionId,
         encryptedPlayerToken,
         parentOrigin,
-        String(player?.displayName || ''),
-        String(player?.email || '').trim().toLowerCase() || null,
+        identity.displayName,
+        identity.email,
+        identity.language,
+        identity.spaceCode,
+        identity.installationId,
       ],
     );
-  });
+  }));
   return json({
     success: true,
     sessionToken,
-    player: { displayName: String(player?.displayName || '') },
+    player: publicExternalPlayer(identity),
     parentOrigin,
   }, 201);
 }
@@ -418,8 +465,9 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
     await client.query(
       `INSERT INTO receipts
          (id, public_id, session_id, user_ref, image_key, image_sha256,
-          image_content_type, image_size, status, validation_reasons)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)`,
+          image_content_type, image_size, status, validation_reasons,
+          rtales_lookup_code_snapshot, external_user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)`,
       [
         receiptId,
         ticketPublicId,
@@ -431,6 +479,8 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
         storedImage.bytes.byteLength,
         existing.rowCount ? 'DUPLICATE' : 'OCR_QUEUED',
         JSON.stringify(existing.rowCount ? ['DUPLICATE_IMAGE'] : []),
+        session.rtales_lookup_code,
+        session.external_user_id,
       ],
     );
     return Boolean(existing.rowCount);
@@ -831,18 +881,29 @@ async function processOutbox(env: Env, outboxId: string): Promise<void> {
 function adminFilters(url: URL) {
   const values: unknown[] = [];
   const conditions: string[] = ['1 = 1'];
+  let lookupOrderPlaceholder = '';
   const add = (sql: string, value: unknown) => {
     values.push(value);
     conditions.push(sql.replace('?', `$${values.length}`));
   };
   if (url.searchParams.get('user')) {
-    const value = `%${url.searchParams.get('user')}%`;
-    const searchableColumns = ['r.user_ref', 's.display_name', 's.user_email', 'r.public_id', 'r.ticket_number'];
-    const clauses = searchableColumns.map((column) => {
-      values.push(value);
-      return `${column} ILIKE $${values.length}`;
-    });
-    conditions.push(`(${clauses.join(' OR ')})`);
+    const search = String(url.searchParams.get('user') || '').trim();
+    const normalizedLookup = normalizeLookupCode(search);
+    values.push(normalizedLookup);
+    const exactLookupPlaceholder = `$${values.length}`;
+    values.push(`%${search}%`);
+    const displayNamePlaceholder = `$${values.length}`;
+    conditions.push(`(u.rtales_lookup_code_normalized = ${exactLookupPlaceholder}
+      OR s.display_name ILIKE ${displayNamePlaceholder})`);
+    lookupOrderPlaceholder = exactLookupPlaceholder;
+  }
+  if (url.searchParams.get('space')) {
+    const space = String(url.searchParams.get('space') || '').trim();
+    values.push(space);
+    const installationPlaceholder = `$${values.length}`;
+    values.push(space.toUpperCase());
+    const spaceCodePlaceholder = `$${values.length}`;
+    conditions.push(`(u.installation_id = ${installationPlaceholder} OR u.space_code = ${spaceCodePlaceholder})`);
   }
   if (url.searchParams.get('store')) {
     const value = `%${url.searchParams.get('store')}%`;
@@ -859,7 +920,13 @@ function adminFilters(url: URL) {
   if (url.searchParams.get('attention') === '1') {
     conditions.push(`r.status IN ('AUTO_REJECTED', 'NOT_A_RECEIPT', 'REWARD_FAILED', 'REVOKE_PENDING', 'REVOKED', 'DUPLICATE')`);
   }
-  return { where: conditions.join(' AND '), values };
+  return {
+    where: conditions.join(' AND '),
+    values,
+    orderBy: lookupOrderPlaceholder
+      ? `CASE WHEN u.rtales_lookup_code_normalized = ${lookupOrderPlaceholder} THEN 0 ELSE 1 END, r.created_at DESC, r.id DESC`
+      : 'r.created_at DESC, r.id DESC',
+  };
 }
 
 async function adminRows(env: Env, url: URL, pagination?: { limit: number; offset: number }): Promise<ReceiptRow[]> {
@@ -867,10 +934,15 @@ async function adminRows(env: Env, url: URL, pagination?: { limit: number; offse
   const pageClause = pagination ? ` LIMIT ${pagination.limit} OFFSET ${pagination.offset}` : '';
   return withDatabase(env, async (client) => {
     const result = await client.query<ReceiptRow>(
-      `SELECT r.*, s.display_name AS user_display_name, s.user_email
+      `SELECT r.*, COALESCE(u.display_name, s.display_name) AS user_display_name,
+              COALESCE(u.email, s.user_email) AS user_email,
+              COALESCE(u.rtales_lookup_code, r.rtales_lookup_code_snapshot, s.rtales_lookup_code) AS user_lookup_code,
+              COALESCE(u.space_code, s.space_code) AS user_space_code,
+              COALESCE(u.installation_id, s.installation_id) AS user_installation_id
          FROM receipts r JOIN player_sessions s ON s.id = r.session_id
+         LEFT JOIN external_users u ON u.id = COALESCE(r.external_user_id, s.external_user_id)
         WHERE ${filters.where}
-        ORDER BY r.created_at DESC, r.id DESC${pageClause}`,
+        ORDER BY ${filters.orderBy}${pageClause}`,
       filters.values,
     );
     return result.rows;
@@ -883,6 +955,7 @@ async function adminRowCount(env: Env, url: URL): Promise<number> {
     const result = await client.query<{ total: number }>(
       `SELECT COUNT(*) AS total
          FROM receipts r JOIN player_sessions s ON s.id = r.session_id
+         LEFT JOIN external_users u ON u.id = COALESCE(r.external_user_id, s.external_user_id)
         WHERE ${filters.where}`,
       filters.values,
     );
@@ -920,8 +993,13 @@ async function handleAdminReceipt(request: Request, env: Env, receiptId: string)
   if (!manager) return error('Acceso de gestor requerido', 401);
   const receipt = await withDatabase(env, async (client) => {
     const result = await client.query<ReceiptRow>(
-      `SELECT r.*, s.display_name AS user_display_name, s.user_email
+      `SELECT r.*, COALESCE(u.display_name, s.display_name) AS user_display_name,
+              COALESCE(u.email, s.user_email) AS user_email,
+              COALESCE(u.rtales_lookup_code, r.rtales_lookup_code_snapshot, s.rtales_lookup_code) AS user_lookup_code,
+              COALESCE(u.space_code, s.space_code) AS user_space_code,
+              COALESCE(u.installation_id, s.installation_id) AS user_installation_id
          FROM receipts r JOIN player_sessions s ON s.id = r.session_id
+         LEFT JOIN external_users u ON u.id = COALESCE(r.external_user_id, s.external_user_id)
         WHERE r.id = $1 LIMIT 1`,
       [receiptId],
     );
@@ -938,8 +1016,9 @@ function csvCell(value: unknown): string {
 async function handleAdminCsv(request: Request, env: Env): Promise<Response> {
   if (!managerIdentity(request, env)) return error('Acceso de gestor requerido', 401);
   const rows = await adminRows(env, new URL(request.url));
-  const header = ['ID', 'Usuario', 'Correo', 'Referencia usuario', 'Estado', 'Revisión', 'Tienda', 'Número', 'Fecha compra', 'Importe', 'Moneda', 'Puntos', 'Riesgo', 'Creado'];
-  const lines = rows.map((row) => [row.public_id, row.user_display_name, row.user_email, row.user_ref, row.status, row.review_status, row.store_name,
+  const header = ['ID', 'Usuario', 'Código búsqueda', 'Correo', 'Subject Rtales', 'Espacio', 'Instalación', 'Estado', 'Revisión', 'Tienda', 'Número', 'Fecha compra', 'Importe', 'Moneda', 'Puntos', 'Riesgo', 'Creado'];
+  const lines = rows.map((row) => [row.public_id, row.user_display_name, row.user_lookup_code, row.user_email,
+    row.user_ref, row.user_space_code, row.user_installation_id, row.status, row.review_status, row.store_name,
     row.ticket_number, row.purchase_date, row.total_cents, row.currency,
     row.points_awarded, row.risk_score, row.created_at].map(csvCell).join(','));
   return new Response(`\uFEFF${header.map(csvCell).join(',')}\n${lines.join('\n')}`, {
@@ -1847,6 +1926,115 @@ async function handleAdminSettings(request: Request, env: Env): Promise<Response
   });
 }
 
+async function authorizedAdmin(request: Request, env: Env): Promise<AdminUserRow | null> {
+  const email = managerIdentity(request, env);
+  if (!email) return null;
+  return withDatabase(env, async (client) => {
+    let result = await client.query<AdminUserRow>(
+      'SELECT * FROM admin_users WHERE email = $1 AND active = TRUE LIMIT 1', [email.toLowerCase()],
+    );
+    if (!result.rows[0]) {
+      const count = await client.query<{ total: number }>('SELECT COUNT(*) AS total FROM admin_users');
+      if (Number(count.rows[0]?.total || 0) === 0) {
+        const id = uuid();
+        await client.query(
+          `INSERT INTO admin_users (id, email, role, created_by)
+           VALUES ($1, $2, 'SUPERADMIN', $2) ON CONFLICT(email) DO NOTHING`,
+          [id, email.toLowerCase()],
+        );
+        const created = await client.query<AdminUserRow>('SELECT * FROM admin_users WHERE email = $1 LIMIT 1', [email.toLowerCase()]);
+        if (created.rows[0]?.role === 'SUPERADMIN') {
+          await client.query(
+            `INSERT INTO admin_user_audit_log (id, admin_user_id, action, manager_email)
+             VALUES ($1, $2, 'BOOTSTRAPPED', $3)`,
+            [uuid(), created.rows[0].id, email.toLowerCase()],
+          );
+        }
+        result = created;
+      }
+    }
+    const admin = result.rows[0];
+    if (admin) await client.query('UPDATE admin_users SET last_accessed_at = NOW() WHERE id = $1', [admin.id]);
+    return admin || null;
+  });
+}
+
+function adminUserView(row: AdminUserRow) {
+  return {
+    id: row.id, email: row.email, role: row.role, active: row.active,
+    createdBy: row.created_by, createdAt: row.created_at, lastAccessedAt: row.last_accessed_at,
+  };
+}
+
+async function activeAdminEmails(env: Env): Promise<string[]> {
+  return withDatabase(env, async (client) => {
+    const result = await client.query<Pick<AdminUserRow, 'email'>>(
+      'SELECT email FROM admin_users WHERE active = TRUE ORDER BY email ASC',
+    );
+    return result.rows.map((row) => row.email);
+  });
+}
+
+async function handleAdminUsers(request: Request, env: Env): Promise<Response> {
+  const current = await authorizedAdmin(request, env);
+  if (!current) return error('Acceso de administrador requerido', 403);
+  const accessConfigured = Boolean(env.CLOUDFLARE_ACCESS_API_TOKEN && env.CLOUDFLARE_ACCESS_EMAIL_LIST_ID && env.CLOUDFLARE_ACCOUNT_ID);
+  const backofficeUrl = env.ADMIN_BACKOFFICE_URL || `${new URL(request.url).origin}/backoffice`;
+  if (request.method === 'GET') {
+    const users = await withDatabase(env, async (client) => {
+      const result = await client.query<AdminUserRow>('SELECT * FROM admin_users WHERE active = TRUE ORDER BY role DESC, email ASC');
+      return result.rows;
+    });
+    return json({ success: true, current: adminUserView(current), users: users.map(adminUserView), accessConfigured, backofficeUrl });
+  }
+  if (current.role !== 'SUPERADMIN') return error('Solo el superadministrador puede crear usuarios', 403);
+  const body = await readJson(request);
+  const email = normalizeAdminEmail(body.email);
+  const created = await withDatabase(env, async (client) => {
+    const existing = await client.query<AdminUserRow>('SELECT * FROM admin_users WHERE email = $1 LIMIT 1', [email]);
+    if (existing.rows[0]) {
+      const updated = await client.query<AdminUserRow>(
+        `UPDATE admin_users SET active = TRUE, role = 'ADMIN', updated_at = NOW(), created_by = $2
+          WHERE id = $1 RETURNING *`, [existing.rows[0].id, current.email],
+      );
+      return updated.rows[0]!;
+    }
+    const id = uuid();
+    const inserted = await client.query<AdminUserRow>(
+      `INSERT INTO admin_users (id, email, role, created_by)
+       VALUES ($1, $2, 'ADMIN', $3) RETURNING *`, [id, email, current.email],
+    );
+    await client.query(
+      `INSERT INTO admin_user_audit_log (id, admin_user_id, action, manager_email)
+       VALUES ($1, $2, 'CREATED', $3)`, [uuid(), id, current.email],
+    );
+    return inserted.rows[0]!;
+  });
+  const accessSynced = await syncAdminAccessEmails(env, await activeAdminEmails(env));
+  return json({ success: true, user: adminUserView(created), accessSynced, backofficeUrl }, 201);
+}
+
+async function handleAdminUserDelete(request: Request, env: Env, userId: string): Promise<Response> {
+  const current = await authorizedAdmin(request, env);
+  if (!current) return error('Acceso de administrador requerido', 403);
+  if (current.role !== 'SUPERADMIN') return error('Solo el superadministrador puede eliminar usuarios', 403);
+  const deleted = await withDatabase(env, async (client) => {
+    const result = await client.query<AdminUserRow>('SELECT * FROM admin_users WHERE id = $1 AND active = TRUE LIMIT 1', [userId]);
+    const target = result.rows[0];
+    if (!target) return null;
+    if (target.id === current.id || target.role === 'SUPERADMIN') throw new Error('SUPERADMIN_DELETE_FORBIDDEN');
+    await client.query('UPDATE admin_users SET active = FALSE, updated_at = NOW() WHERE id = $1', [userId]);
+    await client.query(
+      `INSERT INTO admin_user_audit_log (id, admin_user_id, action, manager_email)
+       VALUES ($1, $2, 'DELETED', $3)`, [uuid(), userId, current.email],
+    );
+    return target;
+  });
+  if (!deleted) return error('Administrador no encontrado', 404);
+  const accessSynced = await syncAdminAccessEmails(env, await activeAdminEmails(env));
+  return json({ success: true, accessSynced });
+}
+
 async function handleAdminSettingUpdate(
   request: Request,
   env: Env,
@@ -1883,6 +2071,31 @@ async function handleAdminSettingUpdate(
   return json({ success: true, setting: appSettingView(definition, updated.value) });
 }
 
+async function handleAdminValidationPeriod(request: Request, env: Env): Promise<Response> {
+  const manager = managerIdentity(request, env);
+  if (!manager) return error('Acceso de gestor requerido', 401);
+  const body = await readJson(request);
+  const startAt = normalizeAppSettingValue('validation.startAt', body.startAt);
+  const endAt = normalizeAppSettingValue('validation.endAt', body.endAt);
+  validateAppSettingPeriod({ 'validation.startAt': startAt, 'validation.endAt': endAt });
+  await withDatabase(env, (client) => inTransaction(client, async () => {
+    for (const [key, value] of [['validation.startAt', startAt], ['validation.endAt', endAt]]) {
+      const current = await client.query<Pick<AppSettingRow, 'value'>>('SELECT value FROM app_settings WHERE key = $1 LIMIT 1', [key]);
+      await client.query(
+        `INSERT INTO app_settings (key, value, updated_at, updated_by) VALUES ($1, $2, NOW(), $3)
+         ON CONFLICT(key) DO UPDATE SET value = $2, updated_at = NOW(), updated_by = $3`,
+        [key, value, manager],
+      );
+      await client.query(
+        `INSERT INTO app_setting_audit_log (id, setting_key, manager_email, previous_value, new_value)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [uuid(), key, manager, current.rows[0]?.value || '', value],
+      );
+    }
+  }));
+  return json({ success: true, startAt, endAt });
+}
+
 async function handleFetch(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   try {
@@ -1890,6 +2103,9 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       if (url.pathname === '/') return Response.redirect(`${url.origin}/backoffice`, 302);
       const adminAsset = ['/backoffice', '/backoffice.html', '/backoffice.js', '/styles.css', '/favicon.ico'].includes(url.pathname);
       if (!adminAsset && !url.pathname.startsWith('/api/admin/')) return error('Ruta no encontrada', 404);
+      if (url.pathname.startsWith('/api/admin/') && !await authorizedAdmin(request, env)) {
+        return error('Este correo no tiene acceso al backoffice', 403);
+      }
     } else if (url.pathname.startsWith('/api/admin/')) {
       return error('Ruta no encontrada', 404);
     }
@@ -1961,6 +2177,16 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'GET' && url.pathname === '/api/admin/settings') {
       return await handleAdminSettings(request, env);
     }
+    if (request.method === 'PATCH' && url.pathname === '/api/admin/settings/validation-period') {
+      return await handleAdminValidationPeriod(request, env);
+    }
+    if (url.pathname === '/api/admin/users' && ['GET', 'POST'].includes(request.method)) {
+      return await handleAdminUsers(request, env);
+    }
+    const adminUserMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
+    if (request.method === 'DELETE' && adminUserMatch?.[1]) {
+      return await handleAdminUserDelete(request, env, adminUserMatch[1]);
+    }
     const settingMatch = url.pathname.match(/^\/api\/admin\/settings\/([^/]+)$/);
     if (request.method === 'PATCH' && settingMatch?.[1]) {
       return await handleAdminSettingUpdate(request, env, decodeURIComponent(settingMatch[1]));
@@ -1985,17 +2211,17 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (caught instanceof RtalesApiError) {
       const status = caught.status >= 400 && caught.status <= 599 ? caught.status : 502;
       const rtalesErrors: Record<number, { message: string; code: string }> = {
-        400: { message: 'El código de acceso a Rtales no es válido', code: 'RTALES_LAUNCH_INVALID' },
-        401: { message: 'La conexión con Rtales no está configurada correctamente', code: 'RTALES_CONFIGURATION_ERROR' },
-        403: { message: 'La conexión con Rtales no tiene los permisos necesarios', code: 'RTALES_CONFIGURATION_ERROR' },
-        404: { message: 'La sesión de Rtales ya no está disponible', code: 'RTALES_LAUNCH_UNAVAILABLE' },
+        400: { message: 'El código de acceso al sistema no es válido', code: 'RTALES_LAUNCH_INVALID' },
+        401: { message: 'La conexión con el sistema no está configurada correctamente', code: 'RTALES_CONFIGURATION_ERROR' },
+        403: { message: 'La conexión con el sistema no tiene los permisos necesarios', code: 'RTALES_CONFIGURATION_ERROR' },
+        404: { message: 'La sesión del sistema ya no está disponible', code: 'RTALES_LAUNCH_UNAVAILABLE' },
         409: { message: 'El código de acceso ya se ha utilizado', code: 'RTALES_LAUNCH_CONFLICT' },
         410: { message: 'La sesión de acceso ha caducado', code: 'RTALES_LAUNCH_EXPIRED' },
-        429: { message: 'Rtales está recibiendo demasiadas solicitudes', code: 'RTALES_RATE_LIMITED' },
+        429: { message: 'El sistema está recibiendo demasiadas solicitudes', code: 'RTALES_RATE_LIMITED' },
       };
       const mapped = rtalesErrors[status] || (status >= 500
-        ? { message: 'Rtales no está disponible temporalmente', code: 'RTALES_UNAVAILABLE' }
-        : { message: 'Rtales no pudo iniciar la sesión del jugador', code: 'RTALES_EXCHANGE_FAILED' });
+        ? { message: 'El sistema no está disponible temporalmente', code: 'RTALES_UNAVAILABLE' }
+        : { message: 'El sistema no pudo iniciar la sesión del jugador', code: 'RTALES_EXCHANGE_FAILED' });
       return error(mapped.message, status, mapped.code);
     }
     const message = caught instanceof Error ? caught.message : 'UNKNOWN_ERROR';
@@ -2017,6 +2243,8 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       APP_SETTING_TOO_LONG: 'El texto supera la longitud permitida',
       APP_SETTING_DATETIME_INVALID: 'La fecha y hora no tienen un formato válido',
       APP_SETTING_PERIOD_INVALID: 'La fecha de inicio debe ser anterior a la fecha de fin',
+      ADMIN_EMAIL_INVALID: 'Introduce un correo electrónico válido',
+      SUPERADMIN_DELETE_FORBIDDEN: 'El superadministrador actual no se puede eliminar',
     };
     return error(validationErrors[message] || 'No se pudo completar la operación', validationErrors[message] ? 400 : 500);
   }

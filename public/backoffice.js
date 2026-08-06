@@ -1,5 +1,5 @@
 const state = {
-  rows: [], stores: [], tiers: [], settings: [], trainingSamples: [], selected: null,
+  rows: [], stores: [], tiers: [], settings: [], adminUsers: [], trainingSamples: [], selected: null,
   pagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
   reviewing: false,
   token: sessionStorage.getItem('admin-token') || '',
@@ -91,7 +91,7 @@ async function load(page = state.pagination.page) {
   document.querySelector('#receipt-pagination').hidden = state.pagination.totalPages <= 1;
   document.querySelector('#receipt-list').innerHTML = state.rows.map((receipt) => `
     <button class="receipt-row" data-id="${receipt.id}">
-      <span><strong>${escapeHtml(receipt.publicId)}</strong><small>${escapeHtml(receipt.fields.storeName || 'Sin tienda')}</small></span>
+      <span><strong>${escapeHtml(receipt.publicId)}</strong><small>${escapeHtml(receipt.user?.lookupCode || '')}${receipt.user?.lookupCode ? ' · ' : ''}${escapeHtml(receipt.user?.displayName || receipt.fields.storeName || 'Sin usuario')}</small></span>
       <span><strong>${formatMoney(receipt.fields.totalCents)}</strong><small>${receipt.reward.pointsAwarded} puntos</small></span>
       <span class="status-chip ${escapeHtml(receipt.status.toLowerCase())}">${escapeHtml(receiptStatusLabel(receipt))} · ${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</span>
     </button>`).join('') || '<p class="empty-state">No hay registros con estos filtros.</p>';
@@ -185,7 +185,6 @@ function selectedSetting() {
 
 function settingEditorValue(setting) {
   if (setting.format === 'rich') return document.querySelector('#setting-rich-value').value;
-  if (setting.format === 'datetime') return document.querySelector('#setting-datetime-value').value;
   return document.querySelector('#setting-plain-value').value;
 }
 
@@ -195,7 +194,6 @@ function updateSettingPreview() {
   const preview = document.querySelector('#setting-preview-content');
   const value = settingEditorValue(setting);
   if (setting.format === 'rich') renderSettingFormattedText(preview, value);
-  else if (setting.format === 'datetime') preview.textContent = value ? value.replace('T', ' · ') : 'Sin límite';
   else preview.textContent = value;
 }
 
@@ -204,16 +202,12 @@ function renderSettingEditor() {
   if (!setting) return;
   const plainField = document.querySelector('#setting-plain-field');
   const richField = document.querySelector('#setting-rich-field');
-  const datetimeField = document.querySelector('#setting-datetime-field');
   const plainInput = document.querySelector('#setting-plain-value');
   const richInput = document.querySelector('#setting-rich-value');
-  const datetimeInput = document.querySelector('#setting-datetime-value');
   plainField.hidden = setting.format !== 'plain';
   richField.hidden = setting.format !== 'rich';
-  datetimeField.hidden = setting.format !== 'datetime';
   plainInput.value = setting.format === 'plain' ? setting.value : '';
   richInput.value = setting.format === 'rich' ? setting.value : '';
-  datetimeInput.value = setting.format === 'datetime' ? setting.value : '';
   plainInput.maxLength = setting.maxLength;
   richInput.maxLength = setting.maxLength;
   document.querySelector('#setting-help').textContent = setting.help;
@@ -224,11 +218,13 @@ function renderSettingEditor() {
 async function loadSettings() {
   const payload = await request('/api/admin/settings');
   state.settings = payload.settings;
+  document.querySelector('#validation-start-at').value = state.settings.find((item) => item.key === 'validation.startAt')?.value || '';
+  document.querySelector('#validation-end-at').value = state.settings.find((item) => item.key === 'validation.endAt')?.value || '';
   document.querySelector('#manager-email').textContent = payload.manager || '';
   const select = document.querySelector('#setting-select');
   const previous = select.value;
   const groups = new Map();
-  for (const setting of state.settings) {
+  for (const setting of state.settings.filter((item) => item.format !== 'datetime')) {
     if (!groups.has(setting.group)) groups.set(setting.group, []);
     groups.get(setting.group).push(setting);
   }
@@ -243,8 +239,74 @@ async function loadSettings() {
     }
     return optgroup;
   }));
-  if (state.settings.some((setting) => setting.key === previous)) select.value = previous;
+  if ([...select.options].some((option) => option.value === previous)) select.value = previous;
   renderSettingEditor();
+}
+
+async function saveValidationPeriod(event) {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector('button[type="submit"]');
+  const errorNode = document.querySelector('#validation-period-error');
+  button.disabled = true;
+  errorNode.textContent = '';
+  try {
+    await request('/api/admin/settings/validation-period', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        startAt: document.querySelector('#validation-start-at').value,
+        endAt: document.querySelector('#validation-end-at').value,
+      }),
+    });
+    await loadSettings();
+    showNotice('Periodo de validación actualizado.');
+  } catch (error) {
+    errorNode.textContent = error instanceof Error ? error.message : 'No se pudo guardar el periodo';
+  } finally { button.disabled = false; }
+}
+
+function renderAdminUsers(current, backofficeUrl) {
+  const superadmin = current.role === 'SUPERADMIN';
+  document.querySelector('#admin-user-form').hidden = !superadmin;
+  document.querySelector('#admin-user-list').innerHTML = state.adminUsers.map((user) => `
+    <article class="admin-user-row">
+      <span><strong>${escapeHtml(user.email)}</strong><small>${user.role === 'SUPERADMIN' ? 'Superadministrador' : 'Administrador'}</small></span>
+      <button class="secondary-button copy-admin-link" data-url="${escapeHtml(backofficeUrl)}" type="button">Copiar enlace</button>
+      ${superadmin && user.role !== 'SUPERADMIN' ? `<button class="danger-button delete-admin-user" data-id="${escapeHtml(user.id)}" type="button">Eliminar</button>` : ''}
+    </article>`).join('');
+  document.querySelectorAll('.copy-admin-link').forEach((button) => button.addEventListener('click', async () => {
+    await navigator.clipboard.writeText(button.dataset.url);
+    showNotice('Enlace de acceso copiado.');
+  }));
+  document.querySelectorAll('.delete-admin-user').forEach((button) => button.addEventListener('click', () => deleteAdminUser(button.dataset.id)));
+}
+
+async function loadAdminUsers() {
+  const payload = await request('/api/admin/users');
+  state.adminUsers = payload.users;
+  document.querySelector('#access-sync-warning').hidden = payload.accessConfigured;
+  renderAdminUsers(payload.current, payload.backofficeUrl);
+}
+
+async function saveAdminUser(event) {
+  event.preventDefault();
+  const input = document.querySelector('#admin-user-email');
+  const errorNode = document.querySelector('#admin-user-error');
+  errorNode.textContent = '';
+  try {
+    const payload = await request('/api/admin/users', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: input.value }),
+    });
+    input.value = '';
+    await loadAdminUsers();
+    await navigator.clipboard.writeText(payload.backofficeUrl).catch(() => undefined);
+    showNotice(payload.accessSynced ? 'Administrador añadido y sincronizado con Access.' : 'Administrador añadido; enlace copiado.');
+  } catch (error) { errorNode.textContent = error instanceof Error ? error.message : 'No se pudo añadir el administrador'; }
+}
+
+async function deleteAdminUser(id) {
+  if (!confirm('¿Eliminar el acceso de este administrador?')) return;
+  await request(`/api/admin/users/${id}`, { method: 'DELETE' });
+  await loadAdminUsers();
+  showNotice('Acceso eliminado.');
 }
 
 async function saveSetting(event) {
@@ -768,7 +830,7 @@ async function select(id, suppliedReceipt = null) {
     <div class="review-data">
       <p class="eyebrow">${escapeHtml(receipt.publicId)}</p>
       <h2>${escapeHtml(receipt.fields.storeName || 'Sin tienda')}</h2>
-      <dl><div><dt>Usuario</dt><dd>${escapeHtml(receipt.user.displayName || receipt.user.subject)}</dd></div><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Número</dt><dd>${escapeHtml(receipt.fields.ticketNumber || '—')}</dd></div><div><dt>Fecha</dt><dd>${escapeHtml(receipt.fields.purchaseDate || '—')}</dd></div><div><dt>Importe</dt><dd>${formatMoney(receipt.fields.totalCents)}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Estado</dt><dd>${escapeHtml(receiptStatusLabel(receipt))}</dd></div><div><dt>Revisión</dt><dd>${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</dd></div><div><dt>OCR</dt><dd>${escapeHtml(receipt.ocrProcessing?.model || '—')}</dd></div><div><dt>Proceso OCR</dt><dd>${receipt.ocrProcessing?.durationMs == null ? '—' : `${receipt.ocrProcessing.durationMs} ms · ${receipt.ocrProcessing.attemptCount} intento(s)`}</dd></div></dl>
+      <dl><div><dt>Usuario</dt><dd>${escapeHtml(receipt.user.displayName || receipt.user.subject)}</dd></div><div class="lookup-code-field"><dt>Código de búsqueda</dt><dd>${escapeHtml(receipt.user.lookupCode || 'Histórico sin código')}</dd></div><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Espacio</dt><dd>${escapeHtml(receipt.user.spaceCode || '—')}</dd></div><div><dt>Número</dt><dd>${escapeHtml(receipt.fields.ticketNumber || '—')}</dd></div><div><dt>Fecha</dt><dd>${escapeHtml(receipt.fields.purchaseDate || '—')}</dd></div><div><dt>Importe</dt><dd>${formatMoney(receipt.fields.totalCents)}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Estado</dt><dd>${escapeHtml(receiptStatusLabel(receipt))}</dd></div><div><dt>Revisión</dt><dd>${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</dd></div><div><dt>OCR</dt><dd>${escapeHtml(receipt.ocrProcessing?.model || '—')}</dd></div><div><dt>Proceso OCR</dt><dd>${receipt.ocrProcessing?.durationMs == null ? '—' : `${receipt.ocrProcessing.durationMs} ms · ${receipt.ocrProcessing.attemptCount} intento(s)`}</dd></div></dl>
       ${reasons.length ? `<div class="review-reasons"><strong>Comprobación automática</strong><ul>${reasons.map((reason) => `<li>${escapeHtml(reasonLabels[reason] || reason)}</li>`).join('')}</ul></div>` : ''}
       ${canApproveManually ? `<div class="manual-correction"><strong>Corrección manual</strong><label>Comercio<select id="manual-store"><option value="">Selecciona un comercio</option>${activeStoreOptions}</select></label><label>Número de ticket<input id="manual-ticket-number" value="${escapeHtml(receipt.fields.ticketNumber)}" /></label><label>Fecha<input id="manual-purchase-date" type="date" value="${escapeHtml(receipt.fields.purchaseDate)}" /></label><label>Importe (€)<input id="manual-total" type="number" min="0.01" step="0.01" value="${(receipt.fields.totalCents / 100).toFixed(2)}" /></label></div>` : ''}
       <label>Nota de revisión<textarea id="review-reason" rows="3" placeholder="${canApproveManually ? 'Obligatoria para validar manualmente' : `Opcional al marcar como revisado${canRevoke ? '; obligatoria para retirar puntos' : ''}`}"></textarea></label>
@@ -943,7 +1005,7 @@ document.querySelectorAll('[data-admin-view]').forEach((button) => button.addEve
   document.querySelectorAll('.admin-view').forEach((item) => item.classList.toggle('active', item.id === `${view}-view`));
   if (view === 'stores') await loadStores().catch((error) => alert(error.message));
   if (view === 'tiers') await loadTiers().catch((error) => alert(error.message));
-  if (view === 'settings') await loadSettings().catch((error) => alert(error.message));
+  if (view === 'settings') await Promise.all([loadSettings(), loadAdminUsers()]).catch((error) => alert(error.message));
 }));
 document.querySelector('#new-store').addEventListener('click', () => openStoreDialog());
 document.querySelector('#store-form').addEventListener('submit', saveStore);
@@ -1007,8 +1069,9 @@ document.querySelector('#cancel-tier').addEventListener('click', () => document.
 document.querySelector('#setting-select').addEventListener('change', renderSettingEditor);
 document.querySelector('#setting-plain-value').addEventListener('input', updateSettingPreview);
 document.querySelector('#setting-rich-value').addEventListener('input', updateSettingPreview);
-document.querySelector('#setting-datetime-value').addEventListener('input', updateSettingPreview);
 document.querySelector('#setting-form').addEventListener('submit', saveSetting);
+document.querySelector('#validation-period-form').addEventListener('submit', saveValidationPeriod);
+document.querySelector('#admin-user-form').addEventListener('submit', saveAdminUser);
 document.querySelector('[name="review"]').value = 'PENDING';
 updateFilterCount();
 load(1).catch((error) => alert(error.message));

@@ -25,3 +25,13 @@ test('D1 query compiler converts PostgreSQL dates, locks and JSON casts', () => 
   assert.doesNotMatch(compiled.statement, /jsonb|FOR UPDATE|\$\d/);
   assert.deepEqual(compiled.bindings, ['["VALID"]', 'receipt-1']);
 });
+
+test('D1 query compiler reuses exact lookup bindings for filtering and priority ordering', () => {
+  const compiled = compilePostgresQuery(
+    `SELECT id FROM external_users
+      WHERE rtales_lookup_code_normalized = $1 OR display_name ILIKE $2
+      ORDER BY CASE WHEN rtales_lookup_code_normalized = $1 THEN 0 ELSE 1 END`,
+    ['MARIA4827', '%María%'],
+  );
+  assert.deepEqual(compiled.bindings, ['MARIA4827', '%María%', 'MARIA4827']);
+});
