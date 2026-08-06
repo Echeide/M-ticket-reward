@@ -78,6 +78,25 @@ test('OCR normalization recovers Llama identity fields from literal raw evidence
   assert.deepEqual(verifyOcr(receipt), []);
 });
 
+test('OCR normalization verifies sparse Llama evidence against the literal raw text', () => {
+  const receipt = normalizeOcr({
+    ...validExtraction,
+    ticketNumber: '2026/934211-001000048',
+    ticketNumberText: 'Documento',
+    purchaseDate: '06/08/2026',
+    purchaseDateTime: '',
+    purchaseDateText: 'Fecha Hora',
+    totalCents: 1592,
+    totalText: 'TOTAL COMPRA:',
+    rawText: 'DINOSOL SUPERMERCADOS Documento 2026/934211-001000048 Fecha 06/08/2026 Hora 09:01 TOTAL COMPRA: 15,92',
+  });
+  assert.equal(receipt.purchaseDate, '2026-08-06');
+  assert.equal(receipt.purchaseDateTime, '2026-08-06T09:01');
+  assert.match(receipt.evidence?.purchaseDateText || '', /06\/08\/2026 Hora 09:01/);
+  assert.equal(receipt.evidence?.totalText, 'TOTAL COMPRA: 15,92');
+  assert.deepEqual(verifyOcr(receipt), []);
+});
+
 test('OCR verification rejects a receipt with neither printed number nor matching time', () => {
   const receipt = normalizeOcr({
     ...validExtraction,
@@ -160,10 +179,10 @@ test('OCR verification rejects unsupported critical fields', () => {
     currency: 'EUR',
     rawText: 'TOTAL COMPRA: 15.99 EUROS',
   });
+  assert.equal(receipt.totalCents, 1599);
   assert.deepEqual(verifyOcr(receipt), [
     'UNVERIFIED_TICKET_NUMBER',
     'UNVERIFIED_DATE',
-    'MISSING_TOTAL',
   ]);
 });
 
