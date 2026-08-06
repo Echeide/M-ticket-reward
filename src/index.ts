@@ -499,7 +499,7 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
     return Boolean(existing.rowCount);
   });
 
-  if (!duplicate) await env.JOBS.send({ kind: 'OCR_RECEIPT', receiptId });
+  if (!duplicate) await env.OCR_JOBS.send({ kind: 'OCR_RECEIPT', receiptId });
   return json({ success: true, receiptId, publicId: ticketPublicId, status: duplicate ? 'DUPLICATE' : 'OCR_QUEUED' }, 202);
 }
 
@@ -686,7 +686,7 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
       return { response: json({ success: true, status: 'REWARD_PENDING', points }, 202) };
     }),
   );
-  if (outboxId) await env.JOBS.send({ kind: 'DELIVER_REWARD', outboxId });
+  if (outboxId) await env.REWARD_JOBS.send({ kind: 'DELIVER_REWARD', outboxId });
   return result.response;
 }
 
@@ -1120,7 +1120,7 @@ async function handleAdminReprocess(request: Request, env: Env, receiptId: strin
   if (!queued.rowCount) return error('El ticket ha cambiado de estado; actualiza la ficha', 409);
 
   try {
-    await env.JOBS.send({ kind: 'OCR_RECEIPT', receiptId });
+    await env.OCR_JOBS.send({ kind: 'OCR_RECEIPT', receiptId });
   } catch (caught) {
     await withDatabase(env, async (client) => {
       await client.query(
@@ -1193,7 +1193,7 @@ async function handleAdminReceiptDelete(request: Request, env: Env, receiptId: s
   if (decision === 'NOT_FOUND') return error('Ticket no encontrado', 404);
   if (decision === 'BUSY') return error('La concesión está procesándose; vuelve a intentarlo en unos segundos', 409);
   if (decision === 'REVOKE') {
-    await env.JOBS.send({ kind: 'DELIVER_REWARD', outboxId });
+    await env.REWARD_JOBS.send({ kind: 'DELIVER_REWARD', outboxId });
     return json({ success: true, pendingReversal: true }, 202);
   }
   await purgeReceipt(env, receiptId, managerEmail);
@@ -1349,7 +1349,7 @@ async function handleAdminReview(
     );
     return json({ success: true, status: 'REVOKE_PENDING' }, 202);
   }));
-  if (outboxId) await env.JOBS.send({ kind: 'DELIVER_REWARD', outboxId });
+  if (outboxId) await env.REWARD_JOBS.send({ kind: 'DELIVER_REWARD', outboxId });
   return response;
 }
 
@@ -2473,7 +2473,7 @@ async function requeueDueOutbox(env: Env): Promise<void> {
     );
     return Array.from(new Set([...result.rows, ...due.rows].map((row) => row.id)));
   });
-  await Promise.all(ids.map((outboxId) => env.JOBS.send({ kind: 'DELIVER_REWARD', outboxId })));
+  await Promise.all(ids.map((outboxId) => env.REWARD_JOBS.send({ kind: 'DELIVER_REWARD', outboxId })));
 }
 
 async function requeueStuckOcr(env: Env): Promise<void> {
@@ -2491,7 +2491,7 @@ async function requeueStuckOcr(env: Env): Promise<void> {
     );
     return result.rows;
   });
-  await Promise.all(receipts.map(({ id }) => env.JOBS.send({ kind: 'OCR_RECEIPT', receiptId: id })));
+  await Promise.all(receipts.map(({ id }) => env.OCR_JOBS.send({ kind: 'OCR_RECEIPT', receiptId: id })));
 }
 
 export default {

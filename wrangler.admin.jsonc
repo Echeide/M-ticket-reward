@@ -31,7 +31,8 @@
   "ai": { "binding": "AI" },
   "queues": {
     "producers": [
-      { "binding": "JOBS", "queue": "rtales-ticket-jobs" }
+      { "binding": "OCR_JOBS", "queue": "rtales-ticket-ocr-jobs" },
+      { "binding": "REWARD_JOBS", "queue": "rtales-ticket-reward-jobs" }
     ]
   },
   "vars": {

@@ -1,11 +1,12 @@
-export type JobMessage =
-  | { kind: 'OCR_RECEIPT'; receiptId: string }
-  | { kind: 'DELIVER_REWARD'; outboxId: string };
+export type OcrJobMessage = { kind: 'OCR_RECEIPT'; receiptId: string };
+export type RewardJobMessage = { kind: 'DELIVER_REWARD'; outboxId: string };
+export type JobMessage = OcrJobMessage | RewardJobMessage;
 
 export interface Env {
   ASSETS: Fetcher;
   TICKETS: R2Bucket;
-  JOBS: Queue<JobMessage>;
+  OCR_JOBS: Queue<OcrJobMessage>;
+  REWARD_JOBS: Queue<RewardJobMessage>;
   DB: D1Database;
   AI: Ai;
   IMAGES: ImagesBinding;

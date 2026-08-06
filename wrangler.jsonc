@@ -29,9 +29,26 @@
   "images": { "binding": "IMAGES" },
   "queues": {
     "producers": [
-      { "binding": "JOBS", "queue": "rtales-ticket-jobs" }
+      { "binding": "OCR_JOBS", "queue": "rtales-ticket-ocr-jobs" },
+      { "binding": "REWARD_JOBS", "queue": "rtales-ticket-reward-jobs" }
     ],
     "consumers": [
+      {
+        "queue": "rtales-ticket-ocr-jobs",
+        "max_batch_size": 1,
+        "max_batch_timeout": 0,
+        "max_retries": 8,
+        "max_concurrency": 35,
+        "dead_letter_queue": "rtales-ticket-ocr-jobs-dlq"
+      },
+      {
+        "queue": "rtales-ticket-reward-jobs",
+        "max_batch_size": 1,
+        "max_batch_timeout": 0,
+        "max_retries": 8,
+        "max_concurrency": 20,
+        "dead_letter_queue": "rtales-ticket-reward-jobs-dlq"
+      },
       {
         "queue": "rtales-ticket-jobs",
         "max_batch_size": 1,
