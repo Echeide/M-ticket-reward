@@ -73,6 +73,13 @@ input, select, textarea { width: 100%; border: 1px solid var(--line); border-rad
 .theme-gcx26 input,.theme-gcx26 select,.theme-gcx26 textarea { border-radius: 12px; }
 .theme-gcx26 input:focus,.theme-gcx26 select:focus,.theme-gcx26 textarea:focus { border-color: var(--brand); box-shadow: 0 0 0 3px #f4a92c2e; }
 .theme-gcx26 .ocr-data div { border-radius: 12px; }
+
+/* Keep embedded screens above the host application's bottom navigation. */
+html.is-embedded .public-shell,
+html.is-embedded .screen {
+  min-height: calc(100dvh - clamp(52px, 8dvh, 76px));
+}
+html.is-embedded .public-shell { align-content: start; }
 .theme-gcx26 .ocr-validation-badge.valid { color: #6ee7b7; background: #052e24; }
 .theme-gcx26 .ocr-validation-badge.invalid { color: #fda4af; background: #4c0519; }
 .theme-gcx26 .points-card { border-radius: 16px; background: #052e24; color: #6ee7b7; }
