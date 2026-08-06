@@ -122,7 +122,7 @@
             <svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>
           </button>
         </div>
-        <p>Consulta aquí el estado y el resultado de los tickets que has enviado.</p>
+        <p>Consulta aquí el estado de tus tickets. El envío reiterado de imágenes que no sean tickets puede provocar la suspensión de tu acceso.</p>
         <button class="primary-button button-with-icon history-home-button" data-action="history-home" type="button">
           <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
           Escanear otro ticket
@@ -140,6 +140,7 @@
         </div>
         <h3 class="detail-reference" id="detail-title">Ticket</h3>
         <div class="ticket-detail-card">
+          <img id="detail-ticket-image" class="detail-ticket-image" alt="Imagen del ticket" hidden />
           <span class="ticket-status" id="detail-status"></span>
           <p id="detail-message"></p>
           <dl class="ticket-detail-data">

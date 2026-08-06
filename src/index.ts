@@ -5,6 +5,7 @@ import {
   type ReceiptFields,
   canReprocessReceipt,
   isValidIsoDate,
+  isValidPurchaseDateTime,
   receiptStatusAfterOcr,
   validateReceiptAutomatically,
 } from './domain/receipt';
@@ -405,6 +406,28 @@ async function authenticatedSession(
     return result.rows[0] ?? null;
   };
   return client ? query(client) : withDatabase(env, query);
+}
+
+async function handleReceiptImage(request: Request, env: Env, receiptId: string): Promise<Response> {
+  const session = await authenticatedSession(request, env);
+  if (!session) return error('Sesión no válida', 401);
+  const receipt = await withDatabase(env, async (client) => {
+    const result = await client.query<Pick<ReceiptRow, 'image_key' | 'image_content_type'>>(
+      'SELECT image_key, image_content_type FROM receipts WHERE id = $1 AND user_ref = $2 LIMIT 1',
+      [receiptId, session.user_ref],
+    );
+    return result.rows[0];
+  });
+  if (!receipt) return error('Ticket no encontrado', 404);
+  const object = await env.TICKETS.get(receipt.image_key);
+  if (!object) return error('Imagen no encontrada', 404);
+  return new Response(object.body, {
+    headers: {
+      'Content-Type': receipt.image_content_type,
+      'Cache-Control': 'private, no-store',
+      'Content-Disposition': 'inline',
+    },
+  });
 }
 
 async function handleExchange(request: Request, env: Env): Promise<Response> {
@@ -1436,12 +1459,30 @@ async function handleAdminReview(
   const body = await readJson(request);
   const action = String(body.action || '').toUpperCase();
   const reason = String(body.reason || '').trim().slice(0, 500);
-  if (!['CLEAR', 'REOPEN', 'REVOKE', 'MANUAL_APPROVE'].includes(action)) return error('Acción no válida', 400);
+  if (!['CLEAR', 'REOPEN', 'REVOKE', 'MANUAL_APPROVE', 'CONFIRM_REJECTION'].includes(action)) return error('Acción no válida', 400);
   let outboxId = '';
   const response = await withDatabase(env, (client) => inTransaction(client, async () => {
     const result = await client.query<ReceiptRow>('SELECT * FROM receipts WHERE id = $1 FOR UPDATE', [receiptId]);
     const receipt = result.rows[0];
     if (!receipt) return error('Ticket no encontrado', 404);
+    if (action === 'CONFIRM_REJECTION') {
+      const verificationRequired = receipt.status === 'REWARD_FAILED' &&
+        receipt.validation_reasons.includes('OCR_VERIFICATION_REQUIRED');
+      if (receipt.status !== 'AUTO_REJECTED' && !verificationRequired) {
+        return error('Este ticket no admite confirmar el rechazo', 409);
+      }
+      await client.query(
+        `INSERT INTO receipt_reviews (id, receipt_id, action, manager_email, reason)
+         VALUES ($1, $2, 'REJECTION_CONFIRMED', $3, $4)`,
+        [uuid(), receiptId, managerEmail, reason || null],
+      );
+      await client.query(
+        `UPDATE receipts SET review_status = 'CLEARED', reviewed_at = NOW(),
+           reviewed_by = $2, updated_at = NOW() WHERE id = $1`,
+        [receiptId, managerEmail],
+      );
+      return json({ success: true, status: receipt.status });
+    }
     if (action === 'MANUAL_APPROVE') {
       const verificationRequired = receipt.status === 'REWARD_FAILED' &&
         receipt.validation_reasons.includes('OCR_VERIFICATION_REQUIRED');
@@ -1455,11 +1496,16 @@ async function handleAdminReview(
       const storeId = String(corrections.storeId || '').trim();
       const ticketNumber = String(corrections.ticketNumber || '').trim().slice(0, 120);
       const purchaseDate = String(corrections.purchaseDate || '').trim();
+      const purchaseTime = String(corrections.purchaseTime || '').trim();
+      const purchaseDateTime = purchaseTime ? `${purchaseDate}T${purchaseTime}` : undefined;
       const totalCents = Number(corrections.totalCents);
       const currency = String(corrections.currency || 'EUR').trim().toUpperCase();
       if (!storeId) return error('Selecciona un comercio autorizado', 400);
-      if (!ticketNumber) return error('Indica el número del ticket', 400);
       if (!isValidIsoDate(purchaseDate)) return error('Indica una fecha válida', 400);
+      if (!ticketNumber && !purchaseTime) return error('Indica el número del ticket o la hora de compra', 400);
+      if (purchaseDateTime && !isValidPurchaseDateTime(purchaseDateTime, purchaseDate)) {
+        return error('Indica una hora válida', 400);
+      }
       if (!Number.isInteger(totalCents) || totalCents <= 0) return error('Indica un importe válido', 400);
       if (!/^[A-Z]{3}$/.test(currency)) return error('La moneda no es válida', 400);
 
@@ -1469,7 +1515,11 @@ async function handleAdminReview(
       const store = storeResult.rows[0];
       if (!store) return error('El comercio seleccionado no está activo', 400);
       const fields: ReceiptFields = {
-        storeId: store.id, storeName: store.name, ticketNumber, purchaseDate, totalCents, currency,
+        storeId: store.id, storeName: store.name, ticketNumber, purchaseDate, purchaseDateTime, totalCents, currency,
+      };
+      const correctedOcr: OcrReceipt = {
+        ...(receipt.ocr_payload || {}), ...fields, isReceipt: true,
+        confidence: receipt.ocr_payload?.confidence ?? receipt.ocr_confidence ?? 0,
       };
       const fingerprint = buildTicketFingerprint(fields);
       const duplicate = await client.query(
@@ -1500,11 +1550,11 @@ async function handleAdminReview(
       await client.query(
         `UPDATE receipts SET status = 'REWARD_PENDING', store_id = $2, store_name = $3,
            ticket_number = $4, purchase_date = $5, total_cents = $6, currency = $7,
-           ticket_fingerprint = $8, validation_reasons = '[]'::jsonb,
-           points_awarded = $9, review_status = 'CLEARED', reviewed_at = NOW(),
-           reviewed_by = $10, updated_at = NOW() WHERE id = $1`,
+           ticket_fingerprint = $8, ocr_payload = $9::jsonb, validation_reasons = '[]'::jsonb,
+           points_awarded = $10, review_status = 'CLEARED', reviewed_at = NOW(),
+           reviewed_by = $11, updated_at = NOW() WHERE id = $1`,
         [receiptId, store.id, store.name, ticketNumber, purchaseDate, totalCents,
-          currency, fingerprint, points, managerEmail],
+          currency, fingerprint, JSON.stringify(correctedOcr), points, managerEmail],
       );
       await client.query(
         `INSERT INTO reward_outbox (id, receipt_id, operation, idempotency_key, payload)
@@ -2556,6 +2606,8 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     }
     const receiptMatch = url.pathname.match(/^\/api\/receipts\/([^/]+)$/);
     if (request.method === 'GET' && receiptMatch?.[1]) return await handleReceiptStatus(request, env, receiptMatch[1]);
+    const receiptImageMatch = url.pathname.match(/^\/api\/receipts\/([^/]+)\/image$/);
+    if (request.method === 'GET' && receiptImageMatch?.[1]) return await handleReceiptImage(request, env, receiptImageMatch[1]);
     const confirmMatch = url.pathname.match(/^\/api\/receipts\/([^/]+)\/confirm$/);
     if (request.method === 'POST' && confirmMatch?.[1]) return await handleConfirm(request, env, confirmMatch[1]);
     if (request.method === 'GET' && url.pathname === '/api/admin/receipts') return await handleAdminList(request, env);

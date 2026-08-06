@@ -952,14 +952,14 @@ async function select(id, suppliedReceipt = null) {
           <path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"></path><path d="M21 3v5h-5"></path>
         </svg>
       </button>
-      <img id="ticket-image" alt="Ticket ${receipt.publicId}" />
+      <img id="ticket-image" class="review-ticket-image" tabindex="0" role="button" title="Ampliar ticket" aria-label="Ampliar ticket ${receipt.publicId}" alt="Ticket ${receipt.publicId}" />
     </div>
     <div class="review-data">
       <p class="eyebrow">${escapeHtml(receipt.publicId)}</p>
       <h2>${escapeHtml(receipt.fields.storeName || 'Sin tienda')}</h2>
       <dl><div><dt>Usuario</dt><dd>${escapeHtml(receipt.user.displayName || receipt.user.subject)}</dd></div><div class="lookup-code-field"><dt>Código de búsqueda</dt><dd>${escapeHtml(receipt.user.lookupCode || 'Histórico sin código')}</dd></div><div><dt>Número</dt><dd>${escapeHtml(receipt.fields.ticketNumber || (receipt.fields.purchaseDateTime ? 'Sin número; validado por hora' : '—'))}</dd></div><div><dt>Fecha y hora</dt><dd>${escapeHtml(receipt.fields.purchaseDateTime || receipt.fields.purchaseDate || '—')}</dd></div><div><dt>Importe</dt><dd>${formatMoney(receipt.fields.totalCents)}</dd></div><div><dt>Estado</dt><dd>${escapeHtml(receiptStatusLabel(receipt))}</dd></div></dl>
       ${reasons.length ? `<div class="review-reasons"><strong>Comprobación automática</strong><ul>${reasons.map((reason) => `<li>${escapeHtml(reasonLabels[reason] || reason)}</li>`).join('')}</ul></div>` : ''}
-      ${canApproveManually ? `<div class="manual-correction"><strong>Corrección manual</strong><label>Comercio<select id="manual-store"><option value="">Selecciona un comercio</option>${activeStoreOptions}</select></label><label>Número de ticket<input id="manual-ticket-number" value="${escapeHtml(receipt.fields.ticketNumber)}" /></label><label>Fecha<input id="manual-purchase-date" type="date" value="${escapeHtml(receipt.fields.purchaseDate)}" /></label><label>Importe (€)<input id="manual-total" type="number" min="0.01" step="0.01" value="${(receipt.fields.totalCents / 100).toFixed(2)}" /></label></div>` : ''}
+      ${canApproveManually ? `<div class="manual-correction"><strong>Corrección manual</strong><label>Comercio<select id="manual-store"><option value="">Selecciona un comercio</option>${activeStoreOptions}</select></label><label>Número de ticket <small>o indica la hora si no existe</small><input id="manual-ticket-number" value="${escapeHtml(receipt.fields.ticketNumber)}" /></label><label>Fecha<input id="manual-purchase-date" type="date" value="${escapeHtml(receipt.fields.purchaseDate)}" /></label><label>Hora de compra<input id="manual-purchase-time" type="time" value="${escapeHtml((receipt.fields.purchaseDateTime || '').slice(11, 16))}" /></label><label>Importe (€)<input id="manual-total" type="number" min="0.01" step="0.01" value="${(receipt.fields.totalCents / 100).toFixed(2)}" /></label></div>` : ''}
       <label>Nota de revisión<textarea id="review-reason" rows="3" placeholder="${canApproveManually ? 'Obligatoria para validar manualmente' : `Opcional al marcar como revisado${canRevoke ? '; obligatoria para retirar puntos' : ''}`}"></textarea></label>
       <div class="review-actions">
         ${receipt.review.status === 'PENDING' && !canApproveManually
@@ -970,19 +970,30 @@ async function select(id, suppliedReceipt = null) {
               ? '<span class="review-complete">Este ticket está marcado como fraude.</span>'
               : ''}
         ${canRevoke ? '<button class="danger-button" id="revoke">Fraude: retirar puntos</button>' : ''}
-        ${canApproveManually ? '<button class="primary-button" id="manual-approve">Validar y guardar correcciones</button>' : ''}
+        ${canApproveManually ? '<button class="secondary-button" id="confirm-rejection">Confirmar rechazo</button><button class="primary-button" id="manual-approve">Corregir y conceder puntos</button>' : ''}
       </div>
       <dl class="ticket-secondary-data"><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Espacio</dt><dd>${escapeHtml(receipt.user.spaceCode || '—')}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Revisión</dt><dd>${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</dd></div><div><dt>OCR</dt><dd>${escapeHtml([receipt.ocrProcessing?.provider, receipt.ocrProcessing?.model].filter(Boolean).join(' · ') || '—')}</dd></div><div><dt>Proceso OCR</dt><dd>${receipt.ocrProcessing?.durationMs == null ? 'Sin resultado' : `${receipt.ocrProcessing.durationMs} ms · ${receipt.ocrProcessing.attemptCount} llamada(s)`} · ${receipt.ocrProcessing?.jobAttemptCount || 0} ejecución(es)</dd></div>${receipt.ocrProcessing?.lastError ? `<div><dt>Último error OCR</dt><dd>${escapeHtml(receipt.ocrProcessing.lastError)}</dd></div>` : ''}<div><dt>Creado</dt><dd>${escapeHtml(new Date(receipt.createdAt).toLocaleString('es-ES'))}</dd></div></dl>
     </div>`;
   const image = await fetch(`/api/admin/receipts/${id}/image`, { headers: headers() });
   if (image.ok) {
     const imageUrl = URL.createObjectURL(await image.blob());
-    if (state.selected?.id === id) document.querySelector('#ticket-image').src = imageUrl;
+    if (state.selected?.id === id) {
+      const ticketImage = document.querySelector('#ticket-image');
+      ticketImage.src = imageUrl;
+      ticketImage.addEventListener('click', () => openTrainingImage(imageUrl));
+      ticketImage.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          openTrainingImage(imageUrl);
+        }
+      });
+    }
     else URL.revokeObjectURL(imageUrl);
   }
   document.querySelector('#clear-review')?.addEventListener('click', () => review('CLEAR'));
   document.querySelector('#reopen-review')?.addEventListener('click', () => review('REOPEN'));
   document.querySelector('#revoke')?.addEventListener('click', () => review('REVOKE'));
+  document.querySelector('#confirm-rejection')?.addEventListener('click', () => review('CONFIRM_REJECTION'));
   document.querySelector('#manual-approve')?.addEventListener('click', () => review('MANUAL_APPROVE'));
   document.querySelector('#delete-ticket')?.addEventListener('click', deleteSelected);
   if (reprocessable) document.querySelector('#reprocess-ticket').addEventListener('click', reprocessSelected);
@@ -1045,7 +1056,8 @@ async function review(action) {
   if (state.reviewing || !state.selected) return;
   const reason = document.querySelector('#review-reason').value.trim();
   if (action === 'MANUAL_APPROVE' && !reason) return alert('Indica el motivo de la validación manual.');
-  if (action === 'MANUAL_APPROVE' && !confirm('Se validará el ticket y se asignarán los puntos. ¿Continuar?')) return;
+  if (action === 'MANUAL_APPROVE' && !confirm('Se guardarán las correcciones y se concederán los puntos. ¿Continuar?')) return;
+  if (action === 'CONFIRM_REJECTION' && !confirm('El ticket permanecerá rechazado y no se concederán puntos. ¿Continuar?')) return;
   if (action === 'REVOKE' && !reason) return alert('Indica el motivo de la revocación.');
   if (action === 'REVOKE' && !confirm('Se retirarán los puntos concedidos. ¿Continuar?')) return;
   state.reviewing = true;
@@ -1061,6 +1073,7 @@ async function review(action) {
           storeId: document.querySelector('#manual-store').value,
           ticketNumber: document.querySelector('#manual-ticket-number').value,
           purchaseDate: document.querySelector('#manual-purchase-date').value,
+          purchaseTime: document.querySelector('#manual-purchase-time').value,
           totalCents: Math.round(Number(document.querySelector('#manual-total').value) * 100),
           currency: 'EUR',
         } } : {}),
@@ -1074,6 +1087,8 @@ async function review(action) {
     panel.innerHTML = '<p>Selecciona un ticket para revisarlo.</p>';
     showNotice(action === 'MANUAL_APPROVE'
       ? 'Ticket validado manualmente; se están asignando los puntos.'
+      : action === 'CONFIRM_REJECTION'
+        ? 'Rechazo confirmado; no se concederán puntos.'
       : action === 'CLEAR'
         ? 'Ticket marcado como revisado.'
         : action === 'REOPEN'

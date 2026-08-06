@@ -11,6 +11,7 @@ const state = {
   pollGeneration: 0,
 };
 const notifiedRewardReceipts = new Set();
+let detailImageObjectUrl = '';
 
 const HOME_SETTING_TARGETS = {
   'home.eyebrow': '#home-eyebrow',
@@ -615,6 +616,7 @@ function showTicketDetail(receipt) {
     ? `${receipt.reward.pointsAwarded} retirados`
     : receipt.reward.pointsAwarded > 0 ? String(receipt.reward.pointsAwarded) : '—';
   document.querySelector('#detail-created').textContent = formatTimestamp(receipt.createdAt);
+  loadTicketDetailImage(receipt.id).catch(() => undefined);
 
   const action = document.querySelector('#detail-action');
   action.hidden = true;
@@ -646,6 +648,20 @@ function showTicketDetail(receipt) {
     };
   }
   show('ticket-detail');
+}
+
+async function loadTicketDetailImage(receiptId) {
+  const image = document.querySelector('#detail-ticket-image');
+  image.hidden = true;
+  image.removeAttribute('src');
+  if (detailImageObjectUrl) URL.revokeObjectURL(detailImageObjectUrl);
+  detailImageObjectUrl = '';
+  const response = await fetch(`/api/receipts/${receiptId}/image`, { headers: authHeaders() });
+  if (!response.ok || state.receipt?.id !== receiptId) return;
+  detailImageObjectUrl = URL.createObjectURL(await response.blob());
+  image.src = detailImageObjectUrl;
+  image.alt = `Imagen del ticket ${state.receipt.publicId}`;
+  image.hidden = false;
 }
 
 function retry() {
