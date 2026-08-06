@@ -103,23 +103,25 @@ export function generateStoreOcrProfile(
   const totalLabels: string[] = [];
   const formats: string[] = [];
   const notes: string[] = [];
+  let sampleCount = 0;
 
   for (const result of results) {
     const receipt = result.receipt;
+    if (!receipt || result.matches?.store !== true) continue;
+    sampleCount += 1;
     if (result.notes) notes.push(result.notes);
-    if (!receipt) continue;
     const headerLines = String(receipt.headerText || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     const identityLine = headerLines.find((line) =>
       /\b(?:[ABCDEFGHJNPQRSUVW]\d{7}[A-Z0-9]|\d{8}[A-Z])\b/i.test(line));
     if (identityLine) headerSignatures.push(identityLine);
 
-    if (result.matches?.ticketNumber !== false) {
+    if (result.matches?.ticketNumber === true) {
       const label = firstLabel(receipt.evidence?.ticketNumberText || '', [
         /\b((?:n(?:[º°o]|úm(?:ero)?)|documento|ticket|factura|recibo|transacci[oó]n|operaci[oó]n|folio)(?:\s+[^:#\n]{1,24})?)\s*[:#-]/i,
       ]);
       if (label) ticketNumberLabels.push(label);
     }
-    if (result.matches?.purchaseDate !== false) {
+    if (result.matches?.purchaseDate === true) {
       const evidence = receipt.evidence?.purchaseDateText || '';
       const label = firstLabel(evidence, [
         /\b((?:fecha|f\.)\s*(?:de\s+)?(?:operaci[oó]n|compra|emisi[oó]n)?)\s*[:#-]?\s*\d/i,
@@ -128,7 +130,7 @@ export function generateStoreOcrProfile(
       const format = dateFormat(evidence);
       if (format) formats.push(format);
     }
-    if (result.matches?.total !== false) {
+    if (result.matches?.total === true) {
       const label = firstLabel(receipt.evidence?.totalText || '', [
         /\b((?:importe\s+)?total(?:\s+(?:a\s+pagar|compra|ticket))?)\s*[:#-]?\s*\d/i,
       ]);
@@ -149,7 +151,7 @@ export function generateStoreOcrProfile(
     totalRegion: 'footer',
     dateFormat: uniqueFormats.length === 1 ? uniqueFormats[0] : '',
     instructions: cleanList(notes, 12).map((note) => `- ${note}`).join('\n'),
-    sampleCount: results.length,
+    sampleCount,
   });
   return profile;
 }

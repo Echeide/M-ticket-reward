@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  buildTrainingOcrCatalog,
   compareTrainingResult,
   normalizeTrainingSampleInput,
   trainingEvaluationPassed,
 } from '../src/domain/training-sample';
+import { emptyStoreOcrProfile } from '../src/domain/ocr-profile';
 
 test('training samples normalize verified ground truth', () => {
   assert.deepEqual(normalizeTrainingSampleInput({
@@ -79,4 +81,37 @@ test('evaluation compares every critical field and visible evidence', () => {
   });
   assert.equal(trainingEvaluationPassed(matches), true);
   assert.equal(trainingEvaluationPassed({ ...matches, evidence: false }), false);
+});
+
+test('training OCR catalog mirrors active production stores and applies only the candidate profile', () => {
+  const candidateProfile = {
+    ...emptyStoreOcrProfile(), enabled: true, headerSignatures: ['CANDIDATE SIGNATURE'],
+  };
+  const result = buildTrainingOcrCatalog([
+    { id: 'target', active: true, name: 'Target', aliases: [], ocrProfile: emptyStoreOcrProfile() },
+    { id: 'active-peer', active: true, name: 'Peer', aliases: [] },
+    { id: 'inactive-peer', active: false, name: 'Hidden', aliases: [] },
+  ], 'target', candidateProfile);
+
+  assert.deepEqual(result.stores.map((store) => store.id), ['target', 'active-peer']);
+  assert.equal(result.stores[0]?.ocrProfile, candidateProfile);
+  assert.deepEqual(result.context, {
+    catalogStoreCount: 2,
+    targetStoreActive: true,
+    targetIncludedOutsideProduction: false,
+    profileMode: 'CANDIDATE',
+  });
+});
+
+test('training OCR catalog can measure an inactive target without treating it as production-active', () => {
+  const result = buildTrainingOcrCatalog([
+    { id: 'active', active: true, name: 'Active', aliases: [] },
+    { id: 'target', active: false, name: 'Target', aliases: [] },
+    { id: 'inactive-peer', active: false, name: 'Hidden', aliases: [] },
+  ], 'target', null);
+
+  assert.deepEqual(result.stores.map((store) => store.id), ['active', 'target']);
+  assert.equal(result.context.catalogStoreCount, 1);
+  assert.equal(result.context.targetIncludedOutsideProduction, true);
+  assert.equal(result.context.profileMode, 'PRODUCTION');
 });

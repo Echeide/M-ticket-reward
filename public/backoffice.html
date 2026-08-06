@@ -191,8 +191,12 @@
           <div class="training-summary" id="training-summary"></div>
           <div id="training-samples" class="training-samples"></div>
           <div class="training-intro">
-            <div><strong>Ejemplos verificados</strong><p>Sirven para medir el OCR y crear instrucciones específicas del comercio. No generan puntos ni aparecen en la actividad de usuarios.</p></div>
-            <button class="secondary-button" id="evaluate-all-training" type="button">Evaluar todos</button>
+            <div><strong>Ejemplos verificados</strong><p>Se evalúan con el catálogo real de comercios. Si el formulario contiene referencias OCR, se prueban como candidato sin activarlas en producción.</p></div>
+            <div class="training-batch-actions">
+              <label class="training-profile-test-toggle"><input id="evaluate-with-candidate-profile" type="checkbox" checked /> Probar perfil del formulario</label>
+              <button class="secondary-button" id="evaluate-failed-training" type="button" hidden>Reintentar errores</button>
+              <button class="secondary-button" id="evaluate-all-training" type="button">Evaluar todos</button>
+            </div>
           </div>
           <section class="ocr-profile-editor" aria-labelledby="ocr-profile-title">
             <div class="ocr-profile-heading">

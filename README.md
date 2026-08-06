@@ -74,6 +74,10 @@ El gestor puede evaluar un ejemplo o el conjunto completo con el proveedor OCR
 activo. Se conserva el modelo, la latencia y la coincidencia de comercio, número,
 fecha, hora, total y evidencias. Esta función construye un banco de evaluación fiable;
 no realiza fine-tuning ni activa automáticamente un modelo en producción.
+La evaluación utiliza el mismo catálogo de comercios activos que los tickets reales y
+permite probar el perfil que se está editando como candidato, sin guardarlo ni activarlo.
+Los resultados muestran los valores esperados y reconocidos, los problemas de evidencia
+y si un error técnico admite reintento.
 
 Antes de probar una subida, añade al menos una tienda:
 

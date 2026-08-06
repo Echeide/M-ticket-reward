@@ -22,9 +22,11 @@ import {
 } from './domain/reward-delivery';
 import { findMatchingStore, normalizeStoreInput } from './domain/store';
 import {
+  buildTrainingOcrCatalog,
   compareTrainingResult,
   normalizeTrainingSampleInput,
   trainingEvaluationPassed,
+  type TrainingEvaluationContext,
   type TrainingEvaluationMatches,
 } from './domain/training-sample';
 import {
@@ -183,7 +185,9 @@ type TrainingSampleRow = {
   evaluation_provider?: string | null;
   evaluation_model?: string | null;
   evaluation_status?: 'PASSED' | 'FAILED' | 'ERROR' | null;
+  evaluation_actual_payload?: OcrReceipt | null;
   evaluation_matches?: TrainingEvaluationMatches | null;
+  evaluation_context?: TrainingEvaluationContext | null;
   evaluation_verification_issues?: string[] | null;
   evaluation_attempt_count?: number | null;
   evaluation_duration_ms?: number | null;
@@ -199,6 +203,7 @@ type TrainingEvaluationRow = {
   status: 'PASSED' | 'FAILED' | 'ERROR';
   actual_payload: OcrReceipt | null;
   matches: TrainingEvaluationMatches;
+  context: TrainingEvaluationContext;
   verification_issues: string[];
   attempt_count: number;
   duration_ms: number | null;
@@ -2373,30 +2378,51 @@ async function handleAdminStoreOcrProfileGenerate(
   if (!evaluated.length) {
     return error('Evalúa al menos un ejemplo antes de generar el perfil', 409);
   }
+  const usable = evaluated.filter((source) => source.matches?.store === true);
+  if (!usable.length) {
+    return error('Ningún ejemplo evaluado coincide todavía con este comercio', 409);
+  }
   const profile = generateStoreOcrProfile(
     { name: data.store.name, aliases: data.store.aliases },
-    evaluated.map((source) => ({
+    usable.map((source) => ({
       receipt: source.actual_payload,
       matches: source.matches || {},
       notes: source.notes,
     })),
   );
-  return json({ success: true, profile, evaluatedSamples: evaluated.length });
+  return json({ success: true, profile, evaluatedSamples: usable.length });
 }
 
 function trainingEvaluationView(row: TrainingEvaluationRow | null) {
   if (!row) return null;
   const matches = row.matches || {} as TrainingEvaluationMatches;
+  const failure = row.status === 'ERROR'
+    ? classifyOcrFailure(row.error_message || 'OCR_EVALUATION_FAILED')
+    : null;
+  const actual = row.actual_payload ? {
+    isReceipt: row.actual_payload.isReceipt,
+    confidence: Number(row.actual_payload.confidence || 0),
+    storeName: row.actual_payload.storeName || '',
+    ticketNumber: row.actual_payload.ticketNumber || '',
+    purchaseDate: row.actual_payload.purchaseDate || '',
+    purchaseDateTime: row.actual_payload.purchaseDateTime || '',
+    totalCents: Number(row.actual_payload.totalCents || 0),
+    currency: row.actual_payload.currency || 'EUR',
+  } : null;
   return {
     id: row.id,
     provider: row.provider,
     model: row.model,
     status: row.status,
+    actual,
     matches: { ...matches, purchaseTime: matches.purchaseTime ?? true },
+    context: row.context || null,
     verificationIssues: Array.isArray(row.verification_issues) ? row.verification_issues : [],
     attemptCount: Number(row.attempt_count || 0),
     durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
     errorMessage: row.error_message || '',
+    errorReason: failure?.reason || '',
+    retryable: failure?.retryable || false,
     createdAt: row.created_at,
   };
 }
@@ -2408,8 +2434,9 @@ function trainingSampleView(row: TrainingSampleRow) {
     provider: row.evaluation_provider || '',
     model: row.evaluation_model || '',
     status: row.evaluation_status || 'ERROR',
-    actual_payload: null,
+    actual_payload: row.evaluation_actual_payload || null,
     matches: row.evaluation_matches || {} as TrainingEvaluationMatches,
+    context: row.evaluation_context || {} as TrainingEvaluationContext,
     verification_issues: row.evaluation_verification_issues || [],
     attempt_count: Number(row.evaluation_attempt_count || 0),
     duration_ms: row.evaluation_duration_ms === null || row.evaluation_duration_ms === undefined
@@ -2558,7 +2585,9 @@ async function handleAdminTrainingSamples(request: Request, env: Env, storeId: s
         `SELECT s.*,
             e.id AS evaluation_id, e.provider AS evaluation_provider,
             e.model AS evaluation_model, e.status AS evaluation_status,
+            e.actual_payload AS evaluation_actual_payload,
             e.matches AS evaluation_matches,
+            e.context AS evaluation_context,
             e.verification_issues AS evaluation_verification_issues,
             e.attempt_count AS evaluation_attempt_count,
             e.duration_ms AS evaluation_duration_ms,
@@ -2703,24 +2732,55 @@ async function handleAdminTrainingEvaluate(
 ): Promise<Response> {
   const managerEmail = managerIdentity(request, env);
   if (!managerEmail) return error('Acceso de gestor requerido', 401);
+  let candidateProfile: StoreOcrProfile | null = null;
+  const body = await request.text();
+  if (body.trim()) {
+    try {
+      const input: unknown = JSON.parse(body);
+      if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('INVALID_JSON');
+      const rawProfile = (input as Record<string, unknown>).profile;
+      if (rawProfile !== undefined) {
+        const normalized = normalizeStoreOcrProfile(rawProfile);
+        const hasGuidance = Boolean(
+          normalized.headerSignatures.length || normalized.ticketNumberLabels.length ||
+          normalized.dateLabels.length || normalized.totalLabels.length || normalized.instructions,
+        );
+        if (hasGuidance) candidateProfile = { ...normalized, enabled: true };
+      }
+    } catch {
+      return error('Configuración de evaluación no válida', 400);
+    }
+  }
   const data = await withDatabase(env, async (client) => {
     const sampleResult = await client.query<TrainingSampleRow>(
       'SELECT * FROM store_training_samples WHERE id = $1 AND store_id = $2 LIMIT 1',
       [sampleId, storeId],
     );
-    const storeResult = await client.query<StoreRow>('SELECT * FROM stores WHERE id = $1 LIMIT 1', [storeId]);
-    return { sample: sampleResult.rows[0], store: storeResult.rows[0] };
+    const storeResult = await client.query<StoreRow>(
+      'SELECT * FROM stores WHERE active = TRUE OR id = $1 ORDER BY active DESC, name ASC',
+      [storeId],
+    );
+    return {
+      sample: sampleResult.rows[0],
+      store: storeResult.rows.find((row) => row.id === storeId),
+      stores: storeResult.rows,
+    };
   });
   if (!data.sample || !data.store) return error('Ejemplo no encontrado', 404);
   const object = await env.TICKETS.get(data.sample.image_key);
   if (!object) return error('Imagen no encontrada', 404);
   const evaluationId = uuid();
+  const { stores: storeCatalog, context } = buildTrainingOcrCatalog(
+    data.stores.map(storeIdentity),
+    storeId,
+    candidateProfile,
+  );
   try {
     const result = await readReceipt(
       env,
       await object.arrayBuffer(),
       data.sample.image_content_type,
-      [storeIdentity(data.store)],
+      storeCatalog,
     );
     const expected = normalizeTrainingSampleInput({
       ticketNumber: data.sample.expected_ticket_number,
@@ -2733,20 +2793,20 @@ async function handleAdminTrainingEvaluate(
     const matches = compareTrainingResult(
       expected,
       result.receipt,
-      Boolean(findMatchingStore([data.store], result.receipt)),
+      findMatchingStore(storeCatalog, result.receipt)?.id === storeId,
       result.verificationIssues,
     );
     const status = trainingEvaluationPassed(matches) ? 'PASSED' : 'FAILED';
     const created = await withDatabase(env, async (client) => {
       const insert = await client.query<TrainingEvaluationRow>(
         `INSERT INTO store_training_evaluations
-          (id, sample_id, provider, model, status, actual_payload, matches,
+          (id, sample_id, provider, model, status, actual_payload, matches, context,
            verification_issues, attempt_count, duration_ms, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12)
          RETURNING *`,
         [evaluationId, sampleId, result.provider, result.model, status,
-          JSON.stringify(result.receipt), JSON.stringify(matches), JSON.stringify(result.verificationIssues),
-          result.attemptCount, result.durationMs, managerEmail],
+          JSON.stringify(result.receipt), JSON.stringify(matches), JSON.stringify(context),
+          JSON.stringify(result.verificationIssues), result.attemptCount, result.durationMs, managerEmail],
       );
       return insert.rows[0]!;
     });
@@ -2756,12 +2816,12 @@ async function handleAdminTrainingEvaluate(
     const created = await withDatabase(env, async (client) => {
       const insert = await client.query<TrainingEvaluationRow>(
         `INSERT INTO store_training_evaluations
-          (id, sample_id, provider, model, status, matches, verification_issues,
+          (id, sample_id, provider, model, status, matches, context, verification_issues,
            attempt_count, error_message, created_by)
-         VALUES ($1, $2, $3, $4, 'ERROR', $5::jsonb, $6::jsonb, 0, $7, $8)
+         VALUES ($1, $2, $3, $4, 'ERROR', $5::jsonb, $6::jsonb, $7::jsonb, 0, $8, $9)
          RETURNING *`,
         [evaluationId, sampleId, env.OCR_PROVIDER || 'workers-ai', env.OCR_MODEL,
-          JSON.stringify({}), JSON.stringify([]), message, managerEmail],
+          JSON.stringify({}), JSON.stringify(context), JSON.stringify([]), message, managerEmail],
       );
       return insert.rows[0]!;
     });

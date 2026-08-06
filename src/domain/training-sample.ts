@@ -1,4 +1,6 @@
 import { isValidPurchaseDateTime, type OcrReceipt } from './receipt';
+import type { StoreOcrProfile } from './ocr-profile';
+import type { StoreIdentity } from './store';
 
 export type TrainingSampleInput = {
   ticketNumber: string;
@@ -17,6 +19,38 @@ export type TrainingEvaluationMatches = {
   total: boolean;
   evidence: boolean;
 };
+
+export type TrainingEvaluationContext = {
+  catalogStoreCount: number;
+  targetStoreActive: boolean;
+  targetIncludedOutsideProduction: boolean;
+  profileMode: 'PRODUCTION' | 'CANDIDATE';
+};
+
+export function buildTrainingOcrCatalog<T extends StoreIdentity & { id: string; active: boolean }>(
+  stores: T[],
+  targetStoreId: string,
+  candidateProfile: StoreOcrProfile | null,
+): { stores: T[]; context: TrainingEvaluationContext } {
+  const targetStore = stores.find((store) => store.id === targetStoreId);
+  if (!targetStore) throw new Error('TRAINING_STORE_NOT_FOUND');
+  const activeStores = stores.filter((store) => store.active);
+  const targetIncludedOutsideProduction = !targetStore.active;
+  const evaluationStores = targetIncludedOutsideProduction
+    ? [...activeStores, targetStore]
+    : activeStores;
+  return {
+    stores: evaluationStores.map((store) => store.id === targetStoreId && candidateProfile
+      ? { ...store, ocrProfile: candidateProfile }
+      : store),
+    context: {
+      catalogStoreCount: activeStores.length,
+      targetStoreActive: targetStore.active,
+      targetIncludedOutsideProduction,
+      profileMode: candidateProfile ? 'CANDIDATE' : 'PRODUCTION',
+    },
+  };
+}
 
 function compactIdentifier(value: string): string {
   return value.normalize('NFKD').replace(/[^a-z0-9]/gi, '').toUpperCase();

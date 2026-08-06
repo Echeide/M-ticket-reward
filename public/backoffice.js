@@ -4,6 +4,8 @@ const state = {
   pagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
   ticketUserPagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
   reviewing: false,
+  trainingEvaluationRunning: false,
+  trainingEvaluationSampleId: '',
   token: sessionStorage.getItem('admin-token') || '',
 };
 let storeLogoPreviewObjectUrl = '';
@@ -621,7 +623,7 @@ function openStoreDialog(id = '') {
   document.querySelector('#cancel-store').textContent = readOnly ? 'Cerrar' : 'Cancelar';
   document.querySelector('.training-add-options').hidden = readOnly;
   document.querySelector('#training-drafts').hidden = readOnly;
-  document.querySelector('#evaluate-all-training').hidden = readOnly;
+  document.querySelector('.training-batch-actions').hidden = readOnly;
   document.querySelector('#generate-ocr-profile').hidden = readOnly;
   document.querySelector('#save-ocr-profile').hidden = readOnly;
   document.querySelector('#store-dialog').showModal();
@@ -671,17 +673,46 @@ function bindTrainingImageButtons(root = document) {
   });
 }
 
-function trainingEvaluationDetails(evaluation) {
+function trainingVerificationLabel(issue) {
+  return reasonLabels[`OCR_${issue}`] || issue.replaceAll('_', ' ').toLocaleLowerCase('es');
+}
+
+function trainingEvaluationDetails(evaluation, expected) {
   if (!evaluation) return '<span class="training-not-evaluated">Sin evaluar</span>';
   if (evaluation.status === 'ERROR') {
-    return `<span class="status-chip auto_rejected">Error técnico</span><small>${escapeHtml(evaluation.errorMessage || 'No se pudo ejecutar el OCR')}</small>`;
+    const retryLabel = evaluation.retryable ? 'Se puede reintentar' : 'Requiere revisión';
+    return `<div class="training-evaluation-heading"><span class="status-chip auto_rejected">Error técnico</span><small>${escapeHtml(retryLabel)}</small></div><p class="training-error-detail">${escapeHtml(evaluation.errorMessage || evaluation.errorReason || 'No se pudo ejecutar el OCR')}</p>`;
   }
   const labels = {
     store: 'Comercio', ticketNumber: 'Número', purchaseDate: 'Fecha', purchaseTime: 'Hora', total: 'Importe', evidence: 'Evidencias',
   };
   const fields = Object.entries(labels).map(([key, label]) =>
     `<span class="training-match ${evaluation.matches?.[key] ? 'passed' : 'failed'}">${evaluation.matches?.[key] ? '✓' : '×'} ${label}</span>`).join('');
-  return `<div class="training-evaluation-heading"><span class="status-chip ${evaluation.status === 'PASSED' ? 'rewarded' : 'auto_rejected'}">${evaluation.status === 'PASSED' ? 'Correcto' : 'Con diferencias'}</span><small>${escapeHtml(evaluation.model)} · ${evaluation.durationMs ?? '—'} ms</small></div><div class="training-matches">${fields}</div>`;
+  const actual = evaluation.actual || {};
+  const expectedIdentity = expected.ticketNumber || 'Sin número';
+  const actualIdentity = actual.ticketNumber || (actual.purchaseDateTime ? 'Sin número; usa fecha y hora' : 'No reconocido');
+  const expectedDate = expected.purchaseDateTime || expected.purchaseDate || '—';
+  const actualDate = actual.purchaseDateTime || actual.purchaseDate || 'No reconocida';
+  const expectedTotal = formatMoney(expected.totalCents);
+  const actualTotal = actual.totalCents ? formatMoney(actual.totalCents) : 'No reconocido';
+  const confidence = Number.isFinite(actual.confidence) ? `${Math.round(actual.confidence * 100)}%` : '—';
+  const profileLabel = evaluation.context?.profileMode === 'CANDIDATE' ? 'perfil candidato' : 'perfil de producción';
+  const catalogLabel = evaluation.context?.catalogStoreCount === undefined
+    ? '' : ` · ${evaluation.context.catalogStoreCount} comercios activos`;
+  const issues = (evaluation.verificationIssues || []).map(trainingVerificationLabel);
+  const inactiveWarning = evaluation.context?.targetIncludedOutsideProduction
+    ? '<p class="training-context-warning">Este comercio está inactivo: se incluyó solo para poder medir su OCR.</p>' : '';
+  return `<div class="training-evaluation-heading"><span class="status-chip ${evaluation.status === 'PASSED' ? 'rewarded' : 'auto_rejected'}">${evaluation.status === 'PASSED' ? 'Correcto' : 'Con diferencias'}</span><small>${escapeHtml(evaluation.model)} · ${evaluation.attemptCount || 0} intentos · ${evaluation.durationMs ?? '—'} ms</small></div>
+    <div class="training-matches">${fields}</div>
+    <div class="training-evaluation-meta">OCR ${confidence} · ${escapeHtml(profileLabel + catalogLabel)}</div>
+    <div class="training-comparison" role="table" aria-label="Valores esperados y reconocidos">
+      <div class="training-comparison-heading" role="row"><span>Campo</span><strong>Esperado</strong><strong>Reconocido</strong></div>
+      <div role="row"><span>Número</span><strong>${escapeHtml(expectedIdentity)}</strong><strong>${escapeHtml(actualIdentity)}</strong></div>
+      <div role="row"><span>Fecha/hora</span><strong>${escapeHtml(expectedDate)}</strong><strong>${escapeHtml(actualDate)}</strong></div>
+      <div role="row"><span>Importe</span><strong>${escapeHtml(expectedTotal)}</strong><strong>${escapeHtml(actualTotal)}</strong></div>
+      <div role="row"><span>Comercio</span><strong>${escapeHtml(document.querySelector('#store-form').elements.name.value || 'Comercio esperado')}</strong><strong>${escapeHtml(actual.storeName || 'No reconocido')}</strong></div>
+    </div>
+    ${issues.length ? `<ul class="training-issues">${issues.map((issue) => `<li>${escapeHtml(issue)}</li>`).join('')}</ul>` : ''}${inactiveWarning}`;
 }
 
 function profileLines(value) {
@@ -783,11 +814,15 @@ async function saveOcrProfile() {
 function renderTrainingSamples() {
   const passed = state.trainingSamples.filter((sample) => sample.evaluation?.status === 'PASSED').length;
   const evaluated = state.trainingSamples.filter((sample) => sample.evaluation).length;
+  const errors = state.trainingSamples.filter((sample) => sample.evaluation?.status === 'ERROR').length;
   document.querySelector('#training-tab-count').textContent = String(state.trainingSamples.length);
   document.querySelector('#training-summary').innerHTML = state.trainingSamples.length
-    ? `<strong>${state.trainingSamples.length} ejemplos</strong><span>${evaluated} evaluados · ${passed} completamente correctos</span>`
+    ? `<strong>${state.trainingSamples.length} ejemplos</strong><span>${evaluated} evaluados · ${passed} completamente correctos${errors ? ` · ${errors} con error técnico` : ''}</span>`
     : '';
-  document.querySelector('#evaluate-all-training').disabled = !state.trainingSamples.length;
+  document.querySelector('#evaluate-all-training').disabled = state.trainingEvaluationRunning || !state.trainingSamples.length;
+  const retryButton = document.querySelector('#evaluate-failed-training');
+  retryButton.hidden = isOperator() || errors === 0;
+  retryButton.disabled = state.trainingEvaluationRunning;
   document.querySelector('#training-samples').innerHTML = state.trainingSamples.map((sample) => `
     <article class="training-sample" data-id="${escapeHtml(sample.id)}">
       <button class="training-image-button" type="button" data-image-src="${escapeHtml(sample.imageUrl)}" aria-label="Ampliar ticket de entrenamiento">
@@ -798,14 +833,14 @@ function renderTrainingSamples() {
         <strong>${escapeHtml(sample.expected.ticketNumber || 'Sin número; identificado por hora')}</strong>
         <span>${escapeHtml(sample.expected.purchaseDateTime || sample.expected.purchaseDate)} · ${formatMoney(sample.expected.totalCents)}</span>
         ${sample.notes ? `<small>${escapeHtml(sample.notes)}</small>` : ''}
-        ${trainingEvaluationDetails(sample.evaluation)}
+        ${trainingEvaluationDetails(sample.evaluation, sample.expected)}
       </div>
       ${isOperator() ? '' : `<div class="training-actions">
-        <button class="secondary-button evaluate-training" type="button" data-id="${escapeHtml(sample.id)}">Evaluar</button>
-        <button class="text-button delete-training" type="button" data-id="${escapeHtml(sample.id)}">Eliminar</button>
+        <button class="secondary-button evaluate-training" type="button" data-id="${escapeHtml(sample.id)}" ${state.trainingEvaluationRunning ? 'disabled' : ''}>${state.trainingEvaluationSampleId === sample.id ? 'Evaluando…' : 'Evaluar'}</button>
+        <button class="text-button delete-training" type="button" data-id="${escapeHtml(sample.id)}" ${state.trainingEvaluationRunning ? 'disabled' : ''}>Eliminar</button>
       </div>`}
     </article>`).join('') || '<p class="empty-state">Todavía no hay tickets de entrenamiento para este comercio.</p>';
-  document.querySelectorAll('.evaluate-training').forEach((button) => button.addEventListener('click', () => evaluateTrainingSample(button.dataset.id, button)));
+  document.querySelectorAll('.evaluate-training').forEach((button) => button.addEventListener('click', () => evaluateTrainingSample(button.dataset.id)));
   document.querySelectorAll('.delete-training').forEach((button) => button.addEventListener('click', () => deleteTrainingSample(button.dataset.id)));
   bindTrainingImageButtons(document.querySelector('#training-samples'));
 }
@@ -995,41 +1030,76 @@ async function saveTrainingDrafts(event) {
   }
 }
 
-async function evaluateTrainingSample(sampleId, button) {
+function trainingEvaluationRequest(sampleId) {
   const storeId = document.querySelector('#store-form').elements.id.value;
-  button.disabled = true;
-  button.textContent = 'Evaluando…';
+  const useCandidateProfile = document.querySelector('#evaluate-with-candidate-profile').checked;
+  return request(`/api/admin/stores/${storeId}/training/${sampleId}/evaluate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(useCandidateProfile ? { profile: ocrProfileFormValue() } : {}),
+  });
+}
+
+async function evaluateTrainingSample(sampleId) {
+  if (state.trainingEvaluationRunning) return;
+  state.trainingEvaluationRunning = true;
+  state.trainingEvaluationSampleId = sampleId;
+  document.querySelector('#training-form-error').textContent = '';
+  renderTrainingSamples();
   try {
-    const payload = await request(`/api/admin/stores/${storeId}/training/${sampleId}/evaluate`, { method: 'POST' });
+    const payload = await trainingEvaluationRequest(sampleId);
     const sample = state.trainingSamples.find((item) => item.id === sampleId);
     if (sample) sample.evaluation = payload.evaluation;
-    renderTrainingSamples();
   } catch (error) {
     document.querySelector('#training-form-error').textContent = error instanceof Error ? error.message : 'No se pudo evaluar el ejemplo';
-    button.disabled = false;
-    button.textContent = 'Evaluar';
+  } finally {
+    state.trainingEvaluationRunning = false;
+    state.trainingEvaluationSampleId = '';
+    renderTrainingSamples();
   }
 }
 
-async function evaluateAllTraining() {
+async function evaluateTrainingBatch(samples, actionLabel) {
+  if (state.trainingEvaluationRunning || !samples.length) return;
   const button = document.querySelector('#evaluate-all-training');
-  button.disabled = true;
+  state.trainingEvaluationRunning = true;
   document.querySelector('#training-form-error').textContent = '';
+  const totals = { passed: 0, failed: 0, errors: 0 };
+  renderTrainingSamples();
   try {
-    for (const [index, sample] of state.trainingSamples.entries()) {
-      button.textContent = `Evaluando ${index + 1} de ${state.trainingSamples.length}…`;
-      const storeId = document.querySelector('#store-form').elements.id.value;
-      const payload = await request(`/api/admin/stores/${storeId}/training/${sample.id}/evaluate`, { method: 'POST' });
-      sample.evaluation = payload.evaluation;
+    for (const [index, sample] of samples.entries()) {
+      state.trainingEvaluationSampleId = sample.id;
+      button.textContent = `${actionLabel} ${index + 1} de ${samples.length}…`;
       renderTrainingSamples();
+      try {
+        const payload = await trainingEvaluationRequest(sample.id);
+        sample.evaluation = payload.evaluation;
+        if (payload.evaluation?.status === 'PASSED') totals.passed += 1;
+        else if (payload.evaluation?.status === 'FAILED') totals.failed += 1;
+        else totals.errors += 1;
+      } catch (error) {
+        totals.errors += 1;
+        document.querySelector('#training-form-error').textContent = error instanceof Error ? error.message : 'Una evaluación no pudo completarse';
+      }
     }
-    showNotice('Evaluación del comercio completada.');
-  } catch (error) {
-    document.querySelector('#training-form-error').textContent = error instanceof Error ? error.message : 'No se pudo completar la evaluación';
+    showNotice(`Evaluación completada: ${totals.passed} correctos, ${totals.failed} con diferencias y ${totals.errors} errores.`);
   } finally {
-    button.disabled = false;
+    state.trainingEvaluationRunning = false;
+    state.trainingEvaluationSampleId = '';
     button.textContent = 'Evaluar todos';
+    renderTrainingSamples();
   }
+}
+
+function evaluateAllTraining() {
+  return evaluateTrainingBatch([...state.trainingSamples], 'Evaluando');
+}
+
+function retryFailedTraining() {
+  return evaluateTrainingBatch(
+    state.trainingSamples.filter((sample) => sample.evaluation?.status === 'ERROR'),
+    'Reintentando',
+  );
 }
 
 async function deleteTrainingSample(sampleId) {
@@ -1470,6 +1540,7 @@ document.querySelector('#training-image-dialog').addEventListener('close', () =>
   document.querySelector('#training-image-expanded').removeAttribute('src');
 });
 document.querySelector('#evaluate-all-training').addEventListener('click', evaluateAllTraining);
+document.querySelector('#evaluate-failed-training').addEventListener('click', retryFailedTraining);
 document.querySelector('#generate-ocr-profile').addEventListener('click', generateOcrProfile);
 document.querySelector('#save-ocr-profile').addEventListener('click', saveOcrProfile);
 document.querySelector('#ocr-profile-enabled').addEventListener('change', updateOcrProfileStatus);

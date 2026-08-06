@@ -135,6 +135,29 @@ test('OCR reading prefers verified date and time over an unsupported number cand
   assert.equal(result.attemptCount, 1);
 });
 
+test('OCR reading repairs literal control characters inside JSON strings', async () => {
+  const malformedJson = JSON.stringify(validExtraction)
+    .replace('DINOSOL\\nDocumento', 'DINOSOL\nDocumento')
+    .replace('Fecha 06/08/2026\\nTOTAL', 'Fecha 06/08/2026\tTOTAL');
+  const env = {
+    OCR_MODE: 'workers-ai',
+    OCR_PROVIDER: 'workers-ai',
+    OCR_MODEL: '@cf/meta/llama-3.2-11b-vision-instruct',
+    OCR_WORKERS_AI_FORMAT: 'chat',
+    OCR_TIMEOUT_MS: '5000',
+    AI: {
+      async run() {
+        return { choices: [{ message: { content: malformedJson } }] };
+      },
+    },
+  } as unknown as Env;
+
+  const result = await readReceipt(env, new Uint8Array([1, 2, 3]).buffer, 'image/webp');
+
+  assert.match(result.receipt.rawText || '', /DINOSOL\nDocumento/);
+  assert.deepEqual(result.verificationIssues, []);
+});
+
 test('OCR normalization repairs malformed dates and identifiers from labelled evidence', () => {
   const receipt = normalizeOcr({
     ...validExtraction,

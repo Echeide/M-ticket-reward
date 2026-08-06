@@ -23,7 +23,7 @@ test('training evaluations generate merchant-specific OCR landmarks', () => {
     { name: 'Comercio Uno', aliases: ['Comercio Uno SL'] },
     [{
       notes: 'El total válido es el último TOTAL A PAGAR.',
-      matches: { ticketNumber: true, purchaseDate: true, total: true },
+      matches: { store: true, ticketNumber: true, purchaseDate: true, total: true },
       receipt: {
         isReceipt: true,
         confidence: 0.98,
@@ -50,4 +50,34 @@ test('training evaluations generate merchant-specific OCR landmarks', () => {
   assert.deepEqual(profile.totalLabels, ['TOTAL A PAGAR']);
   assert.equal(profile.dateFormat, 'DD/MM/AAAA');
   assert.match(profile.instructions, /último TOTAL A PAGAR/);
+});
+
+test('OCR profiles ignore landmarks from samples matched to another merchant', () => {
+  const profile = generateStoreOcrProfile(
+    { name: 'Comercio Uno', aliases: ['Comercio Uno SL'] },
+    [{
+      notes: 'Usar el CIF de esta cabecera.',
+      matches: { store: false, ticketNumber: true, purchaseDate: true, total: true },
+      receipt: {
+        isReceipt: true,
+        confidence: 0.98,
+        storeName: 'Comercio Dos',
+        headerText: 'COMERCIO DOS\nB87654321',
+        ticketNumber: 'B-99999',
+        purchaseDate: '2026-08-06',
+        totalCents: 2599,
+        currency: 'EUR',
+        evidence: {
+          ticketNumberText: 'Factura: B-99999',
+          purchaseDateText: 'Fecha: 06/08/2026',
+          totalText: 'TOTAL 25,99',
+        },
+      },
+    }],
+  );
+
+  assert.equal(profile.sampleCount, 0);
+  assert.equal(profile.headerSignatures.includes('B87654321'), false);
+  assert.deepEqual(profile.ticketNumberLabels, []);
+  assert.doesNotMatch(profile.instructions, /CIF/);
 });

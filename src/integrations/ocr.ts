@@ -79,7 +79,50 @@ function parseJsonObject(value: string): Record<string, unknown> {
   const start = value.indexOf('{');
   const end = value.lastIndexOf('}');
   if (start < 0 || end <= start) throw new Error('OCR_INVALID_JSON');
-  return JSON.parse(value.slice(start, end + 1)) as Record<string, unknown>;
+  const candidate = value.slice(start, end + 1);
+  try {
+    return JSON.parse(candidate) as Record<string, unknown>;
+  } catch (caught) {
+    // Some vision models return otherwise valid JSON with literal newlines or tabs
+    // inside rawText/evidence strings. Escape only control characters that occur
+    // inside JSON strings so malformed structure still fails normally.
+    let repaired = '';
+    let insideString = false;
+    let escaped = false;
+    for (const character of candidate) {
+      if (escaped) {
+        repaired += character;
+        escaped = false;
+        continue;
+      }
+      if (insideString && character === '\\') {
+        repaired += character;
+        escaped = true;
+        continue;
+      }
+      if (character === '"') {
+        repaired += character;
+        insideString = !insideString;
+        continue;
+      }
+      const code = character.charCodeAt(0);
+      if (insideString && code <= 0x1f) {
+        if (character === '\n') repaired += '\\n';
+        else if (character === '\r') repaired += '\\r';
+        else if (character === '\t') repaired += '\\t';
+        else if (character === '\b') repaired += '\\b';
+        else if (character === '\f') repaired += '\\f';
+        else repaired += `\\u${code.toString(16).padStart(4, '0')}`;
+        continue;
+      }
+      repaired += character;
+    }
+    try {
+      return JSON.parse(repaired) as Record<string, unknown>;
+    } catch {
+      throw caught;
+    }
+  }
 }
 
 export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
