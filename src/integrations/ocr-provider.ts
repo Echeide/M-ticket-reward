@@ -96,6 +96,7 @@ async function extractResponseText(payload: unknown): Promise<string | null> {
     if (record[key] === undefined || record[key] === null) continue;
     const text = await extractResponseText(record[key]);
     if (text) return text;
+    if (typeof record[key] === 'object') return JSON.stringify(record[key]);
   }
   return null;
 }

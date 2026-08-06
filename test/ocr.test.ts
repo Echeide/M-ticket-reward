@@ -165,6 +165,17 @@ test('OCR provider reads nested and streamed Workers AI responses', async () => 
     choices: [{ message: { content: [{ type: 'text', text: '{"ok":true}' }] } }],
   });
   assert.equal(contentParts, '{"ok":true}');
+
+  const structuredReceipt = {
+    isReceipt: true,
+    storeName: 'Comercio Demo',
+    purchaseDate: '2026-08-06',
+    totalCents: 1592,
+  };
+  assert.equal(
+    await providerResponseText({ response: structuredReceipt, usage: { total_tokens: 7436 } }),
+    JSON.stringify(structuredReceipt),
+  );
 });
 
 test('OCR retries an incomplete reading with focused regions', async () => {
