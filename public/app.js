@@ -10,6 +10,57 @@ const state = {
   pollGeneration: 0,
 };
 
+const HOME_SETTING_TARGETS = {
+  'home.eyebrow': '#home-eyebrow',
+  'home.title': '#home-title',
+  'home.carouselLabel': '#home-carousel-label',
+  'home.scanButton': '#home-scan-label',
+  'home.historyButton': '#home-history-label',
+};
+
+function appendTextWithBreaks(parent, value) {
+  const lines = value.split('\n');
+  lines.forEach((line, index) => {
+    if (index) parent.append(document.createElement('br'));
+    parent.append(document.createTextNode(line));
+  });
+}
+
+function renderFormattedText(node, value) {
+  node.replaceChildren();
+  const pattern = /\*\*([^*\n]+)\*\*|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g;
+  let cursor = 0;
+  for (const match of value.matchAll(pattern)) {
+    appendTextWithBreaks(node, value.slice(cursor, match.index));
+    if (match[1] !== undefined) {
+      const strong = document.createElement('strong');
+      strong.textContent = match[1];
+      node.append(strong);
+    } else {
+      const link = document.createElement('a');
+      link.textContent = match[2];
+      link.href = match[3];
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      node.append(link);
+    }
+    cursor = Number(match.index) + match[0].length;
+  }
+  appendTextWithBreaks(node, value.slice(cursor));
+}
+
+function applyHomeSettings(settings) {
+  for (const [key, selector] of Object.entries(HOME_SETTING_TARGETS)) {
+    if (typeof settings[key] === 'string') document.querySelector(selector).textContent = settings[key];
+  }
+  if (typeof settings['home.description'] === 'string') {
+    renderFormattedText(document.querySelector('#home-description'), settings['home.description']);
+  }
+  if (typeof settings['home.privacyNote'] === 'string') {
+    renderFormattedText(document.querySelector('#home-privacy-note'), settings['home.privacyNote']);
+  }
+}
+
 const RECEIPT_STATUSES = {
   OCR_QUEUED: { label: 'En espera', tone: 'pending', message: 'El ticket está registrado y esperando a ser leído.' },
   OCR_PROCESSING: { label: 'Leyendo ticket', tone: 'pending', message: 'Estamos reconociendo los datos del ticket.' },
@@ -157,8 +208,12 @@ async function bootstrap() {
     history.replaceState({}, '', location.pathname);
   }
   if (!state.sessionToken) throw new Error('Abre este módulo desde Rtales para comenzar');
-  const stores = await api('/api/stores');
+  const [stores, configuredTexts] = await Promise.all([
+    api('/api/stores'),
+    api('/api/home-settings').catch(() => ({ settings: {} })),
+  ]);
   state.stores = stores.stores;
+  applyHomeSettings(configuredTexts.settings || {});
   renderStoreCarousel(state.stores);
   if (!state.receiptId) {
     const latest = await api('/api/receipts/latest');

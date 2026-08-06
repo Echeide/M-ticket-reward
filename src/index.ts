@@ -14,6 +14,12 @@ import {
 } from './domain/rewards';
 import { findMatchingStore, normalizeStoreInput } from './domain/store';
 import { normalizeRewardTierInput } from './domain/reward-tier';
+import {
+  APP_SETTING_DEFINITIONS,
+  appSettingsWithDefaults,
+  normalizeAppSettingValue,
+  settingDefinition,
+} from './domain/app-settings';
 import { readReceipt } from './integrations/ocr';
 import {
   exchangeLaunchCode,
@@ -101,6 +107,13 @@ type RewardTierRow = {
   active: boolean;
   created_at: string;
   updated_at: string;
+};
+
+type AppSettingRow = {
+  key: string;
+  value: string;
+  updated_at: string;
+  updated_by: string | null;
 };
 
 const ACTIVE_DUPLICATE_STATUSES = [
@@ -361,6 +374,18 @@ async function handleStores(request: Request, env: Env): Promise<Response> {
         : '',
     })),
   });
+}
+
+async function handleHomeSettings(request: Request, env: Env): Promise<Response> {
+  const session = await authenticatedSession(request, env);
+  if (!session) return error('Sesión no válida', 401);
+  const rows = await withDatabase(env, async (client) => {
+    const result = await client.query<Pick<AppSettingRow, 'key' | 'value'>>(
+      "SELECT key, value FROM app_settings WHERE key LIKE 'home.%'",
+    );
+    return result.rows;
+  });
+  return json({ success: true, settings: appSettingsWithDefaults(rows) });
 }
 
 async function loadOwnedReceipt(
@@ -1224,6 +1249,69 @@ async function handleAdminRewardTierUpdate(request: Request, env: Env, tierId: s
   return json({ success: true, tier: rewardTierView(updated.row) });
 }
 
+function appSettingView(definition: typeof APP_SETTING_DEFINITIONS[number], value: string) {
+  return {
+    key: definition.key,
+    group: definition.group,
+    label: definition.label,
+    help: definition.help,
+    format: definition.format,
+    value,
+    maxLength: definition.maxLength,
+  };
+}
+
+async function handleAdminSettings(request: Request, env: Env): Promise<Response> {
+  const manager = managerIdentity(request, env);
+  if (!manager) return error('Acceso de gestor requerido', 401);
+  const rows = await withDatabase(env, async (client) => {
+    const result = await client.query<Pick<AppSettingRow, 'key' | 'value'>>(
+      'SELECT key, value FROM app_settings ORDER BY key ASC',
+    );
+    return result.rows;
+  });
+  const values = appSettingsWithDefaults(rows);
+  return json({
+    success: true,
+    manager,
+    settings: APP_SETTING_DEFINITIONS.map((definition) => appSettingView(definition, values[definition.key]!)),
+  });
+}
+
+async function handleAdminSettingUpdate(
+  request: Request,
+  env: Env,
+  settingKey: string,
+): Promise<Response> {
+  const manager = managerIdentity(request, env);
+  if (!manager) return error('Acceso de gestor requerido', 401);
+  const definition = settingDefinition(settingKey);
+  const body = await readJson(request);
+  const value = normalizeAppSettingValue(settingKey, body.value);
+  const updated = await withDatabase(env, (client) => inTransaction(client, async () => {
+    const currentResult = await client.query<Pick<AppSettingRow, 'value'>>(
+      'SELECT value FROM app_settings WHERE key = $1 LIMIT 1',
+      [settingKey],
+    );
+    const previousValue = currentResult.rows[0]?.value ?? definition.defaultValue;
+    const result = await client.query<AppSettingRow>(
+      `INSERT INTO app_settings (key, value, updated_at, updated_by)
+       VALUES ($1, $2, NOW(), $3)
+       ON CONFLICT(key) DO UPDATE SET value = $2, updated_at = NOW(), updated_by = $3
+       RETURNING *`,
+      [settingKey, value, manager],
+    );
+    await client.query(
+      `INSERT INTO app_setting_audit_log
+         (id, setting_key, manager_email, previous_value, new_value)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [uuid(), settingKey, manager, previousValue, value],
+    );
+    return result.rows[0]!;
+  }));
+  return json({ success: true, setting: appSettingView(definition, updated.value) });
+}
+
 async function handleFetch(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   try {
@@ -1236,6 +1324,7 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     }
     if (request.method === 'POST' && url.pathname === '/api/session/exchange') return await handleExchange(request, env);
     if (request.method === 'GET' && url.pathname === '/api/stores') return await handleStores(request, env);
+    if (request.method === 'GET' && url.pathname === '/api/home-settings') return await handleHomeSettings(request, env);
     const publicStoreLogoMatch = url.pathname.match(/^\/api\/stores\/([^/]+)\/logo$/);
     if (request.method === 'GET' && publicStoreLogoMatch?.[1]) {
       return await handleStoreLogo(request, env, publicStoreLogoMatch[1], false);
@@ -1270,6 +1359,13 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     }
     const tierMatch = url.pathname.match(/^\/api\/admin\/reward-tiers\/([^/]+)$/);
     if (request.method === 'PATCH' && tierMatch?.[1]) return await handleAdminRewardTierUpdate(request, env, tierMatch[1]);
+    if (request.method === 'GET' && url.pathname === '/api/admin/settings') {
+      return await handleAdminSettings(request, env);
+    }
+    const settingMatch = url.pathname.match(/^\/api\/admin\/settings\/([^/]+)$/);
+    if (request.method === 'PATCH' && settingMatch?.[1]) {
+      return await handleAdminSettingUpdate(request, env, decodeURIComponent(settingMatch[1]));
+    }
     const imageMatch = url.pathname.match(/^\/api\/admin\/receipts\/([^/]+)\/image$/);
     if (request.method === 'GET' && imageMatch?.[1]) return await handleAdminImage(request, env, imageMatch[1]);
     const reprocessMatch = url.pathname.match(/^\/api\/admin\/receipts\/([^/]+)\/reprocess$/);
@@ -1312,6 +1408,9 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       IMAGE_INVALID: 'La imagen seleccionada no es válida',
       TIER_MINIMUM_INVALID: 'El importe mínimo debe ser un valor válido en céntimos',
       TIER_POINTS_INVALID: 'Los puntos deben ser un número entero positivo o cero',
+      APP_SETTING_UNKNOWN: 'El ajuste seleccionado no existe',
+      APP_SETTING_VALUE_INVALID: 'El contenido del ajuste no es válido',
+      APP_SETTING_TOO_LONG: 'El texto supera la longitud permitida',
     };
     return error(validationErrors[message] || 'No se pudo completar la operación', validationErrors[message] ? 400 : 500);
   }

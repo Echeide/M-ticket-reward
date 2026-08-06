@@ -1,5 +1,5 @@
 const state = {
-  rows: [], stores: [], tiers: [], selected: null,
+  rows: [], stores: [], tiers: [], settings: [], selected: null,
   pagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
   reviewing: false,
   token: sessionStorage.getItem('admin-token') || '',
@@ -128,6 +128,127 @@ async function loadTiers() {
       <button class="secondary-button edit-tier" data-id="${tier.id}" type="button">Editar</button>
     </article>`).join('') || '<p class="empty-state">Todavía no hay tramos configurados.</p>';
   document.querySelectorAll('.edit-tier').forEach((button) => button.addEventListener('click', () => openTierDialog(button.dataset.id)));
+}
+
+function appendSettingText(parent, value) {
+  value.split('\n').forEach((line, index) => {
+    if (index) parent.append(document.createElement('br'));
+    parent.append(document.createTextNode(line));
+  });
+}
+
+function renderSettingFormattedText(node, value) {
+  node.replaceChildren();
+  const pattern = /\*\*([^*\n]+)\*\*|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g;
+  let cursor = 0;
+  for (const match of value.matchAll(pattern)) {
+    appendSettingText(node, value.slice(cursor, match.index));
+    if (match[1] !== undefined) {
+      const strong = document.createElement('strong');
+      strong.textContent = match[1];
+      node.append(strong);
+    } else {
+      const link = document.createElement('a');
+      link.textContent = match[2];
+      link.href = match[3];
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      node.append(link);
+    }
+    cursor = Number(match.index) + match[0].length;
+  }
+  appendSettingText(node, value.slice(cursor));
+}
+
+function selectedSetting() {
+  return state.settings.find((setting) => setting.key === document.querySelector('#setting-select').value);
+}
+
+function settingEditorValue(setting) {
+  return setting.format === 'rich'
+    ? document.querySelector('#setting-rich-value').value
+    : document.querySelector('#setting-plain-value').value;
+}
+
+function updateSettingPreview() {
+  const setting = selectedSetting();
+  if (!setting) return;
+  const preview = document.querySelector('#setting-preview-content');
+  const value = settingEditorValue(setting);
+  if (setting.format === 'rich') renderSettingFormattedText(preview, value);
+  else preview.textContent = value;
+}
+
+function renderSettingEditor() {
+  const setting = selectedSetting();
+  if (!setting) return;
+  const plainField = document.querySelector('#setting-plain-field');
+  const richField = document.querySelector('#setting-rich-field');
+  const plainInput = document.querySelector('#setting-plain-value');
+  const richInput = document.querySelector('#setting-rich-value');
+  plainField.hidden = setting.format !== 'plain';
+  richField.hidden = setting.format !== 'rich';
+  plainInput.value = setting.format === 'plain' ? setting.value : '';
+  richInput.value = setting.format === 'rich' ? setting.value : '';
+  plainInput.maxLength = setting.maxLength;
+  richInput.maxLength = setting.maxLength;
+  document.querySelector('#setting-help').textContent = setting.help;
+  document.querySelector('#setting-form-error').textContent = '';
+  updateSettingPreview();
+}
+
+async function loadSettings() {
+  const payload = await request('/api/admin/settings');
+  state.settings = payload.settings;
+  document.querySelector('#manager-email').textContent = payload.manager || '';
+  const select = document.querySelector('#setting-select');
+  const previous = select.value;
+  const groups = new Map();
+  for (const setting of state.settings) {
+    if (!groups.has(setting.group)) groups.set(setting.group, []);
+    groups.get(setting.group).push(setting);
+  }
+  select.replaceChildren(...[...groups].map(([group, settings]) => {
+    const optgroup = document.createElement('optgroup');
+    optgroup.label = group;
+    for (const setting of settings) {
+      const option = document.createElement('option');
+      option.value = setting.key;
+      option.textContent = setting.label;
+      optgroup.append(option);
+    }
+    return optgroup;
+  }));
+  if (state.settings.some((setting) => setting.key === previous)) select.value = previous;
+  renderSettingEditor();
+}
+
+async function saveSetting(event) {
+  event.preventDefault();
+  const setting = selectedSetting();
+  if (!setting) return;
+  const value = settingEditorValue(setting);
+  const submitButton = event.currentTarget.querySelector('[type="submit"]');
+  const errorNode = document.querySelector('#setting-form-error');
+  submitButton.disabled = true;
+  submitButton.textContent = 'Guardando…';
+  errorNode.textContent = '';
+  try {
+    const payload = await request(`/api/admin/settings/${encodeURIComponent(setting.key)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    });
+    const index = state.settings.findIndex((item) => item.key === setting.key);
+    state.settings[index] = payload.setting;
+    renderSettingEditor();
+    showNotice('Texto actualizado correctamente.');
+  } catch (error) {
+    errorNode.textContent = error instanceof Error ? error.message : 'No se pudo guardar el texto';
+  } finally {
+    submitButton.disabled = false;
+    submitButton.textContent = 'Guardar texto';
+  }
 }
 
 function openTierDialog(id = '') {
@@ -470,6 +591,7 @@ document.querySelectorAll('[data-admin-view]').forEach((button) => button.addEve
   document.querySelectorAll('.admin-view').forEach((item) => item.classList.toggle('active', item.id === `${view}-view`));
   if (view === 'stores') await loadStores().catch((error) => alert(error.message));
   if (view === 'tiers') await loadTiers().catch((error) => alert(error.message));
+  if (view === 'settings') await loadSettings().catch((error) => alert(error.message));
 }));
 document.querySelector('#new-store').addEventListener('click', () => openStoreDialog());
 document.querySelector('#store-form').addEventListener('submit', saveStore);
@@ -479,6 +601,10 @@ document.querySelector('#new-tier').addEventListener('click', () => openTierDial
 document.querySelector('#tier-form').addEventListener('submit', saveTier);
 document.querySelector('#close-tier-dialog').addEventListener('click', () => document.querySelector('#tier-dialog').close());
 document.querySelector('#cancel-tier').addEventListener('click', () => document.querySelector('#tier-dialog').close());
+document.querySelector('#setting-select').addEventListener('change', renderSettingEditor);
+document.querySelector('#setting-plain-value').addEventListener('input', updateSettingPreview);
+document.querySelector('#setting-rich-value').addEventListener('input', updateSettingPreview);
+document.querySelector('#setting-form').addEventListener('submit', saveSetting);
 document.querySelector('[name="review"]').value = 'PENDING';
 updateFilterCount();
 load(1).catch((error) => alert(error.message));

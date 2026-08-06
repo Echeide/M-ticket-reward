@@ -13,6 +13,11 @@ import {
 } from '../src/domain/rewards';
 import { findMatchingStore, normalizeStoreInput } from '../src/domain/store';
 import { normalizeRewardTierInput } from '../src/domain/reward-tier';
+import {
+  APP_SETTING_DEFINITIONS,
+  appSettingsWithDefaults,
+  normalizeAppSettingValue,
+} from '../src/domain/app-settings';
 
 const fields = {
   storeId: 'store-1',
@@ -159,4 +164,23 @@ test('reward tier management accepts integer cents and points only', () => {
   });
   assert.throws(() => normalizeRewardTierInput({ minimumCents: 50.5, points: 10 }), /TIER_MINIMUM_INVALID/);
   assert.throws(() => normalizeRewardTierInput({ minimumCents: 5_000, points: -1 }), /TIER_POINTS_INVALID/);
+});
+
+test('application settings retain defaults and override only stored values', () => {
+  const settings = appSettingsWithDefaults([
+    { key: 'home.title', value: 'Una portada personalizada' },
+    { key: 'unknown.setting', value: 'Ignorado' },
+  ]);
+  assert.equal(settings['home.title'], 'Una portada personalizada');
+  assert.equal(settings['home.scanButton'], 'Escanear ticket');
+  assert.equal(Object.keys(settings).length, APP_SETTING_DEFINITIONS.length);
+  assert.equal(settings['unknown.setting'], undefined);
+});
+
+test('application settings validate keys, normalize line endings and enforce limits', () => {
+  assert.equal(normalizeAppSettingValue('home.title', '  Nuevo título  '), 'Nuevo título');
+  assert.equal(normalizeAppSettingValue('home.description', 'Línea 1\r\n**Línea 2**'), 'Línea 1\n**Línea 2**');
+  assert.throws(() => normalizeAppSettingValue('unknown.setting', 'valor'), /APP_SETTING_UNKNOWN/);
+  assert.throws(() => normalizeAppSettingValue('home.title', 12), /APP_SETTING_VALUE_INVALID/);
+  assert.throws(() => normalizeAppSettingValue('home.scanButton', 'x'.repeat(101)), /APP_SETTING_TOO_LONG/);
 });

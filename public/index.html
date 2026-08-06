@@ -33,25 +33,25 @@
       </section>
 
       <section class="screen" data-screen="welcome">
+        <p class="eyebrow" id="home-eyebrow">Premios por tus compras</p>
+        <h1 id="home-title">Escanea tus tickets y gana puntos</h1>
         <section class="store-carousel" id="store-carousel" aria-label="Comercios asociados" hidden>
-          <p class="store-carousel-title">Disponible en comercios asociados</p>
+          <p class="store-carousel-title" id="home-carousel-label">Disponible en comercios asociados</p>
           <div class="store-carousel-viewport"><div class="store-carousel-track" id="store-carousel-track"></div></div>
         </section>
-        <p class="eyebrow">Premios por tus compras</p>
-        <h1>Escanea tus tickets y gana puntos</h1>
-        <p class="lead">Escanea los tickets de compra en las tiendas asociadas y gana puntos para canjear en nuestro catálogo de regalos.</p>
+        <div class="lead formatted-copy" id="home-description">Escanea los tickets de compra en las tiendas asociadas y gana puntos para canjear en nuestro catálogo de regalos.</div>
         <div class="welcome-actions">
           <label class="primary-button capture-button button-with-icon">
             <input id="ticket-input" data-ticket-input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" />
             <svg class="button-icon" aria-hidden="true"><use href="#icon-camera"></use></svg>
-            Escanear ticket
+            <span id="home-scan-label">Escanear ticket</span>
           </label>
           <button class="secondary-button button-with-icon" data-action="open-history" type="button">
             <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
-            Mis tickets
+            <span id="home-history-label">Mis tickets</span>
           </button>
         </div>
-        <p class="privacy-note">La imagen se almacena de forma privada y puede ser revisada para prevenir fraude.</p>
+        <div class="privacy-note formatted-copy" id="home-privacy-note">La imagen se almacena de forma privada y puede ser revisada para prevenir fraude.</div>
       </section>
 
       <section class="screen" data-screen="processing" aria-live="polite">
