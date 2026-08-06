@@ -51,9 +51,22 @@ test('training evaluation compares the alternative date and time identity', () =
     isReceipt: true, confidence: 0.95, storeName: 'Librería Atlántico', ticketNumber: '',
     purchaseDate: '2026-08-05', purchaseDateTime: '2026-08-05T18:42',
     totalCents: 4830, currency: 'EUR',
+    evidence: { purchaseDateText: 'Fecha 05/08/2026 Hora 18:42' },
   }, true, []);
   assert.equal(trainingEvaluationPassed(matches), true);
   assert.equal(matches.purchaseTime, true);
+});
+
+test('training evaluation rejects an unverified model time even when time was optional', () => {
+  const expected = normalizeTrainingSampleInput({
+    ticketNumber: 'A-004582', purchaseDate: '2026-08-05', totalCents: 4830, currency: 'EUR',
+  });
+  const matches = compareTrainingResult(expected, {
+    isReceipt: true, confidence: 0.95, storeName: 'Librería Atlántico', ticketNumber: 'A-004582',
+    purchaseDate: '2026-08-05', purchaseDateTime: '2026-08-05T18:42',
+    totalCents: 4830, currency: 'EUR', evidence: { purchaseDateText: 'Fecha 05/08/2026' },
+  }, true, []);
+  assert.equal(matches.purchaseTime, false);
 });
 
 test('training samples reject incomplete or impossible ground truth', () => {

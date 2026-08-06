@@ -74,6 +74,9 @@ El gestor puede evaluar un ejemplo o el conjunto completo con el proveedor OCR
 activo. Se conserva el modelo, la latencia y la coincidencia de comercio, número,
 fecha, hora, total y evidencias. Esta función construye un banco de evaluación fiable;
 no realiza fine-tuning ni activa automáticamente un modelo en producción.
+Las fechas visibles se interpretan por defecto en orden español `DD/MM/AAAA`, se
+normalizan internamente a `AAAA-MM-DD` y vuelven a mostrarse en formato español en el
+backoffice. Una hora solo se conserva cuando aparece en la evidencia literal del ticket.
 La evaluación utiliza el mismo catálogo de comercios activos que los tickets reales y
 permite probar el perfil que se está editando como candidato, sin guardarlo ni activarlo.
 Los resultados muestran los valores esperados y reconocidos, los problemas de evidencia

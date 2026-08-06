@@ -1,4 +1,9 @@
-import { hasVerifiedPurchaseTime, type OcrReceipt } from '../domain/receipt';
+import {
+  hasVerifiedPurchaseTime,
+  isValidPurchaseDateTime,
+  purchaseTimeFromEvidence,
+  type OcrReceipt,
+} from '../domain/receipt';
 import { profileHasGuidance } from '../domain/ocr-profile';
 import { findMatchingStore, type StoreIdentity } from '../domain/store';
 import { prepareOcrRegions } from '../platform/image';
@@ -141,9 +146,9 @@ export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
   const rawPurchaseDate = String(value.purchaseDate || '').trim();
   const evidencedDate = isoDateFromEvidence(purchaseDateText, rawPurchaseDate);
   const literalDate = isoDateFromEvidence(rawPurchaseDate, rawPurchaseDate);
-  const normalizedDate = /^\d{4}-\d{2}-\d{2}$/.test(rawPurchaseDate)
-    ? rawPurchaseDate
-    : evidencedDate || literalDate || rawPurchaseDate;
+  // The literal printed line wins when a model converts an ambiguous Spanish
+  // date to the wrong ISO month/day order.
+  const normalizedDate = evidencedDate || literalDate || rawPurchaseDate;
   const rawPurchaseDateText = dateTimeEvidenceFromRaw(rawText, normalizedDate);
   const verifiedPurchaseDateText = isoDateFromEvidence(purchaseDateText, normalizedDate) === normalizedDate
     ? purchaseDateText
@@ -159,13 +164,22 @@ export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
     ? 'EUR'
     : rawCurrency;
   const purchaseDateTime = String(value.purchaseDateTime || '').trim();
-  const evidencedTime = /(?:^|\D)([01]\d|2[0-3]):([0-5]\d)(?:\D|$)/.exec(verifiedPurchaseDateText);
-  const normalizedDateTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(purchaseDateTime)
+  const evidencedTime = purchaseTimeFromEvidence(verifiedPurchaseDateText);
+  const timeOnly = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(purchaseDateTime);
+  const normalizedTimeOnly = timeOnly
+    ? `${String(Number(timeOnly[1])).padStart(2, '0')}:${timeOnly[2]}`
+    : '';
+  const modelDateTime = isValidPurchaseDateTime(purchaseDateTime, normalizedDate)
     ? purchaseDateTime
-    : /^\d{2}:\d{2}$/.test(purchaseDateTime) && /^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)
-      ? `${normalizedDate}T${purchaseDateTime}`
-      : evidencedTime && /^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)
-        ? `${normalizedDate}T${evidencedTime[1]}:${evidencedTime[2]}`
+    : normalizedTimeOnly && /^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)
+      ? `${normalizedDate}T${normalizedTimeOnly}`
+      : undefined;
+  // Keep a time only when the literal evidence contains the same value. This
+  // prevents a plausible but invented model time from affecting eligibility.
+  const normalizedDateTime = modelDateTime && evidencedTime === modelDateTime.slice(11, 16)
+    ? modelDateTime
+    : evidencedTime && /^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)
+      ? `${normalizedDate}T${evidencedTime}`
       : undefined;
   return {
     isReceipt: value.isReceipt === true,
@@ -224,16 +238,36 @@ function totalEvidenceFromRaw(value: string, expectedCents: number | null): stri
   return matching?.[0]?.trim().slice(0, 300) || '';
 }
 
+function yearFromEvidence(value: string, expectedDate: string): number {
+  const year = Number(value);
+  if (value.length === 4) return year;
+  if (/^\d{4}-/.test(expectedDate)) return Number(`${expectedDate.slice(0, 2)}${value}`);
+  return 2_000 + year;
+}
+
+function spanishMonthNumber(value: string): number | null {
+  const key = value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().slice(0, 3);
+  const months: Record<string, number> = {
+    ene: 1, feb: 2, mar: 3, abr: 4, may: 5, jun: 6,
+    jul: 7, ago: 8, sep: 9, set: 9, oct: 10, nov: 11, dic: 12,
+  };
+  return months[key] || null;
+}
+
 function isoDateFromEvidence(value: string, expectedDate: string): string | null {
   const iso = /\b(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\b/.exec(value);
   const european = /\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})\b/.exec(value);
   const shortEuropean = /\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{2})\b/.exec(value);
+  const textual = /\b(\d{1,2})\s+(?:de\s+)?(ene(?:ro)?|feb(?:rero)?|mar(?:zo)?|abr(?:il)?|may(?:o)?|jun(?:io)?|jul(?:io)?|ago(?:sto)?|sep(?:t(?:iembre)?)?|set(?:iembre)?|oct(?:ubre)?|nov(?:iembre)?|dic(?:iembre)?)\.?\s+(?:de\s+)?(\d{2,4})\b/i.exec(value);
+  const textualMonth = textual ? spanishMonthNumber(textual[2]!) : null;
   const parts: [number, number, number] | null = iso
     ? [Number(iso[1]), Number(iso[2]), Number(iso[3])]
     : european
       ? [Number(european[3]), Number(european[2]), Number(european[1])]
-      : shortEuropean && /^\d{4}-/.test(expectedDate)
-        ? [Number(expectedDate.slice(0, 2) + shortEuropean[3]), Number(shortEuropean[2]), Number(shortEuropean[1])]
+      : shortEuropean
+        ? [yearFromEvidence(shortEuropean[3]!, expectedDate), Number(shortEuropean[2]), Number(shortEuropean[1])]
+      : textual && textualMonth
+        ? [yearFromEvidence(textual[3]!, expectedDate), textualMonth, Number(textual[1])]
       : null;
   if (!parts) return null;
   const [year, month, day] = parts;
@@ -244,11 +278,14 @@ function isoDateFromEvidence(value: string, expectedDate: string): string | null
 
 function dateTimeEvidenceFromRaw(value: string, expectedDate: string): string {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(expectedDate)) return '';
-  const dates = [...value.matchAll(/\b(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})\b/g)];
+  const dates = [
+    ...value.matchAll(/\b(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})\b/g),
+    ...value.matchAll(/\b\d{1,2}\s+(?:de\s+)?(?:ene(?:ro)?|feb(?:rero)?|mar(?:zo)?|abr(?:il)?|may(?:o)?|jun(?:io)?|jul(?:io)?|ago(?:sto)?|sep(?:t(?:iembre)?)?|set(?:iembre)?|oct(?:ubre)?|nov(?:iembre)?|dic(?:iembre)?)\.?\s+(?:de\s+)?\d{2,4}\b/gi),
+  ].sort((left, right) => (left.index || 0) - (right.index || 0));
   const candidates = dates
     .filter((match) => isoDateFromEvidence(match[0], expectedDate) === expectedDate)
     .map((match) => value.slice(Math.max(0, (match.index || 0) - 24), Math.min(value.length, (match.index || 0) + match[0].length + 48)).trim());
-  return candidates.find((candidate) => /(?:^|\D)(?:[01]\d|2[0-3]):[0-5]\d(?:\D|$)/.test(candidate))
+  return candidates.find((candidate) => purchaseTimeFromEvidence(candidate))
     || candidates[0]
     || '';
 }
@@ -324,6 +361,11 @@ ticketNumberText, purchaseDateText y totalText deben ser transcripciones literal
 líneas visibles que demuestran cada valor. Si no puedes ver esa evidencia, deja el valor y su texto vacíos.
 No deduzcas, completes ni inventes caracteres.${retry ? '\nEsta es una segunda comprobación: céntrate especialmente en FECHA, TOTAL COMPRA y número de DOCUMENTO/TICKET.' : ''}
 
+Los tickets son principalmente españoles: interpreta las fechas numéricas ambiguas en orden día/mes/año
+(por ejemplo, 06/08/2026 es 6 de agosto de 2026), aunque purchaseDate debe devolverse como YYYY-MM-DD.
+Acepta también el año con dos cifras y meses escritos en español. Normaliza la hora visible a HH:mm en
+formato de 24 horas; si la hora no aparece literalmente, deja purchaseDateTime vacío.
+
 Si el ticket no imprime un número identificador, deja ticketNumber y ticketNumberText vacíos y extrae
 obligatoriamente la fecha y hora impresas en purchaseDateTime y purchaseDateText. La combinación de
 comercio, fecha, hora e importe se utilizará entonces como identificación alternativa.
@@ -357,7 +399,9 @@ ticketNumber, ticketNumberText, purchaseDate (YYYY-MM-DD), purchaseDateTime, pur
 totalCents (entero), totalText, currency y rawText.
 
 Los campos *Text deben ser transcripciones literales de la imagen. Deja vacíos los valores que no
-aparezcan en este recorte; no deduzcas ni inventes caracteres. Comercios autorizados: ${storeReference}.`;
+aparezcan en este recorte; no deduzcas ni inventes caracteres. Interpreta las fechas numéricas en orden
+español día/mes/año y devuelve purchaseDate como YYYY-MM-DD. Conserva la hora solo si aparece impresa,
+normalizada a HH:mm. Comercios autorizados: ${storeReference}.`;
 }
 
 function mergeRegionResults(
