@@ -31,6 +31,14 @@ export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
   const total = Number(value.totalCents);
   const totalText = String(value.totalText || '').trim().slice(0, 300);
   const normalizedTotal = Number.isInteger(total) && total > 0 ? total : centsFromEvidence(totalText);
+  const ticketNumberText = String(value.ticketNumberText || '').trim().slice(0, 300);
+  const purchaseDateText = String(value.purchaseDateText || '').trim().slice(0, 300);
+  const rawPurchaseDate = String(value.purchaseDate || '').trim();
+  const evidencedDate = isoDateFromEvidence(purchaseDateText, rawPurchaseDate);
+  const normalizedDate = /^\d{4}-\d{2}-\d{2}$/.test(rawPurchaseDate)
+    ? rawPurchaseDate
+    : evidencedDate || rawPurchaseDate;
+  const evidencedTicketNumber = ticketNumberFromEvidence(ticketNumberText);
   const rawCurrency = String(value.currency || 'EUR').trim().toUpperCase();
   const currency = ['€', 'EURO', 'EUROS'].includes(rawCurrency) || !/^[A-Z]{3}$/.test(rawCurrency)
     ? 'EUR'
@@ -41,8 +49,8 @@ export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
     confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
     storeName: String(value.storeName || '').trim(),
     headerText: String(value.headerText || '').trim().slice(0, 2_000),
-    ticketNumber: String(value.ticketNumber || '').trim(),
-    purchaseDate: String(value.purchaseDate || '').trim(),
+    ticketNumber: evidencedTicketNumber || String(value.ticketNumber || '').trim(),
+    purchaseDate: normalizedDate,
     purchaseDateTime: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(purchaseDateTime)
       ? purchaseDateTime
       : undefined,
@@ -50,8 +58,8 @@ export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
     currency,
     rawText: String(value.rawText || '').slice(0, 8_000),
     evidence: {
-      ticketNumberText: String(value.ticketNumberText || '').trim().slice(0, 300),
-      purchaseDateText: String(value.purchaseDateText || '').trim().slice(0, 300),
+      ticketNumberText,
+      purchaseDateText,
       totalText,
     },
   };
@@ -59,6 +67,13 @@ export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
 
 function compactIdentifier(value: string): string {
   return value.normalize('NFKD').replace(/[^a-z0-9]/gi, '').toUpperCase();
+}
+
+function ticketNumberFromEvidence(value: string): string | null {
+  const labelled = /(?:documento|ticket|factura|operaci[oó]n|n[º°o]\.?)[\s:#-]+(.+)/i.exec(value);
+  if (!labelled) return null;
+  const candidates = (labelled[1] || '').match(/[A-Z0-9][A-Z0-9./-]{3,}/gi) || [];
+  return candidates.sort((left, right) => compactIdentifier(right).length - compactIdentifier(left).length)[0] || null;
 }
 
 function centsFromEvidence(value: string): number | null {
@@ -146,8 +161,9 @@ Expresa el importe en céntimos y transcribe en rawText las líneas relevantes d
 function regionPrompt(storeReference: string, region: 'header' | 'totals'): string {
   const focus = region === 'header'
     ? `Esta imagen muestra la CABECERA y primera parte del ticket. Localiza el comercio, la línea de
-DOCUMENTO/TICKET/FACTURA y la FECHA/HORA. No confundas dirección, centro, caja, vendedor u operación
-con el número del ticket.`
+DOCUMENTO/TICKET/FACTURA y la FECHA/HORA. ticketNumber debe ser el valor completo que aparece después
+de esa etiqueta. Un CIF/NIF (por ejemplo B61742565), dirección, centro, caja, vendedor u operación NO
+son el número del ticket. ticketNumberText debe incluir literalmente la etiqueta Documento/Ticket/Factura.`
     : `Esta imagen muestra la parte INFERIOR del ticket. Localiza el TOTAL COMPRA o importe final
 pagado. No uses subtotales, ahorro, cambio, efectivo entregado ni importes de líneas de producto.`;
   return `${focus}

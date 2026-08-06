@@ -56,7 +56,7 @@ test('OCR fallback crops header and totals without rescaling the ticket width', 
   const regions = await prepareOcrRegions(env, new Uint8Array([4, 5, 6]).buffer);
 
   assert.deepEqual(transforms, [
-    { width: 1200, height: 1088, fit: 'cover', gravity: 'top', sharpen: 1 },
+    { width: 1200, height: 928, fit: 'cover', gravity: 'top', sharpen: 1 },
     { width: 1200, height: 1088, fit: 'cover', gravity: 'bottom', sharpen: 1 },
   ]);
   assert.equal(regions.header.byteLength, 3);

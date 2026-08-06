@@ -36,6 +36,19 @@ test('OCR verification accepts printed dates with a two-digit year', () => {
   assert.deepEqual(verifyOcr(receipt), []);
 });
 
+test('OCR normalization repairs malformed dates and identifiers from labelled evidence', () => {
+  const receipt = normalizeOcr({
+    ...validExtraction,
+    ticketNumber: 'B61742565',
+    ticketNumberText: 'Documento 701108 2026/934211-00100048',
+    purchaseDate: '2026/06/2026',
+    purchaseDateText: 'Fecha 06/08/2026',
+  });
+  assert.equal(receipt.ticketNumber, '2026/934211-00100048');
+  assert.equal(receipt.purchaseDate, '2026-08-06');
+  assert.deepEqual(verifyOcr(receipt), []);
+});
+
 test('OCR verification rejects unsupported critical fields', () => {
   const receipt = normalizeOcr({
     isReceipt: true,
