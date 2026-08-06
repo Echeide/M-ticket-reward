@@ -88,7 +88,11 @@ async function extractResponseText(payload: unknown): Promise<string | null> {
     const text = await extractResponseText(message.content);
     if (text) return text;
   }
-  for (const key of ['answer', 'description', 'response', 'result', 'output', 'data']) {
+  if (choice?.text !== undefined) {
+    const text = await extractResponseText(choice.text);
+    if (text) return text;
+  }
+  for (const key of ['text', 'answer', 'description', 'response', 'result', 'output', 'data']) {
     if (record[key] === undefined || record[key] === null) continue;
     const text = await extractResponseText(record[key]);
     if (text) return text;
@@ -125,6 +129,8 @@ class WorkersAiOcrProvider implements OcrProvider {
             stream: false,
             temperature: 0.1,
             max_completion_tokens: 2_048,
+            reasoning_effort: 'low',
+            response_format: { type: 'json_object' },
           }
         : null;
     if (!input) throw new Error(`OCR_WORKERS_AI_FORMAT_UNSUPPORTED:${format}`);

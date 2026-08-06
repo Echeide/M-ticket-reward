@@ -99,6 +99,11 @@ test('OCR provider reads nested and streamed Workers AI responses', async () => 
     },
   });
   assert.equal(await providerResponseText(stream), '{"ok":true}');
+
+  const contentParts = await providerResponseText({
+    choices: [{ message: { content: [{ type: 'text', text: '{"ok":true}' }] } }],
+  });
+  assert.equal(contentParts, '{"ok":true}');
 });
 
 test('OCR retries an incomplete reading with focused regions', async () => {
@@ -181,5 +186,7 @@ test('Workers AI chat format can switch to stronger vision models by configurati
   assert.equal(result.attemptCount, 1);
   assert.equal(Array.isArray(input.messages), true);
   assert.match(String(input.image), /^data:image\/webp;base64,/);
+  assert.deepEqual(input.response_format, { type: 'json_object' });
+  assert.equal(input.reasoning_effort, 'low');
   assert.equal(input.task, undefined);
 });
