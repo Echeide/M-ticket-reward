@@ -67,13 +67,13 @@ function applyHomeSettings(settings) {
 const RECEIPT_STATUSES = {
   OCR_QUEUED: { label: 'En espera', tone: 'pending', message: 'El ticket está registrado y esperando a ser leído.' },
   OCR_PROCESSING: { label: 'Leyendo ticket', tone: 'pending', message: 'Estamos reconociendo los datos del ticket.' },
-  READY_FOR_CONFIRMATION: { label: 'Pendiente de confirmación', tone: 'attention', message: 'Los datos son válidos. Revisa el resultado para obtener los puntos.' },
+  READY_FOR_CONFIRMATION: { label: 'Ticket validado', tone: 'pending', message: 'El ticket es válido y estamos preparando sus puntos.' },
   NOT_A_RECEIPT: { label: 'No es un ticket', tone: 'rejected', message: 'La imagen no parece un ticket de compra.' },
   DUPLICATE: { label: 'Duplicado', tone: 'rejected', message: 'Este ticket ya se había enviado.' },
   AUTO_REJECTED: { label: 'Ticket no autorizado', tone: 'rejected', message: 'Este ticket no cumple las condiciones de la campaña.' },
   REWARD_PENDING: { label: 'Asignando puntos', tone: 'pending', message: 'El ticket es válido y estamos asignando los puntos.' },
   REWARDED: { label: 'Aprobado', tone: 'approved', message: 'Los puntos se han añadido correctamente.' },
-  REWARD_FAILED: { label: 'No completado', tone: 'rejected', message: 'No hemos podido completar la asignación de puntos.' },
+  REWARD_FAILED: { label: 'Puntos pendientes', tone: 'attention', message: 'El ticket está validado, pero todavía no hemos podido añadir los puntos.' },
   REVOKE_PENDING: { label: 'Anulación en proceso', tone: 'attention', message: 'Estamos retirando los puntos tras la revisión del ticket.' },
   REVOKED: { label: 'Anulado', tone: 'rejected', message: 'El ticket fue anulado tras la revisión antifraude.' },
 };
@@ -543,6 +543,7 @@ async function monitorHistory(generation, initialReceipts) {
 }
 
 function receiptStatusIcon(receipt) {
+  if (receipt.retryableReward) return { name: 'refresh', tone: 'processing' };
   if (ASYNC_RECEIPT_STATUSES.has(receipt.status)) return { name: 'refresh', tone: 'processing' };
   if (SUCCESS_RECEIPT_STATUSES.has(receipt.status)) return { name: 'check', tone: 'approved' };
   if (FAILED_RECEIPT_STATUSES.has(receipt.status)) return { name: 'close', tone: 'rejected' };
@@ -623,7 +624,7 @@ function showTicketDetail(receipt) {
     action.hidden = false;
     action.onclick = () => resumeReceipt(receipt).catch(showError);
   } else if (receipt.retryableReward) {
-    action.textContent = 'Reintentar asignación';
+    action.textContent = 'Reintentar añadir puntos';
     action.hidden = false;
     action.onclick = async () => {
       action.disabled = true;
@@ -639,7 +640,7 @@ function showTicketDetail(receipt) {
         await openHistory();
       } catch (caught) {
         action.disabled = false;
-        action.textContent = 'Reintentar asignación';
+        action.textContent = 'Reintentar añadir puntos';
         showError(caught);
       }
     };

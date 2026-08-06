@@ -755,18 +755,68 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
   return result.response;
 }
 
+async function recoverPendingRewardOutbox(env: Env, receiptId: string): Promise<string> {
+  return withDatabase(env, async (client) => {
+    const receipt = await client.query<{ points_awarded: number }>(
+      `SELECT points_awarded FROM receipts
+        WHERE id = $1 AND status = 'REWARD_PENDING' LIMIT 1`,
+      [receiptId],
+    );
+    if (!receipt.rows[0]) return '';
+    const existing = await client.query<{ id: string; status: string }>(
+      `SELECT id, status FROM reward_outbox
+        WHERE receipt_id = $1 AND operation = 'GRANT'
+        ORDER BY created_at DESC LIMIT 1`,
+      [receiptId],
+    );
+    if (existing.rows[0]) return existing.rows[0].status === 'PENDING' ? existing.rows[0].id : '';
+    const outboxId = uuid();
+    await client.query(
+      `INSERT INTO reward_outbox
+         (id, receipt_id, operation, idempotency_key, payload)
+       VALUES ($1, $2, 'GRANT', $3, $4::jsonb)
+       ON CONFLICT(idempotency_key) DO NOTHING`,
+      [outboxId, receiptId, rewardIdempotencyKey(receiptId), JSON.stringify({
+        points: receipt.rows[0].points_awarded,
+        automatic: true,
+        recovered: true,
+      })],
+    );
+    const saved = await client.query<{ id: string; status: string }>(
+      `SELECT id, status FROM reward_outbox
+        WHERE receipt_id = $1 AND operation = 'GRANT'
+        ORDER BY created_at DESC LIMIT 1`,
+      [receiptId],
+    );
+    return saved.rows[0]?.status === 'PENDING' ? saved.rows[0].id : '';
+  });
+}
+
+async function enqueueRewardOutbox(env: Env, receiptId: string, outboxId: string): Promise<void> {
+  if (!outboxId) return;
+  try {
+    await env.REWARD_JOBS.send({ kind: 'DELIVER_REWARD', outboxId });
+  } catch (caught) {
+    // The scheduled outbox recovery will enqueue the pending delivery.
+    console.error('Automatic reward enqueue failed', { receiptId, outboxId }, caught);
+  }
+}
+
 async function processOcr(env: Env, receiptId: string): Promise<void> {
   const receipt = await withDatabase(env, async (client) => {
-    const result = await client.query<Pick<ReceiptRow, 'id' | 'user_ref' | 'image_key' | 'image_content_type' | 'status'>>(
+    const result = await client.query<Pick<ReceiptRow, 'id' | 'session_id' | 'user_ref' | 'image_key' | 'image_content_type' | 'status'>>(
       `UPDATE receipts SET status = 'OCR_PROCESSING', ocr_started_at = NOW(),
           ocr_completed_at = NULL, updated_at = NOW()
         WHERE id = $1 AND status IN ('OCR_QUEUED', 'OCR_PROCESSING')
-        RETURNING id, user_ref, image_key, image_content_type, status`,
+        RETURNING id, session_id, user_ref, image_key, image_content_type, status`,
       [receiptId],
     );
     return result.rows[0];
   });
-  if (!receipt) return;
+  if (!receipt) {
+    await enqueueRewardOutbox(env, receiptId, await recoverPendingRewardOutbox(env, receiptId));
+    return;
+  }
   const image = await env.TICKETS.get(receipt.image_key);
   if (!image) throw new Error('R2_OBJECT_NOT_FOUND');
   const storedBytes = await image.arrayBuffer();
@@ -781,6 +831,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
   });
   const ocrResult = await readReceipt(env, ocrBytes, receipt.image_content_type || 'image/webp', stores);
   const ocr = ocrResult.receipt;
+  let rewardOutboxId = '';
   await withDatabase(env, async (client) => {
     const appSettings = await loadAppSettings(client);
     const selectedStore = findMatchingStore(stores, ocr);
@@ -831,6 +882,22 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
       allowedPurchaseEnd: appSettings['validation.endAt'],
     });
     const status = receiptStatusAfterOcr(validation);
+    let points = 0;
+    if (status === 'REWARD_PENDING') {
+      const tiers = await client.query<{ id: string; minimum_cents: number; points: number; active: boolean }>(
+        'SELECT id, minimum_cents, points, active FROM reward_tiers WHERE active = TRUE',
+      );
+      points = resolveRewardPoints(
+        fields.totalCents,
+        tiers.rows.map((tier) => ({
+          id: tier.id,
+          minimumCents: tier.minimum_cents,
+          points: tier.points,
+          active: tier.active,
+        })),
+      );
+      rewardOutboxId = uuid();
+    }
     await client.query(
       `UPDATE receipts SET status = $2, store_id = $3, store_name = $4,
          ticket_number = $5, purchase_date = $6, total_cents = $7, currency = $8,
@@ -838,6 +905,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
          risk_score = $12, validation_reasons = $13::jsonb,
          ocr_provider = $14, ocr_model = $15, ocr_attempt_count = $16,
          ocr_duration_ms = $17, ocr_completed_at = NOW(),
+         points_awarded = $18,
          review_status = 'CLEARED', reviewed_at = NOW(), reviewed_by = 'SYSTEM',
          updated_at = NOW()
        WHERE id = $1`,
@@ -846,9 +914,21 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
         fields.currency, status === 'DUPLICATE' ? null : fingerprint,
         JSON.stringify(ocr), ocr.confidence, validation.riskScore,
         JSON.stringify(validation.reasons), ocrResult.provider, ocrResult.model,
-        ocrResult.attemptCount, ocrResult.durationMs],
+        ocrResult.attemptCount, ocrResult.durationMs, points],
     );
+    if (rewardOutboxId) {
+      await client.query(
+        `INSERT INTO reward_outbox
+           (id, receipt_id, operation, idempotency_key, payload)
+         VALUES ($1, $2, 'GRANT', $3, $4::jsonb)`,
+        [rewardOutboxId, receiptId, rewardIdempotencyKey(receiptId), JSON.stringify({
+          points,
+          automatic: true,
+        })],
+      );
+    }
   });
+  await enqueueRewardOutbox(env, receiptId, rewardOutboxId);
 }
 
 async function markOcrFailed(env: Env, receiptId: string): Promise<void> {

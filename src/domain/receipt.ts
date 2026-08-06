@@ -56,7 +56,7 @@ export type AutomaticValidation = {
 export function receiptStatusAfterOcr(validation: AutomaticValidation): ReceiptStatus {
   if (validation.reasons.includes('NOT_A_RECEIPT')) return 'NOT_A_RECEIPT';
   if (validation.reasons.includes('DUPLICATE')) return 'DUPLICATE';
-  return validation.approved ? 'READY_FOR_CONFIRMATION' : 'AUTO_REJECTED';
+  return validation.approved ? 'REWARD_PENDING' : 'AUTO_REJECTED';
 }
 
 export function canReprocessReceipt(status: string, reasons: string[] = []): boolean {

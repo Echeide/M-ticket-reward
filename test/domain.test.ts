@@ -127,8 +127,8 @@ test('configured campaign dates replace the default three-day ticket window', ()
   assert.deepEqual(validatePeriod('2026-09-30', '2026-09-30T22:01').reasons, ['FUTURE_DATE']);
 });
 
-test('only fully valid OCR results wait for player confirmation', () => {
-  assert.equal(receiptStatusAfterOcr({ approved: true, riskScore: 0, reasons: [] }), 'READY_FOR_CONFIRMATION');
+test('only fully valid OCR results continue to automatic reward delivery', () => {
+  assert.equal(receiptStatusAfterOcr({ approved: true, riskScore: 0, reasons: [] }), 'REWARD_PENDING');
   assert.equal(receiptStatusAfterOcr({
     approved: false, riskScore: 0, reasons: ['STORE_NOT_ALLOWED'],
   }), 'AUTO_REJECTED');
