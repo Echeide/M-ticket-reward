@@ -39,31 +39,58 @@ function createIcon(name, className = 'button-icon') {
   return svg;
 }
 
-function renderStoreCarousel(stores) {
+let storeCarouselLayoutFrame = 0;
+let storeCarouselObserver = null;
+
+function storeCarouselItem(store, duplicate = false) {
+  const item = document.createElement('span');
+  item.className = 'store-carousel-item';
+  if (duplicate) item.setAttribute('aria-hidden', 'true');
+  const image = document.createElement('img');
+  image.src = store.logoUrl;
+  image.alt = duplicate ? '' : `Logo de ${store.name}`;
+  image.loading = 'lazy';
+  image.decoding = 'async';
+  item.append(image);
+  return item;
+}
+
+function layoutStoreCarousel(stores) {
   const carousel = document.querySelector('#store-carousel');
+  const viewport = carousel.querySelector('.store-carousel-viewport');
   const track = document.querySelector('#store-carousel-track');
   const storesWithLogo = stores.filter((store) => store.logoUrl);
+  cancelAnimationFrame(storeCarouselLayoutFrame);
   track.replaceChildren();
   if (!storesWithLogo.length) {
     carousel.hidden = true;
     return;
   }
 
-  const items = storesWithLogo.length > 1 ? [...storesWithLogo, ...storesWithLogo] : storesWithLogo;
-  items.forEach((store, index) => {
-    const item = document.createElement('span');
-    item.className = 'store-carousel-item';
-    if (index >= storesWithLogo.length) item.setAttribute('aria-hidden', 'true');
-    const image = document.createElement('img');
-    image.src = store.logoUrl;
-    image.alt = index < storesWithLogo.length ? `Logo de ${store.name}` : '';
-    image.loading = 'lazy';
-    image.decoding = 'async';
-    item.append(image);
-    track.append(item);
-  });
-  track.classList.toggle('static', storesWithLogo.length === 1);
   carousel.hidden = false;
+  track.classList.add('static');
+  track.style.removeProperty('--carousel-shift');
+  track.append(...storesWithLogo.map((store) => storeCarouselItem(store)));
+
+  storeCarouselLayoutFrame = requestAnimationFrame(() => {
+    const items = [...track.children];
+    const gap = Number.parseFloat(getComputedStyle(track).columnGap) || 0;
+    const uniqueWidth = items.reduce((width, item) => width + item.getBoundingClientRect().width, 0) +
+      Math.max(0, items.length - 1) * gap;
+    if (uniqueWidth <= viewport.clientWidth) return;
+    track.append(...storesWithLogo.map((store) => storeCarouselItem(store, true)));
+    track.style.setProperty('--carousel-shift', `${uniqueWidth + gap}px`);
+    track.classList.remove('static');
+  });
+}
+
+function renderStoreCarousel(stores) {
+  const viewport = document.querySelector('.store-carousel-viewport');
+  layoutStoreCarousel(stores);
+  if (!storeCarouselObserver && 'ResizeObserver' in window) {
+    storeCarouselObserver = new ResizeObserver(() => layoutStoreCarousel(state.stores));
+    storeCarouselObserver.observe(viewport);
+  }
 }
 
 function authHeaders(extra = {}) {
