@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { adminInvitationMailConfigured, sendAdminInvitation } from '../src/integrations/mailjet';
+import { PENDING_CONFIGURATION_VALUE } from '../src/configuration';
 import type { Env } from '../src/types';
 
 const configuredEnv = {
@@ -13,6 +14,11 @@ const configuredEnv = {
 test('Mailjet invitation configuration requires both credentials and a sender', () => {
   assert.equal(adminInvitationMailConfigured(configuredEnv), true);
   assert.equal(adminInvitationMailConfigured({ MAILJET_API_KEY: 'key' } as Env), false);
+  assert.equal(adminInvitationMailConfigured({
+    MAILJET_API_KEY: PENDING_CONFIGURATION_VALUE,
+    MAILJET_SECRET_KEY: PENDING_CONFIGURATION_VALUE,
+    MAILJET_FROM_EMAIL: PENDING_CONFIGURATION_VALUE,
+  } as Env), false);
 });
 
 test('administrator invitation is sent server-side with the backoffice link', async () => {

@@ -49,7 +49,7 @@ import {
 } from './domain/app-settings';
 import { readReceipt } from './integrations/ocr';
 import { classifyOcrFailure, ocrMaxAttempts, ocrRetryDelaySeconds } from './domain/ocr-failure';
-import { syncAdminAccessEmails } from './integrations/cloudflare-access';
+import { adminAccessSyncConfigured, syncAdminAccessEmails } from './integrations/cloudflare-access';
 import { adminInvitationMailConfigured, sendAdminInvitation } from './integrations/mailjet';
 import {
   exchangeLaunchCode,
@@ -2580,7 +2580,7 @@ async function activeAdminEmails(env: Env): Promise<string[]> {
 async function handleAdminUsers(request: Request, env: Env): Promise<Response> {
   const current = await authorizedAdmin(request, env);
   if (!current) return error('Acceso de administrador requerido', 403);
-  const accessConfigured = Boolean(env.CLOUDFLARE_ACCESS_API_TOKEN && env.CLOUDFLARE_ACCESS_EMAIL_LIST_ID && env.CLOUDFLARE_ACCOUNT_ID);
+  const accessConfigured = adminAccessSyncConfigured(env);
   const mailConfigured = adminInvitationMailConfigured(env);
   const backofficeUrl = env.ADMIN_BACKOFFICE_URL || `${new URL(request.url).origin}/backoffice`;
   if (request.method === 'GET') {

@@ -1,4 +1,5 @@
 import type { Env } from '../types';
+import { isConfiguredEnvValue } from '../configuration';
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({
@@ -7,7 +8,9 @@ function escapeHtml(value: string): string {
 }
 
 export function adminInvitationMailConfigured(env: Env): boolean {
-  return Boolean(env.MAILJET_API_KEY && env.MAILJET_SECRET_KEY && env.MAILJET_FROM_EMAIL);
+  return isConfiguredEnvValue(env.MAILJET_API_KEY)
+    && isConfiguredEnvValue(env.MAILJET_SECRET_KEY)
+    && isConfiguredEnvValue(env.MAILJET_FROM_EMAIL);
 }
 
 export async function sendAdminInvitation(

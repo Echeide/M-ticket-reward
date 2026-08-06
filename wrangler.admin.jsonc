@@ -37,6 +37,10 @@
   },
   "vars": {
     "ADMIN_ONLY": "true",
+    "ADMIN_BACKOFFICE_URL": "https://rtales-ticket-rewards-admin.rtales-ticket-rewards.workers.dev/backoffice",
+    "CLOUDFLARE_ACCOUNT_ID": "bd9673fa93df62e1a3a36eda18bb3250",
+    "CLOUDFLARE_ACCESS_EMAIL_LIST_NAME": "Ticket rewards administrators",
+    "MAILJET_FROM_NAME": "Rtales",
     "RTALES_BASE_URL": "https://rtales.app",
     "RTALES_PARENT_ORIGINS": "'none'",
     "RTALES_TIMEOUT_MS": "10000",

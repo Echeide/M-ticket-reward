@@ -1,7 +1,14 @@
 import type { Env } from '../types';
+import { isConfiguredEnvValue } from '../configuration';
+
+export function adminAccessSyncConfigured(env: Env): boolean {
+  return isConfiguredEnvValue(env.CLOUDFLARE_ACCESS_API_TOKEN)
+    && isConfiguredEnvValue(env.CLOUDFLARE_ACCESS_EMAIL_LIST_ID)
+    && isConfiguredEnvValue(env.CLOUDFLARE_ACCOUNT_ID);
+}
 
 export async function syncAdminAccessEmails(env: Env, emails: string[]): Promise<boolean> {
-  if (!env.CLOUDFLARE_ACCESS_API_TOKEN || !env.CLOUDFLARE_ACCESS_EMAIL_LIST_ID || !env.CLOUDFLARE_ACCOUNT_ID) {
+  if (!adminAccessSyncConfigured(env)) {
     return false;
   }
   const response = await fetch(
