@@ -77,6 +77,10 @@ const RECEIPT_STATUSES = {
   REVOKED: { label: 'Anulado', tone: 'rejected', message: 'El ticket fue anulado tras la revisión antifraude.' },
 };
 
+const ASYNC_RECEIPT_STATUSES = new Set(['OCR_QUEUED', 'OCR_PROCESSING', 'REWARD_PENDING', 'REVOKE_PENDING']);
+const SUCCESS_RECEIPT_STATUSES = new Set(['READY_FOR_CONFIRMATION', 'REWARDED']);
+const FAILED_RECEIPT_STATUSES = new Set(['NOT_A_RECEIPT', 'AUTO_REJECTED', 'REWARD_FAILED', 'REVOKED']);
+
 function show(name) {
   for (const [screenName, node] of screens) node.classList.toggle('active', screenName === name);
   window.scrollTo({ top: 0, behavior: 'instant' });
@@ -268,7 +272,7 @@ async function upload(file) {
   state.receiptId = payload.receiptId;
   sessionStorage.setItem('ticket-receipt-id', state.receiptId);
   if (payload.status === 'DUPLICATE') return show('duplicate');
-  await pollUntilReady();
+  await openHistory();
 }
 
 async function pollUntilReady() {
@@ -308,6 +312,7 @@ async function resumeReceipt(receipt) {
   if (['AUTO_REJECTED', 'REWARD_FAILED', 'REVOKE_PENDING', 'REVOKED'].includes(receipt.status)) {
     return showTicketDetail(receipt);
   }
+  if (['OCR_QUEUED', 'OCR_PROCESSING'].includes(receipt.status)) return openHistory();
   show(receipt.status === 'REWARD_PENDING' ? 'reward-processing' : 'processing');
   await pollUntilReady();
 }
@@ -470,7 +475,7 @@ function formatTimestamp(value) {
 }
 
 async function openHistory() {
-  state.pollGeneration += 1;
+  const generation = ++state.pollGeneration;
   show('ticket-history');
   const list = document.querySelector('#ticket-history-list');
   list.replaceChildren();
@@ -480,6 +485,69 @@ async function openHistory() {
   list.append(loading);
   const payload = await api('/api/receipts');
   renderHistory(payload.receipts);
+  monitorHistory(generation, payload.receipts).catch((caught) => {
+    console.warn('No se pudo actualizar automáticamente el listado de tickets', caught);
+  });
+}
+
+function historySignature(receipts) {
+  return receipts.map((receipt) => [
+    receipt.id,
+    receipt.status,
+    receipt.fields.storeName,
+    receipt.fields.ticketNumber,
+    receipt.fields.purchaseDate,
+    receipt.fields.totalCents,
+    receipt.reward.pointsAwarded,
+  ].join(':')).join('|');
+}
+
+function announceHistoryChanges(previousReceipts, nextReceipts) {
+  const previousStatuses = new Map(previousReceipts.map((receipt) => [receipt.id, receipt.status]));
+  const changes = nextReceipts.filter((receipt) => (
+    previousStatuses.has(receipt.id) && previousStatuses.get(receipt.id) !== receipt.status
+  ));
+  if (!changes.length) return;
+  document.querySelector('#history-live-status').textContent = changes
+    .map((receipt) => `${receipt.publicId}: ${statusMeta(receipt.status, receipt.verificationRequired).label}`)
+    .join('. ');
+}
+
+async function monitorHistory(generation, initialReceipts) {
+  let receipts = initialReceipts;
+  let signature = historySignature(receipts);
+  while (
+    generation === state.pollGeneration &&
+    screens.get('ticket-history')?.classList.contains('active') &&
+    receipts.some((receipt) => ASYNC_RECEIPT_STATUSES.has(receipt.status))
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, document.hidden ? 10_000 : 2_000));
+    if (
+      generation !== state.pollGeneration ||
+      !screens.get('ticket-history')?.classList.contains('active')
+    ) return;
+    let payload;
+    try {
+      payload = await api('/api/receipts');
+    } catch (caught) {
+      console.warn('No se pudo actualizar el estado de los tickets; se reintentará', caught);
+      continue;
+    }
+    const nextSignature = historySignature(payload.receipts);
+    if (nextSignature !== signature) {
+      announceHistoryChanges(receipts, payload.receipts);
+      renderHistory(payload.receipts);
+      signature = nextSignature;
+    }
+    receipts = payload.receipts;
+  }
+}
+
+function receiptStatusIcon(receipt) {
+  if (ASYNC_RECEIPT_STATUSES.has(receipt.status)) return { name: 'refresh', tone: 'processing' };
+  if (SUCCESS_RECEIPT_STATUSES.has(receipt.status)) return { name: 'check', tone: 'approved' };
+  if (FAILED_RECEIPT_STATUSES.has(receipt.status)) return { name: 'close', tone: 'rejected' };
+  return { name: 'ticket', tone: '' };
 }
 
 function renderHistory(receipts) {
@@ -494,13 +562,14 @@ function renderHistory(receipts) {
   }
   for (const receipt of receipts) {
     const meta = statusMeta(receipt.status, receipt.verificationRequired);
+    const statusIcon = receiptStatusIcon(receipt);
     const button = document.createElement('button');
     button.className = 'ticket-card';
     button.type = 'button';
 
     const icon = document.createElement('span');
-    icon.className = 'ticket-card-icon';
-    icon.append(createIcon('ticket'));
+    icon.className = `ticket-card-icon ${statusIcon.tone}`.trim();
+    icon.append(createIcon(statusIcon.name));
 
     const heading = document.createElement('span');
     heading.className = 'ticket-card-heading';
@@ -552,10 +621,6 @@ function showTicketDetail(receipt) {
   action.onclick = null;
   if (receipt.status === 'READY_FOR_CONFIRMATION') {
     action.textContent = 'Revisar y continuar';
-    action.hidden = false;
-    action.onclick = () => resumeReceipt(receipt).catch(showError);
-  } else if (['OCR_QUEUED', 'OCR_PROCESSING', 'REWARD_PENDING'].includes(receipt.status)) {
-    action.textContent = 'Seguir esperando';
     action.hidden = false;
     action.onclick = () => resumeReceipt(receipt).catch(showError);
   }

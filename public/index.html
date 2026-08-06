@@ -24,6 +24,13 @@
         <path d="M21 12a9 9 0 1 1-2.64-6.36L21 8" />
         <path d="M21 3v5h-5" />
       </symbol>
+      <symbol id="icon-check" viewBox="0 0 24 24">
+        <path d="m5 12 4 4L19 6" />
+      </symbol>
+      <symbol id="icon-close" viewBox="0 0 24 24">
+        <path d="m6 6 12 12" />
+        <path d="M18 6 6 18" />
+      </symbol>
     </svg>
     <main class="public-shell">
       <section class="screen active" data-screen="connecting" aria-live="polite">
@@ -62,8 +69,8 @@
 
       <section class="screen" data-screen="processing" aria-live="polite">
         <div class="spinner"></div>
-        <h2>Estamos leyendo el ticket</h2>
-        <p>Buscamos la tienda, la fecha y hora, el número y el importe.</p>
+        <h2>Estamos registrando el ticket</h2>
+        <p>Cuando termine la subida podrás seguir su estado desde «Mis tickets».</p>
       </section>
 
       <section class="screen" data-screen="registered" aria-live="polite">
@@ -138,7 +145,8 @@
           <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
           Escanear otro ticket
         </button>
-        <div class="ticket-history-list" id="ticket-history-list" aria-live="polite"></div>
+        <p class="visually-hidden" id="history-live-status" aria-live="polite"></p>
+        <div class="ticket-history-list" id="ticket-history-list"></div>
       </section>
 
       <section class="screen history-screen" data-screen="ticket-detail">
