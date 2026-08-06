@@ -52,7 +52,7 @@ export function emptyStoreOcrProfile(): StoreOcrProfile {
     ticketNumberRegion: 'header',
     dateRegion: 'header',
     totalRegion: 'footer',
-    dateFormat: '',
+    dateFormat: 'DD/MM/AAAA',
     instructions: '',
     sampleCount: 0,
   };
@@ -72,7 +72,7 @@ export function normalizeStoreOcrProfile(value: unknown): StoreOcrProfile {
     ticketNumberRegion: region(input.ticketNumberRegion, 'header'),
     dateRegion: region(input.dateRegion, 'header'),
     totalRegion: region(input.totalRegion, 'footer'),
-    dateFormat: String(input.dateFormat || '').replace(/\s+/g, ' ').trim().slice(0, 40),
+    dateFormat: String(input.dateFormat || defaults.dateFormat).replace(/\s+/g, ' ').trim().slice(0, 40),
     instructions: String(input.instructions || '').trim().slice(0, 2_000),
     sampleCount: Math.max(0, Math.min(10_000, Number.parseInt(String(input.sampleCount || 0), 10) || 0)),
   };
@@ -87,9 +87,12 @@ function firstLabel(value: string, patterns: RegExp[]): string {
 }
 
 function dateFormat(value: string): string {
-  if (/\b\d{1,2}[/.]\d{1,2}[/.]\d{4}\b/.test(value)) return 'DD/MM/AAAA';
-  if (/\b\d{1,2}[/.]\d{1,2}[/.]\d{2}\b/.test(value)) return 'DD/MM/AA';
+  if (/\b\d{1,2}[-/.]\d{1,2}[-/.]\d{4}\b/.test(value)) return 'DD/MM/AAAA';
+  if (/\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2}\b/.test(value)) return 'DD/MM/AA';
   if (/\b\d{4}-\d{1,2}-\d{1,2}\b/.test(value)) return 'AAAA-MM-DD';
+  if (/\b\d{1,2}\s+(?:de\s+)?(?:ene|feb|mar|abr|may|jun|jul|ago|sep|set|oct|nov|dic)/i.test(value)) {
+    return 'D MMM AAAA';
+  }
   return '';
 }
 
@@ -123,10 +126,14 @@ export function generateStoreOcrProfile(
     }
     if (result.matches?.purchaseDate === true) {
       const evidence = receipt.evidence?.purchaseDateText || '';
-      const label = firstLabel(evidence, [
+      const dateLabel = firstLabel(evidence, [
         /\b((?:fecha|f\.)\s*(?:de\s+)?(?:operaci[oó]n|compra|emisi[oó]n)?)\s*[:#-]?\s*\d/i,
       ]);
-      if (label) dateLabels.push(label);
+      const timeLabel = firstLabel(evidence, [
+        /\b((?:hora|h\.))\s*[:#-]?\s*\d/i,
+      ]);
+      if (dateLabel) dateLabels.push(dateLabel);
+      if (timeLabel) dateLabels.push(timeLabel);
       const format = dateFormat(evidence);
       if (format) formats.push(format);
     }
@@ -138,7 +145,15 @@ export function generateStoreOcrProfile(
     }
   }
 
-  const uniqueFormats = cleanList(formats, 4);
+  const formatCounts = formats.reduce((counts, format) => {
+    counts.set(format, (counts.get(format) || 0) + 1);
+    return counts;
+  }, new Map<string, number>());
+  const preferredFormats = ['DD/MM/AAAA', 'DD/MM/AA', 'D MMM AAAA', 'AAAA-MM-DD'];
+  const learnedDateFormat = [...formatCounts.entries()]
+    .sort((left, right) => right[1] - left[1]
+      || preferredFormats.indexOf(left[0]) - preferredFormats.indexOf(right[0]))[0]?.[0]
+    || 'DD/MM/AAAA';
   const profile = normalizeStoreOcrProfile({
     enabled: false,
     headerSignatures,
@@ -149,7 +164,7 @@ export function generateStoreOcrProfile(
     ticketNumberRegion: 'header',
     dateRegion: 'header',
     totalRegion: 'footer',
-    dateFormat: uniqueFormats.length === 1 ? uniqueFormats[0] : '',
+    dateFormat: learnedDateFormat,
     instructions: cleanList(notes, 12).map((note) => `- ${note}`).join('\n'),
     sampleCount,
   });

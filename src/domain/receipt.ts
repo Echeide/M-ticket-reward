@@ -133,13 +133,16 @@ export function isValidPurchaseDateTime(value: string, purchaseDate: string): bo
   return canaryDateTimeToTimestamp(value) !== null;
 }
 
+export function purchaseTimeFromEvidence(value: string): string | null {
+  const printedTime = /(?:^|\D)([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?(?:\D|$)/.exec(value);
+  if (!printedTime) return null;
+  return `${String(Number(printedTime[1])).padStart(2, '0')}:${printedTime[2]}`;
+}
+
 export function hasVerifiedPurchaseTime(ocr: OcrReceipt, purchaseDate = ocr.purchaseDate || ''): boolean {
   const purchaseDateTime = String(ocr.purchaseDateTime || '');
   if (!isValidPurchaseDateTime(purchaseDateTime, purchaseDate)) return false;
-  const printedTime = /(?:^|\D)([01]\d|2[0-3]):([0-5]\d)(?:\D|$)/.exec(
-    String(ocr.evidence?.purchaseDateText || ''),
-  );
-  return Boolean(printedTime && `${printedTime[1]}:${printedTime[2]}` === purchaseDateTime.slice(11, 16));
+  return purchaseTimeFromEvidence(String(ocr.evidence?.purchaseDateText || '')) === purchaseDateTime.slice(11, 16);
 }
 
 export function canaryDateTimeToTimestamp(value: string): number | null {

@@ -1,4 +1,4 @@
-import { isValidPurchaseDateTime, type OcrReceipt } from './receipt';
+import { hasVerifiedPurchaseTime, isValidPurchaseDateTime, type OcrReceipt } from './receipt';
 import type { StoreOcrProfile } from './ocr-profile';
 import type { StoreIdentity } from './store';
 
@@ -97,7 +97,9 @@ export function compareTrainingResult(
     store: storeMatched,
     ticketNumber: compactIdentifier(receipt.ticketNumber || '') === compactIdentifier(expected.ticketNumber),
     purchaseDate: receipt.purchaseDate === expected.purchaseDate,
-    purchaseTime: !expected.purchaseDateTime || receipt.purchaseDateTime === expected.purchaseDateTime,
+    purchaseTime: expected.purchaseDateTime
+      ? receipt.purchaseDateTime === expected.purchaseDateTime && hasVerifiedPurchaseTime(receipt)
+      : !receipt.purchaseDateTime || hasVerifiedPurchaseTime(receipt),
     total: receipt.totalCents === expected.totalCents && (receipt.currency || 'EUR') === expected.currency,
     evidence: verificationIssues.length === 0,
   };

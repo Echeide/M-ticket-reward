@@ -36,7 +36,7 @@ test('training evaluations generate merchant-specific OCR landmarks', () => {
         rawText: '',
         evidence: {
           ticketNumberText: 'Documento: A-12345',
-          purchaseDateText: 'Fecha operación: 06/08/2026',
+          purchaseDateText: 'Fecha operación: 06/08/2026 Hora: 9:01',
           totalText: 'TOTAL A PAGAR 15,99',
         },
       },
@@ -46,10 +46,25 @@ test('training evaluations generate merchant-specific OCR landmarks', () => {
   assert.equal(profile.sampleCount, 1);
   assert.ok(profile.headerSignatures.includes('B12345678'));
   assert.deepEqual(profile.ticketNumberLabels, ['Documento']);
-  assert.deepEqual(profile.dateLabels, ['Fecha operación']);
+  assert.deepEqual(profile.dateLabels, ['Fecha operación', 'Hora']);
   assert.deepEqual(profile.totalLabels, ['TOTAL A PAGAR']);
   assert.equal(profile.dateFormat, 'DD/MM/AAAA');
   assert.match(profile.instructions, /último TOTAL A PAGAR/);
+});
+
+test('OCR profiles learn the majority Spanish date order across separators', () => {
+  const result = (purchaseDateText: string) => ({
+    matches: { store: true, purchaseDate: true },
+    receipt: {
+      isReceipt: true, confidence: 0.95, storeName: 'Comercio Uno', purchaseDate: '2026-08-06',
+      evidence: { purchaseDateText },
+    },
+  });
+  const profile = generateStoreOcrProfile(
+    { name: 'Comercio Uno' },
+    [result('Fecha 06-08-2026'), result('Fecha 06/08/2026'), result('Fecha 2026-08-06')],
+  );
+  assert.equal(profile.dateFormat, 'DD/MM/AAAA');
 });
 
 test('OCR profiles ignore landmarks from samples matched to another merchant', () => {

@@ -36,6 +36,30 @@ test('OCR verification accepts printed dates with a two-digit year', () => {
   assert.deepEqual(verifyOcr(receipt), []);
 });
 
+test('OCR normalization corrects an ISO date that conflicts with Spanish printed order', () => {
+  const receipt = normalizeOcr({
+    ...validExtraction,
+    purchaseDate: '2026-06-08',
+    purchaseDateTime: '',
+    purchaseDateText: 'Fecha 06/08/2026',
+  });
+  assert.equal(receipt.purchaseDate, '2026-08-06');
+  assert.deepEqual(verifyOcr(receipt), []);
+});
+
+test('OCR verification accepts Spanish textual dates and single-digit hours', () => {
+  const receipt = normalizeOcr({
+    ...validExtraction,
+    ticketNumber: '',
+    ticketNumberText: '',
+    purchaseDateText: 'Fecha 6 de agosto de 2026 Hora 9:01',
+    rawText: 'HIPERDINO\nFecha 6 de agosto de 2026 Hora 9:01\nTOTAL COMPRA 15,92',
+  });
+  assert.equal(receipt.purchaseDate, '2026-08-06');
+  assert.equal(receipt.purchaseDateTime, '2026-08-06T09:01');
+  assert.deepEqual(verifyOcr(receipt), []);
+});
+
 test('OCR verification accepts a printed time as identity when the receipt has no number', () => {
   const receipt = normalizeOcr({
     ...validExtraction,
@@ -97,7 +121,7 @@ test('OCR normalization verifies sparse Llama evidence against the literal raw t
   assert.deepEqual(verifyOcr(receipt), []);
 });
 
-test('OCR verification rejects a receipt with neither printed number nor matching time', () => {
+test('OCR normalization prefers the literal printed time over a conflicting model value', () => {
   const receipt = normalizeOcr({
     ...validExtraction,
     ticketNumber: '',
@@ -106,6 +130,20 @@ test('OCR verification rejects a receipt with neither printed number nor matchin
     purchaseDateText: 'Fecha 06/08/2026 Hora 09:02',
     rawText: 'HIPERDINO\nFecha 06/08/2026 Hora 09:02\nTOTAL COMPRA 15,92',
   });
+  assert.equal(receipt.purchaseDateTime, '2026-08-06T09:02');
+  assert.deepEqual(verifyOcr(receipt), []);
+});
+
+test('OCR normalization discards a time without literal evidence', () => {
+  const receipt = normalizeOcr({
+    ...validExtraction,
+    ticketNumber: '',
+    ticketNumberText: '',
+    purchaseDateTime: '2026-08-06T09:01',
+    purchaseDateText: 'Fecha 06/08/2026',
+    rawText: 'HIPERDINO\nFecha 06/08/2026\nTOTAL COMPRA 15,92',
+  });
+  assert.equal(receipt.purchaseDateTime, undefined);
   assert.deepEqual(verifyOcr(receipt), ['MISSING_TICKET_NUMBER_OR_TIME']);
 });
 

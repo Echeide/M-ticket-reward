@@ -130,9 +130,20 @@ function filterParams() {
 }
 
 function formatFilterDate(value) {
-  const [year, month, day] = value.split('-').map(Number);
-  if (!year || !month || !day) return value;
-  return new Intl.DateTimeFormat('es-ES').format(new Date(year, month - 1, day));
+  return formatSpanishDate(value);
+}
+
+function formatSpanishDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ''));
+  if (!match) return value || '—';
+  return `${match[3]}/${match[2]}/${match[1]}`;
+}
+
+function formatSpanishDateTime(value) {
+  const text = String(value || '');
+  const formattedDate = formatSpanishDate(text);
+  const time = /^\d{4}-\d{2}-\d{2}T(\d{2}:\d{2})/.exec(text)?.[1];
+  return time ? `${formattedDate} · ${time}` : formattedDate;
 }
 
 function activeFilterDescriptions(params) {
@@ -707,8 +718,10 @@ function trainingEvaluationDetails(evaluation, expected) {
   const actual = evaluation.actual || {};
   const expectedIdentity = expected.ticketNumber || 'Sin número';
   const actualIdentity = actual.ticketNumber || (actual.purchaseDateTime ? 'Sin número; usa fecha y hora' : 'No reconocido');
-  const expectedDate = expected.purchaseDateTime || expected.purchaseDate || '—';
-  const actualDate = actual.purchaseDateTime || actual.purchaseDate || 'No reconocida';
+  const expectedDate = expected.purchaseDate ? formatSpanishDate(expected.purchaseDate) : '—';
+  const actualDate = actual.purchaseDate ? formatSpanishDate(actual.purchaseDate) : 'No reconocida';
+  const expectedTime = expected.purchaseDateTime?.slice(11, 16) || 'No indicada';
+  const actualTime = actual.purchaseDateTime?.slice(11, 16) || 'No reconocida';
   const expectedTotal = formatMoney(expected.totalCents);
   const actualTotal = actual.totalCents ? formatMoney(actual.totalCents) : 'No reconocido';
   const confidence = Number.isFinite(actual.confidence) ? `${Math.round(actual.confidence * 100)}%` : '—';
@@ -724,7 +737,8 @@ function trainingEvaluationDetails(evaluation, expected) {
     <div class="training-comparison" role="table" aria-label="Valores esperados y reconocidos">
       <div class="training-comparison-heading" role="row"><span>Campo</span><strong>Esperado</strong><strong>Reconocido</strong></div>
       <div role="row"><span>Número</span><strong>${escapeHtml(expectedIdentity)}</strong><strong>${escapeHtml(actualIdentity)}</strong></div>
-      <div role="row"><span>Fecha/hora</span><strong>${escapeHtml(expectedDate)}</strong><strong>${escapeHtml(actualDate)}</strong></div>
+      <div role="row"><span>Fecha</span><strong>${escapeHtml(expectedDate)}</strong><strong>${escapeHtml(actualDate)}</strong></div>
+      <div role="row"><span>Hora</span><strong>${escapeHtml(expectedTime)}</strong><strong>${escapeHtml(actualTime)}</strong></div>
       <div role="row"><span>Importe</span><strong>${escapeHtml(expectedTotal)}</strong><strong>${escapeHtml(actualTotal)}</strong></div>
       <div role="row"><span>Comercio</span><strong>${escapeHtml(document.querySelector('#store-form').elements.name.value || 'Comercio esperado')}</strong><strong>${escapeHtml(actual.storeName || 'No reconocido')}</strong></div>
     </div>
@@ -847,7 +861,7 @@ function renderTrainingSamples() {
       </button>
       <div class="training-ground-truth">
         <strong>${escapeHtml(sample.expected.ticketNumber || 'Sin número; identificado por hora')}</strong>
-        <span>${escapeHtml(sample.expected.purchaseDateTime || sample.expected.purchaseDate)} · ${formatMoney(sample.expected.totalCents)}</span>
+        <span>${escapeHtml(formatSpanishDateTime(sample.expected.purchaseDateTime || sample.expected.purchaseDate))} · ${formatMoney(sample.expected.totalCents)}</span>
         ${sample.notes ? `<small>${escapeHtml(sample.notes)}</small>` : ''}
         ${trainingEvaluationDetails(sample.evaluation, sample.expected)}
       </div>
@@ -891,7 +905,7 @@ function renderTrainingReceiptCandidates() {
       <div class="training-receipt-candidate-data">
         <strong>${escapeHtml(receipt.publicId)}</strong>
         <span>${escapeHtml(user)}</span>
-        <small>${escapeHtml(receipt.expected.ticketNumber || (receipt.expected.purchaseDateTime ? 'Sin número' : 'Identidad pendiente'))} · ${escapeHtml(receipt.expected.purchaseDateTime || receipt.expected.purchaseDate || 'Fecha pendiente')} · ${escapeHtml(total)}</small>
+        <small>${escapeHtml(receipt.expected.ticketNumber || (receipt.expected.purchaseDateTime ? 'Sin número' : 'Identidad pendiente'))} · ${escapeHtml(receipt.expected.purchaseDate ? formatSpanishDateTime(receipt.expected.purchaseDateTime || receipt.expected.purchaseDate) : 'Fecha pendiente')} · ${escapeHtml(total)}</small>
         <small>${escapeHtml(statusLabels[receipt.status] || receipt.status)} · subido ${escapeHtml(new Date(receipt.createdAt).toLocaleDateString('es-ES'))}</small>
       </div>
       <button class="${selected ? 'secondary-button' : 'primary-button'} select-training-receipt" type="button" data-id="${escapeHtml(receipt.id)}" ${selected ? 'disabled' : ''}>${selected ? 'Añadido' : 'Seleccionar'}</button>
@@ -973,7 +987,7 @@ function renderTrainingDrafts() {
         <div class="training-draft-title"><strong>${escapeHtml(draft.label)}</strong>${draft.sourceLabel ? `<small>${escapeHtml(draft.sourceLabel)}</small>` : ''}</div>
         <label>Número del ticket<input data-training-field="ticketNumber" maxlength="160" placeholder="Opcional si el ticket muestra la hora" value="${escapeHtml(draft.values?.ticketNumber || '')}" /></label>
         <label>Fecha<input data-training-field="purchaseDate" type="date" value="${escapeHtml(draft.values?.purchaseDate || '')}" /></label>
-        <label>Hora<input data-training-field="purchaseTime" type="time" value="${escapeHtml(draft.values?.purchaseTime || '')}" /><small>Obligatoria cuando el ticket no tiene número.</small></label>
+        <label>Hora<input data-training-field="purchaseTime" type="time" value="${escapeHtml(draft.values?.purchaseTime || '')}" /><small>Indícala siempre que figure; es obligatoria si el ticket no tiene número.</small></label>
         <label>Importe total (€)<input data-training-field="total" inputmode="decimal" placeholder="15,92" value="${escapeHtml(draft.values?.total || '')}" /></label>
         <label class="training-notes-field">Notas<input data-training-field="notes" maxlength="1000" placeholder="Caja, formato o particularidades" value="${escapeHtml(draft.values?.notes || '')}" /></label>
       </div>
@@ -1248,7 +1262,7 @@ async function select(id, suppliedReceipt = null) {
     <div class="review-data">
       <p class="eyebrow">${escapeHtml(receipt.publicId)}</p>
       <h2>${escapeHtml(receipt.fields.storeName || 'Sin tienda')}</h2>
-      <dl><div><dt>Usuario</dt><dd>${escapeHtml(receipt.user.displayName || receipt.user.subject)}</dd></div><div class="lookup-code-field"><dt>Código de búsqueda</dt><dd>${escapeHtml(receipt.user.lookupCode || 'Histórico sin código')}</dd></div><div><dt>Número</dt><dd>${escapeHtml(receipt.fields.ticketNumber || (receipt.fields.purchaseDateTime ? 'Sin número; validado por hora' : '—'))}</dd></div><div><dt>Fecha y hora</dt><dd>${escapeHtml(receipt.fields.purchaseDateTime || receipt.fields.purchaseDate || '—')}</dd></div><div><dt>Importe</dt><dd>${formatMoney(receipt.fields.totalCents)}</dd></div><div><dt>Estado</dt><dd>${escapeHtml(receiptStatusLabel(receipt))}</dd></div></dl>
+      <dl><div><dt>Usuario</dt><dd>${escapeHtml(receipt.user.displayName || receipt.user.subject)}</dd></div><div class="lookup-code-field"><dt>Código de búsqueda</dt><dd>${escapeHtml(receipt.user.lookupCode || 'Histórico sin código')}</dd></div><div><dt>Número</dt><dd>${escapeHtml(receipt.fields.ticketNumber || (receipt.fields.purchaseDateTime ? 'Sin número; validado por hora' : '—'))}</dd></div><div><dt>Fecha y hora</dt><dd>${escapeHtml(formatSpanishDateTime(receipt.fields.purchaseDateTime || receipt.fields.purchaseDate))}</dd></div><div><dt>Importe</dt><dd>${formatMoney(receipt.fields.totalCents)}</dd></div><div><dt>Estado</dt><dd>${escapeHtml(receiptStatusLabel(receipt))}</dd></div></dl>
       ${reasons.length ? `<div class="review-reasons"><strong>Comprobación automática</strong><ul>${reasons.map((reason) => `<li>${escapeHtml(reasonLabels[reason] || reason)}</li>`).join('')}</ul></div>` : ''}
       ${canApproveManually ? `<div class="manual-correction"><strong>Corrección manual</strong><label>Comercio<select id="manual-store"><option value="">Selecciona un comercio</option>${activeStoreOptions}</select></label><label>Número de ticket <small>o indica la hora si no existe</small><input id="manual-ticket-number" value="${escapeHtml(receipt.fields.ticketNumber)}" /></label><label>Fecha<input id="manual-purchase-date" type="date" value="${escapeHtml(receipt.fields.purchaseDate)}" /></label><label>Hora de compra<input id="manual-purchase-time" type="time" value="${escapeHtml((receipt.fields.purchaseDateTime || '').slice(11, 16))}" /></label><label>Importe (€)<input id="manual-total" type="number" min="0.01" step="0.01" value="${(receipt.fields.totalCents / 100).toFixed(2)}" /></label></div>` : ''}
       <label>Nota de revisión<textarea id="review-reason" rows="3" placeholder="${canApproveManually ? 'Obligatoria para validar manualmente' : `Opcional al marcar como revisado${canRevoke ? '; obligatoria para retirar puntos' : ''}`}"></textarea></label>
