@@ -91,6 +91,39 @@ function filterParams() {
   return params;
 }
 
+function formatFilterDate(value) {
+  const [year, month, day] = value.split('-').map(Number);
+  if (!year || !month || !day) return value;
+  return new Intl.DateTimeFormat('es-ES').format(new Date(year, month - 1, day));
+}
+
+function activeFilterDescriptions(params) {
+  const descriptions = [];
+  const add = (key, label, format = (value) => value) => {
+    const value = params.get(key);
+    if (value) descriptions.push(`${label}: ${format(value)}`);
+  };
+  add('user', 'Búsqueda');
+  add('store', 'Comercio');
+  add('space', 'Espacio o instalación');
+  add('status', 'Estado', (value) => statusLabels[value] || value);
+  add('review', 'Resultado antifraude', (value) => reviewLabels[value] || value);
+  add('from', 'Compra desde', formatFilterDate);
+  add('to', 'Compra hasta', formatFilterDate);
+  if (params.get('attention')) descriptions.push('Solo tickets con incidencias');
+  return descriptions;
+}
+
+function renderEmptyReceiptList(params) {
+  const filters = activeFilterDescriptions(params);
+  if (!filters.length) return '<div class="empty-state receipt-empty-state"><p>No hay registros.</p></div>';
+  return `<div class="empty-state receipt-empty-state">
+    <p>No hay registros con estos filtros.</p>
+    <strong>Filtros aplicados:</strong>
+    <ul>${filters.map((filter) => `<li>${escapeHtml(filter)}</li>`).join('')}</ul>
+  </div>`;
+}
+
 async function load(page = state.pagination.page) {
   const params = filterParams();
   params.set('page', String(page));
@@ -108,7 +141,7 @@ async function load(page = state.pagination.page) {
       <span><strong>${escapeHtml(receipt.publicId)}</strong><small>${escapeHtml(receipt.user?.lookupCode || '')}${receipt.user?.lookupCode ? ' · ' : ''}${escapeHtml(receipt.user?.displayName || receipt.fields.storeName || 'Sin usuario')}</small></span>
       <span><strong>${formatMoney(receipt.fields.totalCents)}</strong><small>${receipt.reward.pointsAwarded} puntos</small></span>
       <span class="status-chip ${escapeHtml(receipt.status.toLowerCase())}">${escapeHtml(receiptStatusLabel(receipt))} · ${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</span>
-    </button>`).join('') || '<p class="empty-state">No hay registros con estos filtros.</p>';
+    </button>`).join('') || renderEmptyReceiptList(params);
   document.querySelectorAll('.receipt-row').forEach((button) => button.addEventListener('click', () => select(button.dataset.id)));
   highlightSelectedRow();
 }
