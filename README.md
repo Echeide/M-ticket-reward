@@ -44,7 +44,8 @@ El OCR se selecciona mediante variables, sin cambiar el flujo de tickets:
   como secreto con `wrangler secret put OCR_API_KEY`.
 
 La configuración inicial de producción usa
-`@cf/google/gemma-4-26b-a4b-it`; Moondream queda disponible como alternativa rápida.
+`@cf/moondream/moondream3.1-9B-A2B`; Gemma queda disponible como alternativa
+de mayor capacidad para evaluaciones controladas.
 El OCR hace un segundo intento focalizado
 cuando faltan datos o no coinciden con sus líneas de evidencia. Un resultado que
 sigue siendo incoherente queda pendiente de revisión y nunca se rechaza

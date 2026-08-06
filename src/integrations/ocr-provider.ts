@@ -100,9 +100,23 @@ async function extractResponseText(payload: unknown): Promise<string | null> {
   return null;
 }
 
+function responseShape(payload: unknown, depth = 0): unknown {
+  if (typeof payload === 'string') return `string(${payload.length})`;
+  if (payload instanceof Response) return `Response(${payload.status})`;
+  if (payload instanceof ReadableStream) return 'ReadableStream';
+  if (Array.isArray(payload)) {
+    return depth >= 3 ? `array(${payload.length})` : payload.slice(0, 2).map((item) => responseShape(item, depth + 1));
+  }
+  if (!payload || typeof payload !== 'object') return String(payload);
+  if (depth >= 3) return `object(${Object.keys(payload as Record<string, unknown>).join(',')})`;
+  return Object.fromEntries(Object.entries(payload as Record<string, unknown>)
+    .slice(0, 20)
+    .map(([key, value]) => [key, responseShape(value, depth + 1)]));
+}
+
 export async function providerResponseText(payload: unknown): Promise<string> {
   const text = await extractResponseText(payload);
-  if (!text) throw new Error('OCR_PROVIDER_EMPTY_RESPONSE');
+  if (!text) throw new Error(`OCR_PROVIDER_EMPTY_RESPONSE:${JSON.stringify(responseShape(payload))}`);
   return text;
 }
 
