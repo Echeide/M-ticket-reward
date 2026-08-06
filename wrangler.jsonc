@@ -37,7 +37,7 @@
         "queue": "rtales-ticket-ocr-jobs",
         "max_batch_size": 1,
         "max_batch_timeout": 0,
-        "max_retries": 8,
+        "max_retries": 3,
         "max_concurrency": 35,
         "dead_letter_queue": "rtales-ticket-ocr-jobs-dlq"
       },
@@ -69,6 +69,7 @@
     "OCR_WORKERS_AI_FORMAT": "chat",
     "OCR_MODE": "workers-ai",
     "OCR_TIMEOUT_MS": "45000",
+    "OCR_MAX_ATTEMPTS": "3",
     "ALLOW_DEV_ADMIN": "false",
     "MAX_TICKET_BYTES": "10485760"
   }

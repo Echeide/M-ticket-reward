@@ -46,6 +46,7 @@ import {
   validateAppSettingPeriod,
 } from './domain/app-settings';
 import { readReceipt } from './integrations/ocr';
+import { classifyOcrFailure, ocrMaxAttempts, ocrRetryDelaySeconds } from './domain/ocr-failure';
 import { syncAdminAccessEmails } from './integrations/cloudflare-access';
 import { adminInvitationMailConfigured, sendAdminInvitation } from './integrations/mailjet';
 import {
@@ -109,6 +110,8 @@ type ReceiptRow = {
   ocr_duration_ms: number | null;
   ocr_started_at: string | null;
   ocr_completed_at: string | null;
+  ocr_job_attempt_count: number;
+  ocr_last_error: string | null;
   risk_score: number;
   validation_reasons: string[];
   review_status: 'PENDING' | 'CLEARED' | 'FRAUD';
@@ -286,6 +289,10 @@ function receiptView(row: ReceiptRow, includeManagerFields = false) {
       durationMs: row.ocr_duration_ms,
       startedAt: row.ocr_started_at,
       completedAt: row.ocr_completed_at,
+      ...(includeManagerFields ? {
+        jobAttemptCount: row.ocr_job_attempt_count,
+        lastError: row.ocr_last_error,
+      } : {}),
     },
     review: {
       status: row.review_status,
@@ -315,6 +322,13 @@ function receiptView(row: ReceiptRow, includeManagerFields = false) {
 
 const PUBLIC_REASON_MESSAGES: Record<string, string> = {
   OCR_PROCESSING_FAILED: 'No hemos podido leer el ticket. Prueba con una foto más clara.',
+  OCR_PROVIDER_QUOTA_EXCEEDED: 'No hemos podido procesar el ticket en este momento. El ticket queda registrado para poder volver a comprobarlo.',
+  OCR_PROVIDER_LICENSE_REQUIRED: 'No hemos podido procesar el ticket en este momento. El ticket queda registrado para poder volver a comprobarlo.',
+  OCR_PROVIDER_CONFIGURATION_ERROR: 'No hemos podido procesar el ticket en este momento. El ticket queda registrado para poder volver a comprobarlo.',
+  OCR_PROVIDER_CAPACITY: 'El servicio de lectura está saturado temporalmente. El ticket queda registrado para poder volver a comprobarlo.',
+  OCR_PROVIDER_RATE_LIMITED: 'El servicio de lectura está saturado temporalmente. El ticket queda registrado para poder volver a comprobarlo.',
+  OCR_PROVIDER_TIMEOUT: 'El servicio de lectura ha tardado demasiado. El ticket queda registrado para poder volver a comprobarlo.',
+  OCR_PROVIDER_UNAVAILABLE: 'El servicio de lectura no está disponible temporalmente. El ticket queda registrado para poder volver a comprobarlo.',
   OCR_VERIFICATION_REQUIRED: 'El ticket está registrado, pero no hemos podido verificar todos sus datos automáticamente. Queda pendiente de revisión.',
   NOT_A_RECEIPT: 'La imagen no parece un ticket de compra.',
   DUPLICATE: 'Este ticket ya se había enviado.',
@@ -806,7 +820,9 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
   const receipt = await withDatabase(env, async (client) => {
     const result = await client.query<Pick<ReceiptRow, 'id' | 'session_id' | 'user_ref' | 'image_key' | 'image_content_type' | 'status'>>(
       `UPDATE receipts SET status = 'OCR_PROCESSING', ocr_started_at = NOW(),
-          ocr_completed_at = NULL, updated_at = NOW()
+          ocr_completed_at = NULL,
+          ocr_job_attempt_count = ocr_job_attempt_count + 1,
+          updated_at = NOW()
         WHERE id = $1 AND status IN ('OCR_QUEUED', 'OCR_PROCESSING')
         RETURNING id, session_id, user_ref, image_key, image_content_type, status`,
       [receiptId],
@@ -855,7 +871,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
            ticket_number = $4, purchase_date = $5, total_cents = $6, currency = $7,
            ticket_fingerprint = NULL, ocr_payload = $8::jsonb, ocr_confidence = $9,
            ocr_provider = $10, ocr_model = $11, ocr_attempt_count = $12,
-           ocr_duration_ms = $13, ocr_completed_at = NOW(), risk_score = 0,
+           ocr_duration_ms = $13, ocr_completed_at = NOW(), ocr_last_error = NULL, risk_score = 0,
            validation_reasons = $14::jsonb, review_status = 'PENDING',
            reviewed_at = NULL, reviewed_by = NULL, updated_at = NOW()
          WHERE id = $1`,
@@ -904,7 +920,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
          ticket_fingerprint = $9, ocr_payload = $10::jsonb, ocr_confidence = $11,
          risk_score = $12, validation_reasons = $13::jsonb,
          ocr_provider = $14, ocr_model = $15, ocr_attempt_count = $16,
-         ocr_duration_ms = $17, ocr_completed_at = NOW(),
+         ocr_duration_ms = $17, ocr_completed_at = NOW(), ocr_last_error = NULL,
          points_awarded = $18,
          review_status = 'CLEARED', reviewed_at = NOW(), reviewed_by = 'SYSTEM',
          updated_at = NOW()
@@ -931,14 +947,27 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
   await enqueueRewardOutbox(env, receiptId, rewardOutboxId);
 }
 
-async function markOcrFailed(env: Env, receiptId: string): Promise<void> {
+async function recordOcrFailure(env: Env, receiptId: string, lastError: string): Promise<void> {
+  await withDatabase(env, async (client) => {
+    await client.query(
+      `UPDATE receipts SET ocr_last_error = $2, updated_at = NOW()
+        WHERE id = $1 AND status = 'OCR_PROCESSING'`,
+      [receiptId, lastError],
+    );
+  });
+}
+
+async function markOcrFailed(env: Env, receiptId: string, reason: string, lastError: string): Promise<void> {
+  const reasons = reason === 'OCR_PROCESSING_FAILED'
+    ? ['OCR_PROCESSING_FAILED']
+    : [reason, 'OCR_PROCESSING_FAILED'];
   await withDatabase(env, async (client) => {
     await client.query(
       `UPDATE receipts SET status = 'REWARD_FAILED', validation_reasons = $2::jsonb,
           review_status = 'PENDING', reviewed_at = NULL, reviewed_by = NULL,
-          ocr_completed_at = NOW(), updated_at = NOW()
+          ocr_last_error = $3, ocr_completed_at = NOW(), updated_at = NOW()
         WHERE id = $1 AND status = 'OCR_PROCESSING'`,
-      [receiptId, JSON.stringify(['OCR_PROCESSING_FAILED'])],
+      [receiptId, JSON.stringify(reasons), lastError],
     );
   });
 }
@@ -1307,7 +1336,8 @@ async function handleAdminReprocess(request: Request, env: Env, receiptId: strin
   const queued = await withDatabase(env, async (client) => client.query(
     `UPDATE receipts SET status = 'OCR_QUEUED', ticket_fingerprint = NULL,
         validation_reasons = $3::jsonb, review_status = 'PENDING',
-        reviewed_at = NULL, reviewed_by = NULL, updated_at = NOW()
+        reviewed_at = NULL, reviewed_by = NULL, ocr_last_error = NULL,
+        ocr_job_attempt_count = 0, updated_at = NOW()
       WHERE id = $1 AND status = $2`,
     [receiptId, receipt.status, JSON.stringify(['OCR_REPROCESS_REQUESTED'])],
   ));
@@ -1320,11 +1350,13 @@ async function handleAdminReprocess(request: Request, env: Env, receiptId: strin
       await client.query(
         `UPDATE receipts SET status = $2, ticket_fingerprint = $3,
             validation_reasons = $4::jsonb, review_status = $5,
-            reviewed_at = $6, reviewed_by = $7, updated_at = NOW()
+            reviewed_at = $6, reviewed_by = $7, ocr_last_error = $8,
+            ocr_job_attempt_count = $9, updated_at = NOW()
           WHERE id = $1 AND status = 'OCR_QUEUED'`,
         [receiptId, receipt.status, receipt.ticket_fingerprint,
           JSON.stringify(receipt.validation_reasons), receipt.review_status,
-          receipt.reviewed_at, receipt.reviewed_by],
+          receipt.reviewed_at, receipt.reviewed_by, receipt.ocr_last_error,
+          receipt.ocr_job_attempt_count],
       );
     });
     throw caught;
@@ -2723,10 +2755,16 @@ export default {
         message.ack();
       } catch (caught) {
         console.error('Queue job failed', message.body, caught);
-        if (message.body.kind === 'OCR_RECEIPT' && message.attempts >= 8) {
-          await markOcrFailed(env, message.body.receiptId);
-          message.ack();
-        } else if (message.body.kind === 'DELIVER_REWARD' && message.attempts >= rewardMaxAttempts(env)) {
+        if (message.body.kind === 'OCR_RECEIPT') {
+          const failure = classifyOcrFailure(caught);
+          await recordOcrFailure(env, message.body.receiptId, failure.error);
+          if (!failure.retryable || message.attempts >= ocrMaxAttempts(env.OCR_MAX_ATTEMPTS)) {
+            await markOcrFailed(env, message.body.receiptId, failure.reason, failure.error);
+            message.ack();
+          } else {
+            message.retry({ delaySeconds: ocrRetryDelaySeconds(message.attempts) });
+          }
+        } else if (message.attempts >= rewardMaxAttempts(env)) {
           await markOutboxTerminalFailure(env, message.body.outboxId, 'REWARD_JOB_FAILED');
           message.ack();
         } else {

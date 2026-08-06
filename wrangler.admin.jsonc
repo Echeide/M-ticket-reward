@@ -46,6 +46,7 @@
     "OCR_WORKERS_AI_FORMAT": "chat",
     "OCR_MODE": "workers-ai",
     "OCR_TIMEOUT_MS": "45000",
+    "OCR_MAX_ATTEMPTS": "3",
     "ALLOW_DEV_ADMIN": "false",
     "MAX_TICKET_BYTES": "10485760"
   }

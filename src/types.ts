@@ -23,6 +23,7 @@ export interface Env {
   OCR_API_BASE_URL?: string;
   OCR_API_KEY?: string;
   OCR_TIMEOUT_MS?: string;
+  OCR_MAX_ATTEMPTS?: string;
   ALLOW_DEV_ADMIN: string;
   ADMIN_ONLY?: string;
   DEV_ADMIN_TOKEN?: string;
