@@ -43,13 +43,12 @@
       <section id="review-panel" class="review-panel empty"><p>Selecciona un ticket para revisarlo.</p></section>
     </main>
     <main id="bans-view" class="bans-layout admin-view">
-      <section class="stores-heading">
-        <div><p class="eyebrow">Protección antifraude</p><h2>Usuarios baneados</h2><p>Se bloquea automáticamente al alcanzar 6 puntos: una imagen que no es un ticket suma 1 y un fraude confirmado suma 2.</p></div>
+      <section class="filters-bar" aria-label="Búsqueda de usuarios baneados">
+        <form id="ban-search" class="filters-inline">
+          <label class="filter-search"><span class="visually-hidden">Código o nombre del usuario</span><input name="q" placeholder="Buscar por código o nombre del usuario" /></label>
+          <button class="primary-button" type="submit">Buscar</button>
+        </form>
       </section>
-      <form id="ban-search" class="ban-search">
-        <label><span class="visually-hidden">Buscar usuario baneado</span><input name="q" placeholder="Código de búsqueda o nombre" /></label>
-        <button class="primary-button" type="submit">Buscar</button>
-      </form>
       <section class="store-list-card">
         <div class="ban-list-head"><span>Usuario</span><span>Contexto</span><span>Infracciones</span><span>Estado</span><span></span></div>
         <div id="ban-list"></div>
