@@ -6,6 +6,12 @@ const state = {
 };
 let storeLogoPreviewObjectUrl = '';
 let trainingDraftFiles = [];
+const trainingReceiptPicker = {
+  receipts: [],
+  query: '',
+  page: 1,
+  pagination: { page: 1, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
+};
 const statusLabels = {
   OCR_QUEUED: 'En espera de lectura',
   OCR_PROCESSING: 'Leyendo ticket',
@@ -360,11 +366,26 @@ function setStoreLogoPreview(source = '', objectUrl = false) {
 }
 
 function clearTrainingDrafts() {
-  trainingDraftFiles.forEach((draft) => URL.revokeObjectURL(draft.previewUrl));
+  trainingDraftFiles.forEach((draft) => {
+    if (draft.objectUrl) URL.revokeObjectURL(draft.previewUrl);
+  });
   trainingDraftFiles = [];
   document.querySelector('#training-files').value = '';
   document.querySelector('#training-drafts').replaceChildren();
   document.querySelector('#training-form-error').textContent = '';
+}
+
+function openTrainingImage(source) {
+  if (!source) return;
+  const dialog = document.querySelector('#training-image-dialog');
+  document.querySelector('#training-image-expanded').src = source;
+  dialog.showModal();
+}
+
+function bindTrainingImageButtons(root = document) {
+  root.querySelectorAll('.training-image-button').forEach((button) => {
+    button.addEventListener('click', () => openTrainingImage(button.dataset.imageSrc));
+  });
 }
 
 function trainingEvaluationDetails(evaluation) {
@@ -390,7 +411,10 @@ function renderTrainingSamples() {
   document.querySelector('#evaluate-all-training').disabled = !state.trainingSamples.length;
   document.querySelector('#training-samples').innerHTML = state.trainingSamples.map((sample) => `
     <article class="training-sample" data-id="${escapeHtml(sample.id)}">
-      <img src="${escapeHtml(sample.imageUrl)}" alt="Ticket de entrenamiento" loading="lazy" />
+      <button class="training-image-button" type="button" data-image-src="${escapeHtml(sample.imageUrl)}" aria-label="Ampliar ticket de entrenamiento">
+        <img src="${escapeHtml(sample.imageUrl)}" alt="Ticket de entrenamiento" loading="lazy" />
+        <span>Ampliar</span>
+      </button>
       <div class="training-ground-truth">
         <strong>${escapeHtml(sample.expected.ticketNumber)}</strong>
         <span>${escapeHtml(sample.expected.purchaseDate)} · ${formatMoney(sample.expected.totalCents)}</span>
@@ -404,6 +428,7 @@ function renderTrainingSamples() {
     </article>`).join('') || '<p class="empty-state">Todavía no hay tickets de entrenamiento para este comercio.</p>';
   document.querySelectorAll('.evaluate-training').forEach((button) => button.addEventListener('click', () => evaluateTrainingSample(button.dataset.id, button)));
   document.querySelectorAll('.delete-training').forEach((button) => button.addEventListener('click', () => deleteTrainingSample(button.dataset.id)));
+  bindTrainingImageButtons(document.querySelector('#training-samples'));
 }
 
 async function loadTrainingSamples() {
@@ -414,26 +439,125 @@ async function loadTrainingSamples() {
   renderTrainingSamples();
 }
 
+function renderTrainingReceiptCandidates() {
+  const results = document.querySelector('#training-receipts-results');
+  const pagination = trainingReceiptPicker.pagination;
+  document.querySelector('#training-receipts-feedback').textContent = pagination.total
+    ? `${pagination.total} ${pagination.total === 1 ? 'ticket disponible' : 'tickets disponibles'}`
+    : 'No hay tickets vinculados a este comercio con esa búsqueda.';
+  results.innerHTML = trainingReceiptPicker.receipts.map((receipt) => {
+    const selected = trainingDraftFiles.some((draft) => draft.sourceReceiptId === receipt.id);
+    const total = receipt.expected.totalCents ? formatMoney(receipt.expected.totalCents) : 'Importe pendiente';
+    const user = receipt.user.displayName || receipt.user.email || receipt.user.subject || 'Usuario sin nombre';
+    return `<article class="training-receipt-candidate">
+      <button class="training-image-button" type="button" data-image-src="${escapeHtml(receipt.imageUrl)}" aria-label="Ampliar ${escapeHtml(receipt.publicId)}">
+        <img src="${escapeHtml(receipt.imageUrl)}" alt="${escapeHtml(receipt.publicId)}" loading="lazy" />
+        <span>Ampliar</span>
+      </button>
+      <div class="training-receipt-candidate-data">
+        <strong>${escapeHtml(receipt.publicId)}</strong>
+        <span>${escapeHtml(user)}</span>
+        <small>${escapeHtml(receipt.expected.ticketNumber || 'Número pendiente')} · ${escapeHtml(receipt.expected.purchaseDate || 'Fecha pendiente')} · ${escapeHtml(total)}</small>
+        <small>${escapeHtml(statusLabels[receipt.status] || receipt.status)} · subido ${escapeHtml(new Date(receipt.createdAt).toLocaleDateString('es-ES'))}</small>
+      </div>
+      <button class="${selected ? 'secondary-button' : 'primary-button'} select-training-receipt" type="button" data-id="${escapeHtml(receipt.id)}" ${selected ? 'disabled' : ''}>${selected ? 'Añadido' : 'Seleccionar'}</button>
+    </article>`;
+  }).join('');
+  document.querySelector('#training-receipts-page').textContent = `Página ${pagination.page} de ${pagination.totalPages}`;
+  document.querySelector('#training-receipts-previous').disabled = !pagination.hasPrevious;
+  document.querySelector('#training-receipts-next').disabled = !pagination.hasNext;
+  document.querySelector('#training-receipts-pagination').hidden = pagination.totalPages <= 1;
+  document.querySelectorAll('.select-training-receipt').forEach((button) => button.addEventListener('click', () => {
+    const receipt = trainingReceiptPicker.receipts.find((item) => item.id === button.dataset.id);
+    if (!receipt) return;
+    if (trainingDraftFiles.length >= 20) {
+      document.querySelector('#training-receipts-feedback').textContent = 'Guarda o elimina algún borrador antes de añadir más tickets.';
+      return;
+    }
+    const total = receipt.expected.totalCents > 0
+      ? (receipt.expected.totalCents / 100).toFixed(2).replace('.', ',') : '';
+    trainingDraftFiles.push({
+      sourceReceiptId: receipt.id,
+      previewUrl: receipt.imageUrl,
+      objectUrl: false,
+      label: receipt.publicId,
+      sourceLabel: `Ticket subido por ${receipt.user.displayName || receipt.user.email || receipt.user.subject || 'usuario identificado'}`,
+      values: {
+        ticketNumber: receipt.expected.ticketNumber || '',
+        purchaseDate: receipt.expected.purchaseDate || '',
+        total,
+        notes: '',
+      },
+    });
+    renderTrainingDrafts();
+    document.querySelector('#training-receipts-dialog').close();
+  }));
+  bindTrainingImageButtons(results);
+}
+
+async function loadTrainingReceiptCandidates(page = 1) {
+  const storeId = document.querySelector('#store-form').elements.id.value;
+  if (!storeId) return;
+  const feedback = document.querySelector('#training-receipts-feedback');
+  const results = document.querySelector('#training-receipts-results');
+  feedback.textContent = 'Buscando tickets…';
+  results.innerHTML = '<p class="empty-state">Cargando…</p>';
+  const params = new URLSearchParams({ page: String(page), pageSize: '12' });
+  if (trainingReceiptPicker.query) params.set('query', trainingReceiptPicker.query);
+  const payload = await request(`/api/admin/stores/${storeId}/training-candidates?${params}`);
+  trainingReceiptPicker.receipts = payload.receipts;
+  trainingReceiptPicker.pagination = payload.pagination;
+  trainingReceiptPicker.page = payload.pagination.page;
+  document.querySelector('#training-receipts-store').textContent = `Comercio: ${payload.store.name}`;
+  renderTrainingReceiptCandidates();
+}
+
+async function openTrainingReceiptCandidates() {
+  const dialog = document.querySelector('#training-receipts-dialog');
+  trainingReceiptPicker.query = '';
+  trainingReceiptPicker.page = 1;
+  document.querySelector('#training-receipts-search').reset();
+  dialog.showModal();
+  try {
+    await loadTrainingReceiptCandidates(1);
+  } catch (error) {
+    document.querySelector('#training-receipts-feedback').textContent = error instanceof Error
+      ? error.message : 'No se pudieron buscar los tickets';
+    document.querySelector('#training-receipts-results').replaceChildren();
+  }
+}
+
 function renderTrainingDrafts() {
   document.querySelector('#training-drafts').innerHTML = trainingDraftFiles.map((draft, index) => `
     <article class="training-draft" data-index="${index}">
-      <img src="${escapeHtml(draft.previewUrl)}" alt="Vista previa de ${escapeHtml(draft.file.name)}" />
+      <button class="training-image-button" type="button" data-image-src="${escapeHtml(draft.previewUrl)}" aria-label="Ampliar ${escapeHtml(draft.label)}">
+        <img src="${escapeHtml(draft.previewUrl)}" alt="Vista previa de ${escapeHtml(draft.label)}" />
+        <span>Ampliar</span>
+      </button>
       <div class="training-draft-fields">
-        <strong>${escapeHtml(draft.file.name)}</strong>
-        <label>Número del ticket<input data-training-field="ticketNumber" maxlength="160" placeholder="Número exacto impreso" /></label>
-        <label>Fecha<input data-training-field="purchaseDate" type="date" /></label>
-        <label>Importe total (€)<input data-training-field="total" inputmode="decimal" placeholder="15,92" /></label>
-        <label class="training-notes-field">Notas<input data-training-field="notes" maxlength="1000" placeholder="Caja, formato o particularidades" /></label>
+        <div class="training-draft-title"><strong>${escapeHtml(draft.label)}</strong>${draft.sourceLabel ? `<small>${escapeHtml(draft.sourceLabel)}</small>` : ''}</div>
+        <label>Número del ticket<input data-training-field="ticketNumber" maxlength="160" placeholder="Número exacto impreso" value="${escapeHtml(draft.values?.ticketNumber || '')}" /></label>
+        <label>Fecha<input data-training-field="purchaseDate" type="date" value="${escapeHtml(draft.values?.purchaseDate || '')}" /></label>
+        <label>Importe total (€)<input data-training-field="total" inputmode="decimal" placeholder="15,92" value="${escapeHtml(draft.values?.total || '')}" /></label>
+        <label class="training-notes-field">Notas<input data-training-field="notes" maxlength="1000" placeholder="Caja, formato o particularidades" value="${escapeHtml(draft.values?.notes || '')}" /></label>
       </div>
       <button class="icon-button remove-training-draft" type="button" data-index="${index}" aria-label="Quitar ejemplo">×</button>
     </article>`).join('') + (trainingDraftFiles.length
     ? `<div class="training-save-row"><button class="primary-button" id="save-training-drafts" type="button">Guardar ${trainingDraftFiles.length} ${trainingDraftFiles.length === 1 ? 'ejemplo' : 'ejemplos'}</button></div>` : '');
+  document.querySelectorAll('.training-draft').forEach((card) => {
+    const draft = trainingDraftFiles[Number(card.dataset.index)];
+    card.querySelectorAll('[data-training-field]').forEach((input) => input.addEventListener('input', () => {
+      draft.values ||= {};
+      draft.values[input.dataset.trainingField] = input.value;
+    }));
+  });
   document.querySelectorAll('.remove-training-draft').forEach((button) => button.addEventListener('click', () => {
     const [removed] = trainingDraftFiles.splice(Number(button.dataset.index), 1);
-    if (removed) URL.revokeObjectURL(removed.previewUrl);
+    if (removed?.objectUrl) URL.revokeObjectURL(removed.previewUrl);
     renderTrainingDrafts();
   }));
   document.querySelector('#save-training-drafts')?.addEventListener('click', saveTrainingDrafts);
+  bindTrainingImageButtons(document.querySelector('#training-drafts'));
 }
 
 async function saveTrainingDrafts(event) {
@@ -450,11 +574,12 @@ async function saveTrainingDrafts(event) {
       const value = (field) => card.querySelector(`[data-training-field="${field}"]`).value.trim();
       const totalCents = Math.round(Number(value('total').replace(',', '.')) * 100);
       if (!value('ticketNumber') || !value('purchaseDate') || !Number.isInteger(totalCents) || totalCents <= 0) {
-        throw new Error(`Completa número, fecha e importe de ${draft.file.name}`);
+        throw new Error(`Completa número, fecha e importe de ${draft.label}`);
       }
       button.textContent = `Guardando ${index + 1} de ${trainingDraftFiles.length}…`;
       const form = new FormData();
-      form.append('image', draft.file);
+      if (draft.sourceReceiptId) form.append('sourceReceiptId', draft.sourceReceiptId);
+      else form.append('image', draft.file);
       form.append('ticketNumber', value('ticketNumber'));
       form.append('purchaseDate', value('purchaseDate'));
       form.append('totalCents', String(totalCents));
@@ -469,7 +594,9 @@ async function saveTrainingDrafts(event) {
   } catch (error) {
     errorNode.textContent = error instanceof Error ? error.message : 'No se pudieron guardar los ejemplos';
     if (savedCount) {
-      trainingDraftFiles.slice(0, savedCount).forEach((draft) => URL.revokeObjectURL(draft.previewUrl));
+      trainingDraftFiles.slice(0, savedCount).forEach((draft) => {
+        if (draft.objectUrl) URL.revokeObjectURL(draft.previewUrl);
+      });
       trainingDraftFiles = trainingDraftFiles.slice(savedCount);
       renderTrainingDrafts();
       await loadTrainingSamples();
@@ -831,9 +958,38 @@ document.querySelectorAll('[data-store-panel]').forEach((button) => button.addEv
 }));
 document.querySelector('#training-files').addEventListener('change', (event) => {
   const selected = [...event.currentTarget.files].slice(0, Math.max(0, 20 - trainingDraftFiles.length));
-  trainingDraftFiles.push(...selected.map((file) => ({ file, previewUrl: URL.createObjectURL(file) })));
+  trainingDraftFiles.push(...selected.map((file) => ({
+    file,
+    previewUrl: URL.createObjectURL(file),
+    objectUrl: true,
+    label: file.name,
+    values: { ticketNumber: '', purchaseDate: '', total: '', notes: '' },
+  })));
   event.currentTarget.value = '';
   renderTrainingDrafts();
+});
+document.querySelector('#open-training-receipts').addEventListener('click', openTrainingReceiptCandidates);
+document.querySelector('#close-training-receipts').addEventListener('click', () => document.querySelector('#training-receipts-dialog').close());
+document.querySelector('#training-receipts-search').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  trainingReceiptPicker.query = String(new FormData(event.currentTarget).get('query') || '').trim();
+  await loadTrainingReceiptCandidates(1).catch((error) => {
+    document.querySelector('#training-receipts-feedback').textContent = error.message;
+  });
+});
+document.querySelector('#training-receipts-previous').addEventListener('click', () => {
+  if (trainingReceiptPicker.pagination.hasPrevious) loadTrainingReceiptCandidates(trainingReceiptPicker.page - 1).catch((error) => {
+    document.querySelector('#training-receipts-feedback').textContent = error.message;
+  });
+});
+document.querySelector('#training-receipts-next').addEventListener('click', () => {
+  if (trainingReceiptPicker.pagination.hasNext) loadTrainingReceiptCandidates(trainingReceiptPicker.page + 1).catch((error) => {
+    document.querySelector('#training-receipts-feedback').textContent = error.message;
+  });
+});
+document.querySelector('#close-training-image').addEventListener('click', () => document.querySelector('#training-image-dialog').close());
+document.querySelector('#training-image-dialog').addEventListener('close', () => {
+  document.querySelector('#training-image-expanded').removeAttribute('src');
 });
 document.querySelector('#evaluate-all-training').addEventListener('click', evaluateAllTraining);
 document.querySelector('#close-store-dialog').addEventListener('click', () => {

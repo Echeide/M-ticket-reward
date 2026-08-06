@@ -126,16 +126,44 @@
             <div><strong>Ejemplos verificados</strong><p>Estos tickets se usan únicamente para medir el OCR. No generan puntos ni aparecen en la actividad de usuarios.</p></div>
             <button class="secondary-button" id="evaluate-all-training" type="button">Evaluar todos</button>
           </div>
-          <label class="training-file-picker">Añadir tickets de prueba
-            <input id="training-files" type="file" accept="image/jpeg,image/png,image/webp" multiple />
-            <small>Selecciona varias imágenes y completa los valores correctos de cada una.</small>
-          </label>
+          <div class="training-add-options">
+            <label class="training-file-picker">Subir tickets de prueba
+              <input id="training-files" type="file" accept="image/jpeg,image/png,image/webp" multiple />
+              <small>Selecciona varias imágenes y completa sus valores correctos.</small>
+            </label>
+            <button class="secondary-button button-with-icon training-receipt-picker-button" id="open-training-receipts" type="button">
+              <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3Zm3 5h6M9 12h6"></path></svg>
+              <span>Buscar tickets subidos</span>
+            </button>
+          </div>
           <div id="training-drafts" class="training-drafts"></div>
           <p id="training-form-error" class="form-error" role="alert"></p>
           <div class="training-summary" id="training-summary"></div>
           <div id="training-samples" class="training-samples"></div>
         </section>
       </form>
+    </dialog>
+    <dialog id="training-receipts-dialog" class="training-receipts-dialog">
+      <div class="training-receipts-content">
+        <div class="dialog-heading"><div><p class="eyebrow">Ejemplos reales</p><h2>Buscar tickets subidos</h2><p id="training-receipts-store"></p></div><button class="icon-button" id="close-training-receipts" type="button" aria-label="Cerrar">×</button></div>
+        <form id="training-receipts-search" class="training-receipts-search">
+          <label><span class="visually-hidden">Buscar ticket o usuario</span><input name="query" placeholder="Buscar por ticket, número o usuario" autocomplete="off" /></label>
+          <button class="primary-button" type="submit">Buscar</button>
+        </form>
+        <p id="training-receipts-feedback" class="training-receipts-feedback" role="status"></p>
+        <div id="training-receipts-results" class="training-receipts-results"></div>
+        <nav id="training-receipts-pagination" class="training-receipts-pagination" aria-label="Paginación de tickets" hidden>
+          <button class="secondary-button" id="training-receipts-previous" type="button">Anterior</button>
+          <span id="training-receipts-page">Página 1 de 1</span>
+          <button class="secondary-button" id="training-receipts-next" type="button">Siguiente</button>
+        </nav>
+      </div>
+    </dialog>
+    <dialog id="training-image-dialog" class="training-image-dialog">
+      <div class="training-image-dialog-content">
+        <button class="icon-button" id="close-training-image" type="button" aria-label="Cerrar imagen">×</button>
+        <img id="training-image-expanded" alt="Ticket ampliado" />
+      </div>
     </dialog>
     <dialog id="tier-dialog">
       <form id="tier-form" method="dialog">

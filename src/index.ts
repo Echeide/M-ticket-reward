@@ -158,6 +158,20 @@ type TrainingEvaluationRow = {
   created_at: string;
 };
 
+type TrainingReceiptCandidateRow = {
+  id: string;
+  public_id: string;
+  status: string;
+  ticket_number: string | null;
+  purchase_date: string | null;
+  total_cents: number | null;
+  currency: string;
+  created_at: string;
+  user_ref: string;
+  user_display_name?: string | null;
+  user_email?: string | null;
+};
+
 type RewardTierRow = {
   id: string;
   minimum_cents: number;
@@ -1421,6 +1435,92 @@ async function loadTrainingSample(
   });
 }
 
+function trainingReceiptCandidateView(row: TrainingReceiptCandidateRow) {
+  return {
+    id: row.id,
+    publicId: row.public_id,
+    status: row.status,
+    imageUrl: `/api/admin/receipts/${row.id}/image`,
+    expected: {
+      ticketNumber: row.ticket_number || '',
+      purchaseDate: row.purchase_date ? String(row.purchase_date).slice(0, 10) : '',
+      totalCents: Number(row.total_cents || 0),
+      currency: row.currency || 'EUR',
+    },
+    user: {
+      subject: row.user_ref,
+      displayName: row.user_display_name || '',
+      email: row.user_email || '',
+    },
+    createdAt: row.created_at,
+  };
+}
+
+async function handleAdminTrainingReceiptCandidates(
+  request: Request,
+  env: Env,
+  storeId: string,
+): Promise<Response> {
+  if (!managerIdentity(request, env)) return error('Acceso de gestor requerido', 401);
+  const url = new URL(request.url);
+  const page = Math.max(1, Number.parseInt(url.searchParams.get('page') || '1', 10) || 1);
+  const pageSize = Math.min(24, Math.max(6, Number.parseInt(url.searchParams.get('pageSize') || '12', 10) || 12));
+  const offset = (page - 1) * pageSize;
+  const search = String(url.searchParams.get('query') || '').trim().slice(0, 160);
+  const values: unknown[] = [storeId];
+  let searchClause = '';
+  if (search) {
+    values.push(`%${search}%`);
+    searchClause = ` AND (
+      r.public_id ILIKE $2 OR r.ticket_number ILIKE $2 OR r.user_ref ILIKE $2
+      OR s.display_name ILIKE $2 OR s.user_email ILIKE $2
+    )`;
+  }
+  const result = await withDatabase(env, async (client) => {
+    const storeResult = await client.query<Pick<StoreRow, 'id' | 'name'>>(
+      'SELECT id, name FROM stores WHERE id = $1 LIMIT 1',
+      [storeId],
+    );
+    if (!storeResult.rows[0]) return null;
+    const countResult = await client.query<{ total: number }>(
+      `SELECT COUNT(*) AS total
+         FROM receipts r JOIN player_sessions s ON s.id = r.session_id
+        WHERE r.store_id = $1 AND r.status <> 'DUPLICATE'${searchClause}`,
+      values,
+    );
+    const rows = await client.query<TrainingReceiptCandidateRow>(
+      `SELECT r.id, r.public_id, r.status, r.ticket_number, r.purchase_date,
+              r.total_cents, r.currency, r.created_at, r.user_ref,
+              s.display_name AS user_display_name, s.user_email
+         FROM receipts r JOIN player_sessions s ON s.id = r.session_id
+        WHERE r.store_id = $1 AND r.status <> 'DUPLICATE'${searchClause}
+        ORDER BY r.created_at DESC, r.id DESC
+        LIMIT ${pageSize} OFFSET ${offset}`,
+      values,
+    );
+    return {
+      store: storeResult.rows[0],
+      total: Number(countResult.rows[0]?.total || 0),
+      rows: rows.rows,
+    };
+  });
+  if (!result) return error('Comercio no encontrado', 404);
+  const totalPages = Math.max(1, Math.ceil(result.total / pageSize));
+  return json({
+    success: true,
+    store: result.store,
+    receipts: result.rows.map(trainingReceiptCandidateView),
+    pagination: {
+      page,
+      pageSize,
+      total: result.total,
+      totalPages,
+      hasPrevious: page > 1,
+      hasNext: page < totalPages,
+    },
+  });
+}
+
 async function handleAdminTrainingSamples(request: Request, env: Env, storeId: string): Promise<Response> {
   const managerEmail = managerIdentity(request, env);
   if (!managerEmail) return error('Acceso de gestor requerido', 401);
@@ -1458,13 +1558,9 @@ async function handleAdminTrainingSamples(request: Request, env: Env, storeId: s
   }
 
   const form = await request.formData();
+  const sourceReceiptId = String(form.get('sourceReceiptId') || '').trim();
   const image = form.get('image');
-  if (!(image instanceof File)) return error('Selecciona una imagen de ticket', 400);
-  if (!new Set(['image/jpeg', 'image/png', 'image/webp']).has(image.type)) {
-    return error('Formato de imagen no admitido', 415);
-  }
   const maxBytes = Math.max(1, Number(env.MAX_TICKET_BYTES || 10 * 1024 * 1024));
-  if (image.size <= 0 || image.size > maxBytes) return error('La imagen supera el límite permitido', 413);
   const input = normalizeTrainingSampleInput({
     ticketNumber: form.get('ticketNumber'),
     purchaseDate: form.get('purchaseDate'),
@@ -1472,7 +1568,34 @@ async function handleAdminTrainingSamples(request: Request, env: Env, storeId: s
     currency: form.get('currency'),
     notes: form.get('notes'),
   });
-  const optimized = await optimizeTicketImage(env, await image.arrayBuffer(), image.type);
+  let originalBytes: ArrayBuffer;
+  let originalContentType: string;
+  if (sourceReceiptId) {
+    const sourceReceipt = await withDatabase(env, async (client) => {
+      const result = await client.query<Pick<ReceiptRow, 'image_key' | 'image_content_type'>>(
+        `SELECT image_key, image_content_type FROM receipts
+          WHERE id = $1 AND store_id = $2 AND status <> 'DUPLICATE' LIMIT 1`,
+        [sourceReceiptId, storeId],
+      );
+      return result.rows[0];
+    });
+    if (!sourceReceipt) return error('El ticket seleccionado no pertenece a este comercio', 404);
+    const sourceObject = await env.TICKETS.get(sourceReceipt.image_key);
+    if (!sourceObject) return error('La imagen del ticket seleccionado no está disponible', 404);
+    originalBytes = await sourceObject.arrayBuffer();
+    originalContentType = sourceReceipt.image_content_type;
+  } else {
+    if (!(image instanceof File)) return error('Selecciona una imagen de ticket', 400);
+    if (!new Set(['image/jpeg', 'image/png', 'image/webp']).has(image.type)) {
+      return error('Formato de imagen no admitido', 415);
+    }
+    originalBytes = await image.arrayBuffer();
+    originalContentType = image.type;
+  }
+  if (originalBytes.byteLength <= 0 || originalBytes.byteLength > maxBytes) {
+    return error('La imagen supera el límite permitido', 413);
+  }
+  const optimized = await optimizeTicketImage(env, originalBytes, originalContentType);
   const sampleId = uuid();
   const objectKey = `training/${storeId}/${sampleId}.${optimized.extension}`;
   await env.TICKETS.put(objectKey, optimized.bytes, {
@@ -1485,6 +1608,7 @@ async function handleAdminTrainingSamples(request: Request, env: Env, storeId: s
       storedBytes: String(optimized.bytes.byteLength),
       storedDimensions: `${optimized.width}x${optimized.height}`,
       ocrReady: 'true',
+      ...(sourceReceiptId ? { sourceReceiptId } : {}),
     },
   });
   let created: TrainingSampleRow;
@@ -1798,6 +1922,12 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     }
     if (request.method === 'POST' && adminStoreLogoMatch?.[1]) {
       return await handleAdminStoreLogoUpload(request, env, adminStoreLogoMatch[1]);
+    }
+    const trainingCandidatesMatch = url.pathname.match(
+      /^\/api\/admin\/stores\/([^/]+)\/training-candidates$/,
+    );
+    if (request.method === 'GET' && trainingCandidatesMatch?.[1]) {
+      return await handleAdminTrainingReceiptCandidates(request, env, trainingCandidatesMatch[1]);
     }
     const trainingCollectionMatch = url.pathname.match(/^\/api\/admin\/stores\/([^/]+)\/training$/);
     if (trainingCollectionMatch?.[1] && ['GET', 'POST'].includes(request.method)) {
