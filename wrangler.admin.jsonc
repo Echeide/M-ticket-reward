@@ -28,6 +28,7 @@
     }
   ],
   "images": { "binding": "IMAGES" },
+  "ai": { "binding": "AI" },
   "queues": {
     "producers": [
       { "binding": "JOBS", "queue": "rtales-ticket-jobs" }
