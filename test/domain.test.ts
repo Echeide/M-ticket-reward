@@ -6,6 +6,7 @@ import {
   compareReceiptDeclaration,
   receiptStatusAfterOcr,
   normalizeReceiptDeclaration,
+  normalizeUploadRequestId,
   validateReceiptAutomatically,
   isValidIsoDate,
 } from '../src/domain/receipt';
@@ -69,6 +70,15 @@ test('assisted scan declarations require safe document, amount and optionally a 
   assert.throws(() => normalizeReceiptDeclaration({ ticketNumber: 'DOC-123', totalCents: 1592 }, true), /DECLARED_STORE_REQUIRED/);
   assert.throws(() => normalizeReceiptDeclaration({ storeId: 'store-1', ticketNumber: 'x', totalCents: 1592 }, true), /DECLARED_TICKET_NUMBER_INVALID/);
   assert.throws(() => normalizeReceiptDeclaration({ storeId: 'store-1', ticketNumber: 'DOC-123', totalCents: 0 }, true), /DECLARED_TOTAL_INVALID/);
+});
+
+test('upload request identifiers accept UUIDs and reject unsafe values', () => {
+  assert.equal(
+    normalizeUploadRequestId(' 2F1C80C7-5BC3-4D17-8A4D-49E2B6757DD2 '),
+    '2f1c80c7-5bc3-4d17-8a4d-49e2b6757dd2',
+  );
+  assert.equal(normalizeUploadRequestId(''), '');
+  assert.throws(() => normalizeUploadRequestId('../otro-ticket'), /UPLOAD_REQUEST_ID_INVALID/);
 });
 
 test('automatic validation accepts a verified purchase time when no ticket number is printed', () => {

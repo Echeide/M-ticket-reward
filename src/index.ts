@@ -10,6 +10,7 @@ import {
   isValidIsoDate,
   isValidPurchaseDateTime,
   normalizeReceiptDeclaration,
+  normalizeUploadRequestId,
   receiptStatusAfterOcr,
   validateReceiptAutomatically,
 } from './domain/receipt';
@@ -124,6 +125,7 @@ type ReceiptRow = {
   declared_store_id: string | null;
   declared_ticket_number: string | null;
   declared_total_cents: number | null;
+  upload_request_id: string | null;
   currency: string;
   ticket_fingerprint: string | null;
   ticket_identity_key: string | null;
@@ -750,7 +752,11 @@ async function dailyStoreLimitReached(
   return Number(result.rows[0]?.total || 0) >= limit;
 }
 
-async function handleUpload(request: Request, env: Env): Promise<Response> {
+async function handleUpload(
+  request: Request,
+  env: Env,
+  context: ExecutionContext,
+): Promise<Response> {
   const session = await authenticatedSession(request, env);
   if (!session) return error('Sesión no válida', 401);
   const ban = await withDatabase(env, (client) => activeUserBan(client, session.external_user_id));
@@ -758,6 +764,20 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
     return error('Tu acceso al envío de tickets está suspendido. Contacta con la organización si consideras que se trata de un error.', 403, 'USER_BANNED');
   }
   const form = await request.formData();
+  const uploadRequestId = normalizeUploadRequestId(form.get('uploadRequestId'));
+  if (uploadRequestId) {
+    const existing = await withDatabase(env, async (client) => {
+      const result = await client.query<ReceiptRow>(
+        'SELECT * FROM receipts WHERE user_ref = $1 AND upload_request_id = $2 LIMIT 1',
+        [session.user_ref, uploadRequestId],
+      );
+      return result.rows[0] || null;
+    });
+    if (existing) {
+      if (existing.status === 'OCR_QUEUED') enqueueUploadedReceipt(env, existing.id, context);
+      return uploadReceiptResponse(existing.id, existing.public_id, existing.status);
+    }
+  }
   const image = form.get('ticket');
   if (!(image instanceof File)) return error('Selecciona una imagen del ticket', 400);
   const acceptedTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
@@ -842,8 +862,9 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
            (id, public_id, session_id, user_ref, image_key, image_sha256,
             image_content_type, image_size, status, validation_reasons,
             rtales_lookup_code_snapshot, external_user_id, declared_store_id,
-            declared_ticket_number, declared_total_cents, ticket_identity_key)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16)`,
+            declared_ticket_number, declared_total_cents, ticket_identity_key,
+            upload_request_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17)`,
         [
           receiptId,
           ticketPublicId,
@@ -861,6 +882,7 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
           declaration?.ticketNumber || null,
           declaration?.totalCents || null,
           duplicateReasons.length ? null : declaredIdentityKey,
+          uploadRequestId || null,
         ],
       );
       return duplicateReasons.length > 0;
@@ -871,8 +893,21 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
     throw uploadError;
   }
 
-  if (!duplicate) await env.OCR_JOBS.send({ kind: 'OCR_RECEIPT', receiptId });
-  return json({ success: true, receiptId, publicId: ticketPublicId, status: duplicate ? 'DUPLICATE' : 'OCR_QUEUED' }, 202);
+  if (!duplicate) enqueueUploadedReceipt(env, receiptId, context);
+  return uploadReceiptResponse(receiptId, ticketPublicId, duplicate ? 'DUPLICATE' : 'OCR_QUEUED');
+}
+
+function uploadReceiptResponse(receiptId: string, ticketPublicId: string, status: string): Response {
+  return json({ success: true, receiptId, publicId: ticketPublicId, status }, 202);
+}
+
+function enqueueUploadedReceipt(env: Env, receiptId: string, context: ExecutionContext): void {
+  context.waitUntil(env.OCR_JOBS.send({ kind: 'OCR_RECEIPT', receiptId }).catch((caught) => {
+    // The receipt is already durable. The scheduled recovery will enqueue it
+    // again, so a temporary queue failure must not turn a successful upload
+    // into an error screen or invite the user to submit the same ticket twice.
+    console.error('Could not enqueue newly uploaded receipt', { receiptId }, caught);
+  }));
 }
 
 async function handleStores(request: Request, env: Env): Promise<Response> {
@@ -970,6 +1005,26 @@ async function handleLatestPendingReceipt(request: Request, env: Env): Promise<R
       [session.user_ref],
     );
     return json({ success: true, receipt: result.rows[0] ? publicReceiptView(result.rows[0]) : null });
+  });
+}
+
+async function handleUploadAttempt(
+  request: Request,
+  env: Env,
+  rawUploadRequestId: string,
+): Promise<Response> {
+  const uploadRequestId = normalizeUploadRequestId(decodeURIComponent(rawUploadRequestId));
+  return withDatabase(env, async (client) => {
+    const session = await authenticatedSession(request, env, client);
+    if (!session) return error('Sesión no válida', 401);
+    const result = await client.query<ReceiptRow>(
+      'SELECT * FROM receipts WHERE user_ref = $1 AND upload_request_id = $2 LIMIT 1',
+      [session.user_ref, uploadRequestId],
+    );
+    return json({
+      success: true,
+      receipt: result.rows[0] ? publicReceiptView(result.rows[0]) : null,
+    });
   });
 }
 
@@ -3498,7 +3553,7 @@ async function handleAdminScanFlow(request: Request, env: Env): Promise<Response
   return json({ success: true, scanFlow: Object.fromEntries(updates) });
 }
 
-async function handleFetch(request: Request, env: Env): Promise<Response> {
+async function handleFetch(request: Request, env: Env, context: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   try {
     if (env.ADMIN_ONLY === 'true') {
@@ -3523,10 +3578,16 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'GET' && publicStoreLogoMatch?.[1]) {
       return await handleStoreLogo(request, env, publicStoreLogoMatch[1], false);
     }
-    if (request.method === 'POST' && url.pathname === '/api/receipts') return await handleUpload(request, env);
+    if (request.method === 'POST' && url.pathname === '/api/receipts') {
+      return await handleUpload(request, env, context);
+    }
     if (request.method === 'GET' && url.pathname === '/api/receipts') return await handleReceiptList(request, env);
     if (request.method === 'GET' && url.pathname === '/api/receipts/latest') {
       return await handleLatestPendingReceipt(request, env);
+    }
+    const uploadAttemptMatch = url.pathname.match(/^\/api\/receipts\/upload-attempt\/([^/]+)$/);
+    if (request.method === 'GET' && uploadAttemptMatch?.[1]) {
+      return await handleUploadAttempt(request, env, uploadAttemptMatch[1]);
     }
     const receiptMatch = url.pathname.match(/^\/api\/receipts\/([^/]+)$/);
     if (request.method === 'GET' && receiptMatch?.[1]) return await handleReceiptStatus(request, env, receiptMatch[1]);
@@ -3685,6 +3746,7 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       APP_SETTING_DATETIME_INVALID: 'La fecha y hora no tienen un formato válido',
       APP_SETTING_PERIOD_INVALID: 'La fecha de inicio debe ser anterior a la fecha de fin',
       APP_SETTING_INTEGER_INVALID: 'El límite debe ser un número entero dentro del rango permitido',
+      UPLOAD_REQUEST_ID_INVALID: 'El identificador del envío no es válido',
       ADMIN_EMAIL_INVALID: 'Introduce un correo electrónico válido',
       ADMIN_ROLE_INVALID: 'Selecciona un rol válido para el usuario',
     };
@@ -3725,8 +3787,8 @@ async function requeueStuckOcr(env: Env): Promise<void> {
       `UPDATE receipts SET status = 'OCR_QUEUED', updated_at = NOW()
         WHERE id IN (
           SELECT id FROM receipts
-           WHERE status = 'OCR_PROCESSING'
-             AND updated_at < datetime('now', '-2 minutes')
+           WHERE (status = 'OCR_PROCESSING' AND updated_at < datetime('now', '-2 minutes'))
+              OR (status = 'OCR_QUEUED' AND updated_at < datetime('now', '-1 minute'))
            ORDER BY updated_at ASC
            LIMIT 50
         )

@@ -61,6 +61,15 @@ export type AutomaticValidation = {
   reasons: string[];
 };
 
+export function normalizeUploadRequestId(value: unknown): string {
+  const requestId = String(value || '').trim().toLowerCase();
+  if (!requestId) return '';
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId)) {
+    throw new Error('UPLOAD_REQUEST_ID_INVALID');
+  }
+  return requestId;
+}
+
 function compactIdentifier(value: string): string {
   return value.normalize('NFKD').replace(/[^a-z0-9]/gi, '').toUpperCase();
 }

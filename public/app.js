@@ -14,6 +14,7 @@ const state = {
 };
 const notifiedRewardReceipts = new Set();
 let detailImageObjectUrl = '';
+const UPLOAD_REQUEST_STORAGE_KEY = 'ticket-upload-request-id';
 
 const HOME_SETTING_TARGETS = {
   'home.eyebrow': '#home-eyebrow',
@@ -257,6 +258,45 @@ async function api(path, options = {}) {
   return payload;
 }
 
+function createUploadRequestId() {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function submitTicketUpload(form) {
+  try {
+    const payload = await api('/api/receipts', { method: 'POST', body: form });
+    if (!payload.receiptId) throw new Error('No se recibió la referencia del ticket registrado');
+    return payload;
+  } catch (caught) {
+    if (caught?.status && caught.status < 500) throw caught;
+    await wait(600);
+    const payload = await api('/api/receipts', { method: 'POST', body: form });
+    if (!payload.receiptId) throw new Error('No se recibió la referencia del ticket registrado');
+    return payload;
+  }
+}
+
+async function recoverUploadAttempt(uploadRequestId) {
+  if (!uploadRequestId) return null;
+  const payload = await api(`/api/receipts/upload-attempt/${encodeURIComponent(uploadRequestId)}`);
+  return payload.receipt || null;
+}
+
+function rememberReceipt(receiptId) {
+  state.receiptId = receiptId;
+  sessionStorage.setItem('ticket-receipt-id', receiptId);
+  sessionStorage.removeItem(UPLOAD_REQUEST_STORAGE_KEY);
+}
+
 function showUserBan(message) {
   state.canUpload = false;
   document.querySelector('#user-banned-message').textContent = message ||
@@ -327,6 +367,12 @@ async function bootstrap() {
     showUserBan(sessionStatus.access?.message);
     return;
   }
+  const pendingUploadRequestId = sessionStorage.getItem(UPLOAD_REQUEST_STORAGE_KEY);
+  if (!state.receiptId && pendingUploadRequestId) {
+    const recoveredReceipt = await recoverUploadAttempt(pendingUploadRequestId).catch(() => null);
+    if (recoveredReceipt) rememberReceipt(recoveredReceipt.id);
+    else sessionStorage.removeItem(UPLOAD_REQUEST_STORAGE_KEY);
+  }
   if (!state.receiptId) {
     const latest = await api('/api/receipts/latest');
     if (latest.receipt) {
@@ -375,17 +421,28 @@ async function upload(file) {
   const optimizedFile = await optimizeTicketFile(file).catch(() => file);
   const form = new FormData();
   form.append('ticket', optimizedFile);
+  const uploadRequestId = createUploadRequestId();
+  sessionStorage.setItem(UPLOAD_REQUEST_STORAGE_KEY, uploadRequestId);
+  form.append('uploadRequestId', uploadRequestId);
   if (state.pendingDeclaration) {
     form.append('storeId', state.pendingDeclaration.storeId);
     form.append('ticketNumber', state.pendingDeclaration.ticketNumber);
     form.append('totalCents', String(state.pendingDeclaration.totalCents));
   }
-  const payload = await api('/api/receipts', { method: 'POST', body: form });
-  state.pendingDeclaration = null;
-  state.receiptId = payload.receiptId;
-  sessionStorage.setItem('ticket-receipt-id', state.receiptId);
-  if (payload.status === 'DUPLICATE') return show('duplicate');
-  await openHistory();
+  try {
+    const payload = await submitTicketUpload(form);
+    state.pendingDeclaration = null;
+    rememberReceipt(payload.receiptId);
+    if (payload.status === 'DUPLICATE') return show('duplicate');
+    await openHistoryAfterRegistered();
+  } catch (caught) {
+    const recoveredReceipt = await recoverUploadAttempt(uploadRequestId).catch(() => null);
+    if (!recoveredReceipt) throw caught;
+    state.pendingDeclaration = null;
+    rememberReceipt(recoveredReceipt.id);
+    if (recoveredReceipt.status === 'DUPLICATE') return show('duplicate');
+    await openHistoryAfterRegistered();
+  }
 }
 
 async function resumeReceipt(receipt) {
@@ -597,6 +654,23 @@ async function openHistory() {
   });
 }
 
+async function openHistoryAfterRegistered() {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await openHistory();
+      return;
+    } catch (caught) {
+      console.warn('El ticket está registrado, pero el historial aún no responde', caught);
+      if (attempt < 2) await wait(800 * (attempt + 1));
+    }
+  }
+  show('ticket-history');
+  const message = document.createElement('p');
+  message.className = 'history-empty';
+  message.textContent = 'El ticket está registrado. No hemos podido actualizar su estado todavía; pulsa actualizar en unos segundos.';
+  document.querySelector('#ticket-history-list').replaceChildren(message);
+}
+
 function historySignature(receipts) {
   return receipts.map((receipt) => [
     receipt.id,
@@ -775,7 +849,18 @@ async function loadTicketDetailImage(receiptId) {
   image.hidden = false;
 }
 
-function retry() {
+async function retry() {
+  const uploadRequestId = sessionStorage.getItem(UPLOAD_REQUEST_STORAGE_KEY);
+  if (uploadRequestId && state.sessionToken) {
+    const recoveredReceipt = await recoverUploadAttempt(uploadRequestId).catch(() => null);
+    if (recoveredReceipt) {
+      state.pendingDeclaration = null;
+      rememberReceipt(recoveredReceipt.id);
+      if (ASYNC_RECEIPT_STATUSES.has(recoveredReceipt.status)) return openHistoryAfterRegistered();
+      return resumeReceipt(recoveredReceipt);
+    }
+    sessionStorage.removeItem(UPLOAD_REQUEST_STORAGE_KEY);
+  }
   state.pollGeneration += 1;
   state.receiptId = '';
   sessionStorage.removeItem('ticket-receipt-id');
@@ -813,7 +898,9 @@ document.querySelector('#scan-details-dialog').addEventListener('click', (event)
   if (event.target === event.currentTarget) closeScanFlow(true);
 });
 document.querySelector('#confirm-ocr').addEventListener('click', () => confirmReceipt().catch(showError));
-document.querySelectorAll('[data-action="retry"]').forEach((button) => button.addEventListener('click', retry));
+document.querySelectorAll('[data-action="retry"]').forEach((button) => {
+  button.addEventListener('click', () => retry().catch(showError));
+});
 document.querySelectorAll('[data-action="open-history"]').forEach((button) => {
   button.addEventListener('click', () => openHistory().catch(showError));
 });
