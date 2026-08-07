@@ -25,6 +25,10 @@ import {
 } from './domain/reward-delivery';
 import { findMatchingStore, normalizeStoreInput, storeHasVisibleEvidence } from './domain/store';
 import {
+  storeParticipationView,
+  type StoreParticipationLevel,
+} from './domain/store-participation';
+import {
   buildTrainingOcrCatalog,
   compareTrainingResult,
   normalizeTrainingSampleInput,
@@ -160,6 +164,7 @@ type StoreRow = {
   name: string;
   aliases: string[];
   active: boolean;
+  participation_level: StoreParticipationLevel;
   ocr_profile: StoreOcrProfile | null;
   logo_key: string | null;
   logo_content_type: string | null;
@@ -891,6 +896,7 @@ async function handleStores(request: Request, env: Env): Promise<Response> {
         code: store.code,
         name: store.name,
         aliases: store.aliases,
+        ...storeParticipationView(store.participation_level),
         ticketNumberHint,
         logoUrl: store.logo_key
           ? `/api/stores/${store.id}/logo?v=${encodeURIComponent(store.logo_updated_at || store.logo_key)}`
@@ -1097,6 +1103,7 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
           points: tier.points,
           active: tier.active,
         })),
+        selectedStore!.participation_level,
       );
       outboxId = uuid();
       await client.query(
@@ -1331,6 +1338,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
           points: tier.points,
           active: tier.active,
         })),
+        selectedStore!.participation_level,
       );
       rewardOutboxId = uuid();
     }
@@ -2191,7 +2199,7 @@ async function handleAdminReview(
       );
       const points = resolveRewardPoints(totalCents, tiers.rows.map((tier) => ({
         id: tier.id, minimumCents: tier.minimum_cents, points: tier.points, active: tier.active,
-      })));
+      })), store.participation_level);
       outboxId = uuid();
       await client.query(
         `INSERT INTO receipt_reviews (id, receipt_id, action, manager_email, reason, changes)
@@ -2295,6 +2303,7 @@ function storeView(row: StoreRow) {
     name: row.name,
     aliases: Array.isArray(row.aliases) ? row.aliases : [],
     active: row.active,
+    ...storeParticipationView(row.participation_level),
     ocrProfile: normalizeStoreOcrProfile(row.ocr_profile),
     logoUrl: row.logo_key
       ? `/api/admin/stores/${row.id}/logo?v=${encodeURIComponent(row.logo_updated_at || row.logo_key)}`
@@ -2436,9 +2445,9 @@ async function handleAdminStores(request: Request, env: Env): Promise<Response> 
     const duplicate = await client.query('SELECT id FROM stores WHERE code = $1 LIMIT 1', [input.code]);
     if (duplicate.rowCount) return null;
     const result = await client.query<StoreRow>(
-      `INSERT INTO stores (id, code, name, aliases, active)
-       VALUES ($1, $2, $3, $4::jsonb, $5) RETURNING *`,
-      [id, input.code, input.name, JSON.stringify(input.aliases), input.active],
+      `INSERT INTO stores (id, code, name, aliases, active, participation_level)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6) RETURNING *`,
+      [id, input.code, input.name, JSON.stringify(input.aliases), input.active, input.participationLevel],
     );
     await client.query(
       `INSERT INTO store_audit_log (id, store_id, action, manager_email, changes)
@@ -2472,7 +2481,13 @@ async function handleAdminStoreUpdate(
     );
     if (duplicate.rowCount) return { kind: 'duplicate' as const };
     const changes = {
-      before: { code: current.code, name: current.name, aliases: current.aliases, active: current.active },
+      before: {
+        code: current.code,
+        name: current.name,
+        aliases: current.aliases,
+        active: current.active,
+        participationLevel: current.participation_level,
+      },
       after: input,
     };
     const action = current.active !== input.active
@@ -2480,8 +2495,9 @@ async function handleAdminStoreUpdate(
       : 'UPDATED';
     const result = await client.query<StoreRow>(
       `UPDATE stores SET code = $2, name = $3, aliases = $4::jsonb,
-          active = $5, updated_at = NOW() WHERE id = $1 RETURNING *`,
-      [storeId, input.code, input.name, JSON.stringify(input.aliases), input.active],
+          active = $5, participation_level = $6, updated_at = NOW()
+        WHERE id = $1 RETURNING *`,
+      [storeId, input.code, input.name, JSON.stringify(input.aliases), input.active, input.participationLevel],
     );
     await client.query(
       `INSERT INTO store_audit_log (id, store_id, action, manager_email, changes)

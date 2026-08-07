@@ -69,7 +69,7 @@
         <div><p class="eyebrow">Conversión de compras</p><h2>Baremos de puntos</h2><p>Se aplica el tramo activo más alto alcanzado por el importe total del ticket.</p></div>
         <button class="primary-button" id="new-tier" type="button">Añadir tramo</button>
       </section>
-      <section class="tier-explanation"><strong>Ejemplo</strong><span>Con tramos de 50 € → 10 puntos y 100 € → 20 puntos, una compra de 125 € concede 20 puntos.</span></section>
+      <section class="tier-explanation"><strong>Ejemplo</strong><span>Con tramos de 50 € → 10 puntos y 100 € → 20 puntos, una compra de 125 € parte de 20 puntos. Después se aplica el nivel del comercio: Estándar ×1, Colaborador ×1,25, Destacado ×1,5 o Patrocinador ×2.</span></section>
       <section class="store-list-card">
         <div class="tier-list-head"><span>Importe mínimo</span><span>Puntos concedidos</span><span>Estado</span><span></span></div>
         <div id="tier-list"></div>
@@ -179,6 +179,15 @@
             <small>JPG, PNG o WebP, máximo 5 MB. Se optimizará a WebP con un ancho máximo de 800 px.</small>
           </label>
           <label>Código interno<input name="code" maxlength="40" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{1,39}" placeholder="LIBRERIA_ATLANTICA" /><small>Identificador único; letras, números, guiones y guion bajo.</small></label>
+          <label>Nivel de participación
+            <select name="participationLevel" required>
+              <option value="STANDARD">Estándar · puntos ×1</option>
+              <option value="COLLABORATOR">Colaborador · puntos ×1,25</option>
+              <option value="FEATURED">Destacado · puntos ×1,5</option>
+              <option value="SPONSOR">Patrocinador · puntos ×2</option>
+            </select>
+            <small>El multiplicador se aplica a los puntos del baremo cuando se valida un ticket nuevo. No modifica tickets anteriores.</small>
+          </label>
           <label>Alias reconocibles en el ticket<textarea name="aliases" rows="4" placeholder="Un alias por línea&#10;Librería Atlántica SL&#10;LIB ATLANTICA"></textarea><small>Añade nombres fiscales o abreviaturas que pueda leer el OCR.</small></label>
           <label class="switch-row"><span><strong>Comercio activo</strong><small>Sus tickets pueden validarse y recibir puntos.</small></span><input name="active" type="checkbox" checked /></label>
           <p id="store-form-error" class="form-error" role="alert"></p>
@@ -315,6 +324,6 @@
         <div id="ticket-user-detail-body"></div>
       </div>
     </dialog>
-    <script type="module" src="/backoffice.js?v=ticket-hints-1"></script>
+    <script type="module" src="/backoffice.js?v=store-participation-1"></script>
   </body>
 </html>

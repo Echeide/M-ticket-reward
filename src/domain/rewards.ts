@@ -1,3 +1,9 @@
+import {
+  normalizeStoreParticipationLevel,
+  STORE_PARTICIPATION,
+  type StoreParticipationLevel,
+} from './store-participation';
+
 export type RewardTier = {
   id: string;
   minimumCents: number;
@@ -8,11 +14,14 @@ export type RewardTier = {
 export function resolveRewardPoints(
   totalCents: number,
   tiers: RewardTier[],
+  participationLevel: StoreParticipationLevel = 'STANDARD',
 ): number {
   const eligible = tiers
     .filter((tier) => tier.active && tier.minimumCents <= totalCents)
     .sort((left, right) => right.minimumCents - left.minimumCents);
-  return Math.max(0, Math.trunc(eligible[0]?.points ?? 0));
+  const basePoints = Math.max(0, Math.trunc(eligible[0]?.points ?? 0));
+  const level = normalizeStoreParticipationLevel(participationLevel);
+  return Math.round(basePoints * STORE_PARTICIPATION[level].multiplierPercent / 100);
 }
 
 export function rewardIdempotencyKey(receiptId: string): string {

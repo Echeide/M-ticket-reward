@@ -75,13 +75,23 @@ function scanStoreRequired() {
   return state.appSettings['scan.assisted.requireStore'] !== 'false';
 }
 
+function formatRewardMultiplier(multiplierPercent) {
+  const multiplier = Number(multiplierPercent || 100) / 100;
+  return multiplier.toLocaleString('es-ES', { maximumFractionDigits: 2 });
+}
+
 function updateScanTicketNumberHint() {
   const input = document.querySelector('#scan-ticket-number');
   const help = document.querySelector('#scan-ticket-number-help');
   const storeId = document.querySelector('#scan-store').value;
-  const hint = state.stores.find((store) => store.id === storeId)?.ticketNumberHint;
+  const store = state.stores.find((item) => item.id === storeId);
+  const hint = store?.ticketNumberHint;
   input.placeholder = hint?.example ? `Ej.: ${hint.example}` : 'Tal como aparece en el ticket';
   help.textContent = hint?.text || 'Puede aparecer como Documento, Ticket, Factura, Recibo o Folio.';
+  const rewardHelp = document.querySelector('#scan-store-reward-help');
+  rewardHelp.textContent = store
+    ? `${store.participationLabel || 'Estándar'}: los puntos del ticket se multiplican por ×${formatRewardMultiplier(store.rewardMultiplierPercent)}.`
+    : 'El nivel de participación del comercio determina los puntos de la compra.';
 }
 
 function prepareScanDetailsForm() {
@@ -89,7 +99,10 @@ function prepareScanDetailsForm() {
   const select = document.querySelector('#scan-store');
   const previousStore = select.value;
   select.replaceChildren(new Option('Selecciona un establecimiento', ''));
-  for (const store of state.stores) select.add(new Option(store.name, store.id));
+  for (const store of state.stores) {
+    const pointsLabel = `${store.participationLabel || 'Estándar'} · ×${formatRewardMultiplier(store.rewardMultiplierPercent)}`;
+    select.add(new Option(`${store.name} · ${pointsLabel}`, store.id));
+  }
   if ([...select.options].some((option) => option.value === previousStore)) select.value = previousStore;
   const requireStore = scanStoreRequired();
   document.querySelector('#scan-store-field').hidden = !requireStore;

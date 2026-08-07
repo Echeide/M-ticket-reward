@@ -1,0 +1,3 @@
+ALTER TABLE stores
+  ADD COLUMN participation_level TEXT NOT NULL DEFAULT 'STANDARD'
+  CHECK (participation_level IN ('STANDARD', 'COLLABORATOR', 'FEATURED', 'SPONSOR'));

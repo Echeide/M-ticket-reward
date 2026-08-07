@@ -222,12 +222,16 @@ test('store input normalizes codes and unique OCR aliases', () => {
     name: 'Tienda Uno',
     aliases: ['Tienda Uno SL', 'T. Uno'],
     active: true,
+    participationLevel: 'STANDARD',
   });
 });
 
 test('store input rejects unsafe or incomplete identifiers', () => {
   assert.throws(() => normalizeStoreInput({ code: '!', name: 'Tienda', aliases: [] }), /STORE_CODE_INVALID/);
   assert.throws(() => normalizeStoreInput({ code: 'OK', name: 'X', aliases: [] }), /STORE_NAME_INVALID/);
+  assert.throws(() => normalizeStoreInput({
+    code: 'OK', name: 'Tienda', aliases: [], participationLevel: 'PREMIUM',
+  }), /STORE_PARTICIPATION_LEVEL_INVALID/);
 });
 
 test('store matching recovers an authorized merchant from the fiscal header', () => {
@@ -287,6 +291,17 @@ test('reward tiers use the highest reached threshold without accumulating', () =
   assert.equal(resolveRewardPoints(4_999, tiers), 0);
   assert.equal(resolveRewardPoints(5_000, tiers), 10);
   assert.equal(resolveRewardPoints(12_500, tiers), 20);
+  assert.equal(resolveRewardPoints(12_500, tiers, 'COLLABORATOR'), 25);
+  assert.equal(resolveRewardPoints(12_500, tiers, 'FEATURED'), 30);
+  assert.equal(resolveRewardPoints(12_500, tiers, 'SPONSOR'), 40);
+});
+
+test('store participation multiplier rounds fractional points to the nearest integer', () => {
+  const tiers = [{ id: 'base', minimumCents: 0, points: 5, active: true }];
+  assert.equal(resolveRewardPoints(1_000, tiers, 'STANDARD'), 5);
+  assert.equal(resolveRewardPoints(1_000, tiers, 'COLLABORATOR'), 6);
+  assert.equal(resolveRewardPoints(1_000, tiers, 'FEATURED'), 8);
+  assert.equal(resolveRewardPoints(1_000, tiers, 'SPONSOR'), 10);
 });
 
 test('reward tier management accepts integer cents and points only', () => {

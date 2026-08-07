@@ -209,7 +209,7 @@ async function loadStores() {
   document.querySelector('#linked-receipt-count').textContent = state.stores.reduce((total, store) => total + store.receiptCount, 0);
   document.querySelector('#store-list').innerHTML = state.stores.map((store) => `
     <article class="store-row ${store.active ? '' : 'inactive'}">
-      <span class="store-identity">${store.logoUrl ? `<img src="${escapeHtml(store.logoUrl)}" alt="" loading="lazy" />` : '<span class="store-logo-empty" aria-hidden="true">—</span>'}<span><strong>${escapeHtml(store.name)}</strong><small>${escapeHtml(store.code)}</small></span></span>
+      <span class="store-identity">${store.logoUrl ? `<img src="${escapeHtml(store.logoUrl)}" alt="" loading="lazy" />` : '<span class="store-logo-empty" aria-hidden="true">—</span>'}<span><strong>${escapeHtml(store.name)}</strong><small>${escapeHtml(store.code)}</small><small class="participation-chip">${escapeHtml(store.participationLabel || 'Estándar')} · ×${formatMultiplier(store.rewardMultiplierPercent)}</small></span></span>
       <span class="alias-list">${store.aliases.length ? store.aliases.map((alias) => `<small>${escapeHtml(alias)}</small>`).join('') : '<small>Sin alias</small>'}</span>
       <strong>${store.receiptCount}</strong>
       <span class="status-chip ${store.active ? 'rewarded' : 'duplicate'}">${store.active ? 'ACTIVO' : 'INACTIVO'}</span>
@@ -666,6 +666,7 @@ function openStoreDialog(id = '') {
   form.elements.name.value = store?.name || '';
   form.elements.code.value = store?.code || '';
   form.elements.aliases.value = (store?.aliases || []).join('\n');
+  form.elements.participationLevel.value = store?.participationLevel || 'STANDARD';
   form.elements.active.checked = store?.active ?? true;
   setStoreLogoPreview(store?.logoUrl || '');
   clearTrainingDrafts();
@@ -1208,6 +1209,7 @@ async function saveStore(event) {
     name: form.elements.name.value,
     code: form.elements.code.value,
     aliases: form.elements.aliases.value.split('\n').map((value) => value.trim()).filter(Boolean),
+    participationLevel: form.elements.participationLevel.value,
     active,
   };
   const errorNode = document.querySelector('#store-form-error');
@@ -1251,6 +1253,10 @@ document.querySelector('#store-form [name="logo"]').addEventListener('change', (
 
 function formatMoney(cents) {
   return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' }).format((cents || 0) / 100);
+}
+
+function formatMultiplier(multiplierPercent) {
+  return (Number(multiplierPercent || 100) / 100).toLocaleString('es-ES', { maximumFractionDigits: 2 });
 }
 
 function escapeHtml(value) {

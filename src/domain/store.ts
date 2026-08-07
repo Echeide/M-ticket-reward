@@ -1,10 +1,15 @@
 import type { StoreOcrProfile } from './ocr-profile';
+import {
+  requireStoreParticipationLevel,
+  type StoreParticipationLevel,
+} from './store-participation';
 
 export type StoreInput = {
   code: string;
   name: string;
   aliases: string[];
   active: boolean;
+  participationLevel: StoreParticipationLevel;
 };
 
 export type StoreIdentity = {
@@ -123,5 +128,11 @@ export function normalizeStoreInput(value: Record<string, unknown>): StoreInput 
     throw new Error('STORE_ALIAS_INVALID');
   }
 
-  return { code, name, aliases, active: value.active !== false };
+  return {
+    code,
+    name,
+    aliases,
+    active: value.active !== false,
+    participationLevel: requireStoreParticipationLevel(value.participationLevel),
+  };
 }

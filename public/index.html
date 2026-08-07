@@ -209,6 +209,7 @@
         <p class="scan-details-intro">Indica los datos del ticket de compra. Los contrastaremos con la fotografía que envíes. La información falsa o los intentos de fraude pueden provocar el bloqueo de tu cuenta, así que revisa los datos antes de continuar.</p>
         <label id="scan-store-field">Establecimiento
           <select id="scan-store" name="storeId"><option value="">Selecciona un establecimiento</option></select>
+          <small id="scan-store-reward-help">El nivel de participación del comercio determina los puntos de la compra.</small>
         </label>
         <label>Número de documento
           <input id="scan-ticket-number" name="ticketNumber" maxlength="160" autocomplete="off" required placeholder="Tal como aparece en el ticket" />
@@ -227,6 +228,6 @@
         </div>
       </form>
     </dialog>
-    <script type="module" src="/app.js?v=ticket-hints-1"></script>
+    <script type="module" src="/app.js?v=store-participation-1"></script>
   </body>
 </html>
