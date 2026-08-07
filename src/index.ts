@@ -2513,7 +2513,7 @@ async function handleAdminStoreOcrProfile(
 
   const profile = normalizeStoreOcrProfile(await readJson(request));
   if (profile.enabled && !(
-    profile.headerSignatures.length || profile.ticketNumberLabels.length ||
+    profile.headerSignatures.length || profile.ticketNumberLabels.length || profile.ticketNumberPattern ||
     profile.dateLabels.length || profile.totalLabels.length || profile.instructions
   )) {
     return error('Añade alguna referencia antes de activar el perfil', 400);
@@ -2927,7 +2927,7 @@ async function handleAdminTrainingEvaluate(
       if (rawProfile !== undefined) {
         const normalized = normalizeStoreOcrProfile(rawProfile);
         const hasGuidance = Boolean(
-          normalized.headerSignatures.length || normalized.ticketNumberLabels.length ||
+          normalized.headerSignatures.length || normalized.ticketNumberLabels.length || normalized.ticketNumberPattern ||
           normalized.dateLabels.length || normalized.totalLabels.length || normalized.instructions,
         );
         if (hasGuidance) candidateProfile = { ...normalized, enabled: true };

@@ -9,6 +9,7 @@ export type StoreOcrProfile = {
   ticketNumberLabels: string[];
   ticketNumberHelp: string;
   ticketNumberExample: string;
+  ticketNumberPattern: string;
   dateLabels: string[];
   totalLabels: string[];
   ignoredTotalLabels: string[];
@@ -37,6 +38,65 @@ function cleanList(value: unknown, limit: number): string[] {
     .slice(0, limit);
 }
 
+function cleanTicketNumberLabel(value: string): string {
+  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+  const core = /^(?:(?:n(?:[º°o]|úm(?:ero)?)\.?)(?:\s+(?:de|del)\s+(?:documento|ticket|factura|recibo|venta|operaci[oó]n))?|documento|ticket|factura|recibo|transacci[oó]n|operaci[oó]n|folio)(?=\s|[.:#-]|$)/i.exec(normalized);
+  return core?.[0]?.trim() || normalized;
+}
+
+function ticketNumberProfileFields(value: Record<string, unknown>): {
+  labels: string[];
+  help: string;
+} {
+  const rawLabels = cleanList(value.ticketNumberLabels, 20);
+  const labels = Array.from(new Set(rawLabels.map(cleanTicketNumberLabel))).slice(0, 20);
+  let help = String(value.ticketNumberHelp || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+  rawLabels.forEach((rawLabel, index) => {
+    const label = labels[index] || cleanTicketNumberLabel(rawLabel);
+    if (label !== rawLabel) help = help.replaceAll(rawLabel, label);
+  });
+  return { labels, help };
+}
+
+export function ticketNumberPatternFromExample(value: string): string {
+  const source = String(value || '').normalize('NFKC').trim().toUpperCase().slice(0, 100);
+  let pattern = '';
+  for (let index = 0; index < source.length;) {
+    const digits = /^\d+/.exec(source.slice(index))?.[0];
+    if (digits) {
+      pattern += index === 0 && digits.length === 4 && /^20\d{2}$/.test(digits)
+        ? 'AAAA'
+        : 'N'.repeat(digits.length);
+      index += digits.length;
+      continue;
+    }
+    pattern += source[index]!;
+    index += 1;
+  }
+  return pattern;
+}
+
+function mergeTicketNumberPatterns(patterns: string[]): string {
+  const unique = Array.from(new Set(patterns.filter(Boolean))).sort((left, right) => left.length - right.length);
+  if (!unique.length) return '';
+  const shortest = unique[0]!;
+  if (unique.length === 1) return shortest;
+  if (unique.every((pattern) => pattern.startsWith(shortest) && /^N*$/.test(pattern.slice(shortest.length)))) {
+    const optionalDigits = unique.at(-1)!.length - shortest.length;
+    return `${shortest}${'[N]'.repeat(optionalDigits)}`;
+  }
+  return '';
+}
+
+function cleanTicketNumberPattern(value: unknown, example: string): string {
+  const candidate = String(value || ticketNumberPatternFromExample(example))
+    .normalize('NFKC').replace(/\s+/g, '').toUpperCase().slice(0, 160);
+  if (!candidate || !candidate.includes('N')) return '';
+  if (!/^[A-Z0-9./\[\]-]+$/.test(candidate)) return '';
+  if (candidate.replaceAll('[N]', '').includes('[') || candidate.replaceAll('[N]', '').includes(']')) return '';
+  return candidate;
+}
+
 function region(value: unknown, fallback: OcrProfileRegion): OcrProfileRegion {
   const candidate = String(value || '').trim().toLowerCase() as OcrProfileRegion;
   return REGIONS.has(candidate) ? candidate : fallback;
@@ -50,6 +110,7 @@ export function emptyStoreOcrProfile(): StoreOcrProfile {
     ticketNumberLabels: [],
     ticketNumberHelp: '',
     ticketNumberExample: '',
+    ticketNumberPattern: '',
     dateLabels: [],
     totalLabels: [],
     ignoredTotalLabels: ['Subtotal', 'Ahorro', 'Cambio', 'Efectivo entregado'],
@@ -65,13 +126,16 @@ export function emptyStoreOcrProfile(): StoreOcrProfile {
 export function normalizeStoreOcrProfile(value: unknown): StoreOcrProfile {
   const input = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   const defaults = emptyStoreOcrProfile();
+  const ticketNumber = ticketNumberProfileFields(input);
+  const ticketNumberExample = String(input.ticketNumberExample || '').replace(/\s+/g, ' ').trim().slice(0, 160);
   return {
     version: 1,
     enabled: input.enabled === true,
     headerSignatures: cleanList(input.headerSignatures, 20),
-    ticketNumberLabels: cleanList(input.ticketNumberLabels, 20),
-    ticketNumberHelp: String(input.ticketNumberHelp || '').replace(/\s+/g, ' ').trim().slice(0, 240),
-    ticketNumberExample: String(input.ticketNumberExample || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+    ticketNumberLabels: ticketNumber.labels,
+    ticketNumberHelp: ticketNumber.help,
+    ticketNumberExample,
+    ticketNumberPattern: cleanTicketNumberPattern(input.ticketNumberPattern, ticketNumberExample),
     dateLabels: cleanList(input.dateLabels, 20),
     totalLabels: cleanList(input.totalLabels, 20),
     ignoredTotalLabels: cleanList(input.ignoredTotalLabels ?? defaults.ignoredTotalLabels, 30),
@@ -152,6 +216,7 @@ export function generateStoreOcrProfile(
   const ticketNumberLabels: string[] = [];
   const ticketNumberHelpCandidates: string[] = [];
   const ticketNumberExamples: string[] = [];
+  const ticketNumberPatterns: string[] = [];
   const dateLabels: string[] = [];
   const totalLabels: string[] = [];
   const formats: string[] = [];
@@ -174,12 +239,16 @@ export function generateStoreOcrProfile(
         /\b((?:n(?:[º°o]|úm(?:ero)?)|documento|ticket|factura|recibo|transacci[oó]n|operaci[oó]n|folio)(?:[ \t]+[^:#\n]{1,24})?)[ \t]*(?::|#|-|\r?\n)[ \t]*(?=[A-Z0-9])/i,
       ]);
       if (label) {
-        ticketNumberLabels.push(label);
+        const cleanedLabel = cleanTicketNumberLabel(label);
+        ticketNumberLabels.push(cleanedLabel);
         ticketNumberHelpCandidates.push(ticketNumberIsBelowLabel(
-          ticketNumberEvidence, label, receipt.ticketNumber || '',
-        ) ? `Busca el número debajo de «${label}».` : ticketNumberHelp(label, 'header'));
+          ticketNumberEvidence, cleanedLabel, receipt.ticketNumber || '',
+        ) ? `Busca el número debajo de «${cleanedLabel}».` : ticketNumberHelp(cleanedLabel, 'header'));
       }
-      if (receipt.ticketNumber) ticketNumberExamples.push(syntheticTicketNumberExample(receipt.ticketNumber));
+      if (receipt.ticketNumber) {
+        ticketNumberExamples.push(syntheticTicketNumberExample(receipt.ticketNumber));
+        ticketNumberPatterns.push(ticketNumberPatternFromExample(receipt.ticketNumber));
+      }
     }
     if (result.matches?.purchaseDate === true) {
       const evidence = receipt.evidence?.purchaseDateText || '';
@@ -219,6 +288,7 @@ export function generateStoreOcrProfile(
     ticketNumberHelp: ticketNumberHelpCandidates[0]
       || ticketNumberHelp(normalizedTicketNumberLabels[0] || '', 'header'),
     ticketNumberExample: ticketNumberExamples[0] || '',
+    ticketNumberPattern: mergeTicketNumberPatterns(ticketNumberPatterns),
     dateLabels,
     totalLabels,
     ignoredTotalLabels: ['Subtotal', 'Ahorro', 'Cambio', 'Efectivo entregado', 'Total impuestos'],
@@ -234,7 +304,7 @@ export function generateStoreOcrProfile(
 
 export function profileHasGuidance(profile: StoreOcrProfile): boolean {
   return profile.enabled && Boolean(
-    profile.headerSignatures.length || profile.ticketNumberLabels.length || profile.dateLabels.length ||
+    profile.headerSignatures.length || profile.ticketNumberLabels.length || profile.ticketNumberPattern || profile.dateLabels.length ||
     profile.totalLabels.length || profile.instructions,
   );
 }

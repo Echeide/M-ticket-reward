@@ -277,6 +277,102 @@ test('OCR reading retries a malformed model response once', async () => {
   assert.deepEqual(result.verificationIssues, []);
 });
 
+test('OCR recovers a unique merchant-pattern number when its printed label is unreadable', async () => {
+  const ticketNumber = '2026/934211-001000591';
+  let prompt = '';
+  const extraction = {
+    ...validExtraction,
+    ticketNumber,
+    ticketNumberText: ticketNumber,
+    purchaseDate: '2026-08-07',
+    purchaseDateTime: '2026-08-07T08:39',
+    purchaseDateText: '07/08/2026 08:39',
+    totalCents: 174,
+    totalText: 'TOTAL COMPRA: 1,74',
+    rawText: `DINOSOL SUPERMERCADOS, S.L. CIF B61742565 9342-SD LOS REALEJOS Teléfono 900230230 Hora 08:39 ${ticketNumber} 07/08/2026 08:39 ARTICULO IMPORTE TOTAL COMPRA: 1,74`,
+  };
+  const env = {
+    OCR_MODE: 'workers-ai',
+    OCR_PROVIDER: 'workers-ai',
+    OCR_MODEL: '@cf/meta/llama-3.2-11b-vision-instruct',
+    OCR_WORKERS_AI_FORMAT: 'chat',
+    OCR_TIMEOUT_MS: '5000',
+    AI: {
+      async run(_model: string, input: Record<string, unknown>) {
+        prompt = String((input.messages as Array<{ role: string; content: string }>)[1]?.content || '');
+        return { choices: [{ message: { content: JSON.stringify(extraction) } }] };
+      },
+    },
+  } as unknown as Env;
+  const profile = {
+    version: 1 as const,
+    enabled: true,
+    headerSignatures: ['DINOSOL SUPERMERCADOS'],
+    ticketNumberLabels: ['Documento'],
+    ticketNumberHelp: 'Busca el número debajo de Documento.',
+    ticketNumberExample: '2026/123456-00123456',
+    ticketNumberPattern: 'AAAA/NNNNNN-NNNNNNNN[N]',
+    dateLabels: ['Fecha', 'Hora'],
+    totalLabels: ['TOTAL COMPRA'],
+    ignoredTotalLabels: ['Subtotal'],
+    ticketNumberRegion: 'header' as const,
+    dateRegion: 'header' as const,
+    totalRegion: 'footer' as const,
+    dateFormat: 'DD/MM/AAAA',
+    instructions: '',
+    sampleCount: 3,
+  };
+
+  const result = await readReceipt(
+    env,
+    new Uint8Array([1, 2, 3]).buffer,
+    'image/webp',
+    [{ name: 'Hiperdino', aliases: ['Dinosol'], ocrProfile: profile }],
+  );
+
+  assert.equal(result.receipt.ticketNumber, ticketNumber);
+  assert.equal(result.receipt.evidence?.ticketNumberText, ticketNumber);
+  assert.deepEqual(result.verificationIssues, []);
+  assert.match(prompt, /2026\/123456-00123456/);
+  assert.match(prompt, /AAAA\/NNNNNN-NNNNNNNN\[N\]/);
+  assert.match(prompt, /etiqueta del número está parcialmente ilegible/);
+});
+
+test('OCR does not recover an unlabeled merchant-pattern number when candidates conflict', async () => {
+  const extraction = {
+    ...validExtraction,
+    ticketNumber: '',
+    ticketNumberText: '',
+    rawText: 'DINOSOL SUPERMERCADOS Fecha 06/08/2026 Hora 09:01 2026/934211-001000591 2026/934211-001000592 TOTAL COMPRA 15,92',
+  };
+  const env = {
+    OCR_MODE: 'workers-ai', OCR_PROVIDER: 'workers-ai',
+    OCR_MODEL: '@cf/meta/llama-3.2-11b-vision-instruct', OCR_WORKERS_AI_FORMAT: 'chat',
+    OCR_TIMEOUT_MS: '5000',
+    AI: { async run() { return { choices: [{ message: { content: JSON.stringify(extraction) } }] }; } },
+  } as unknown as Env;
+  const result = await readReceipt(
+    env,
+    new Uint8Array([1, 2, 3]).buffer,
+    'image/webp',
+    [{
+      name: 'Hiperdino', aliases: ['Dinosol'],
+      ocrProfile: {
+        version: 1, enabled: true, headerSignatures: ['DINOSOL SUPERMERCADOS'],
+        ticketNumberLabels: ['Documento'], ticketNumberHelp: '',
+        ticketNumberExample: '2026/123456-00123456', dateLabels: ['Fecha'],
+        ticketNumberPattern: 'AAAA/NNNNNN-NNNNNNNN[N]',
+        totalLabels: ['TOTAL COMPRA'], ignoredTotalLabels: ['Subtotal'],
+        ticketNumberRegion: 'header', dateRegion: 'header', totalRegion: 'footer',
+        dateFormat: 'DD/MM/AAAA', instructions: '', sampleCount: 3,
+      },
+    }],
+  );
+
+  assert.equal(result.receipt.ticketNumber, '');
+  assert.deepEqual(result.verificationIssues, []);
+});
+
 test('OCR reading reports attempts and duration after a definitive provider timeout', async () => {
   let calls = 0;
   const env = {
@@ -429,7 +525,7 @@ test('OCR retries an incomplete reading with focused regions', async () => {
       ocrProfile: {
         version: 1, enabled: true, headerSignatures: ['DINOSOL SUPERMERCADOS'],
         ticketNumberLabels: ['Documento'], dateLabels: ['Fecha operación'],
-        ticketNumberHelp: '', ticketNumberExample: '',
+        ticketNumberHelp: '', ticketNumberExample: '', ticketNumberPattern: '',
         totalLabels: ['TOTAL COMPRA'], ignoredTotalLabels: ['Subtotal'],
         ticketNumberRegion: 'header', dateRegion: 'header', totalRegion: 'footer',
         dateFormat: 'DD/MM/AAAA', instructions: 'Ignorar el número de caja.', sampleCount: 3,

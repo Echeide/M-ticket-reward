@@ -266,7 +266,7 @@ test('store matching uses active learned header signatures', () => {
   const profile = {
     version: 1 as const, enabled: true, headerSignatures: ['B12345678'],
     ticketNumberLabels: [], dateLabels: [], totalLabels: [], ignoredTotalLabels: [],
-    ticketNumberHelp: '', ticketNumberExample: '',
+    ticketNumberHelp: '', ticketNumberExample: '', ticketNumberPattern: '',
     ticketNumberRegion: 'header' as const, dateRegion: 'header' as const,
     totalRegion: 'footer' as const, dateFormat: '', instructions: '', sampleCount: 3,
   };

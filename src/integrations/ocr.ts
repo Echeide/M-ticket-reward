@@ -5,7 +5,7 @@ import {
   type OcrReceipt,
 } from '../domain/receipt';
 import { classifyOcrFailure } from '../domain/ocr-failure';
-import { profileHasGuidance } from '../domain/ocr-profile';
+import { profileHasGuidance, ticketNumberPatternFromExample } from '../domain/ocr-profile';
 import { findMatchingStore, type StoreIdentity } from '../domain/store';
 import { prepareOcrRegions } from '../platform/image';
 import type { Env } from '../types';
@@ -387,6 +387,73 @@ function ticketNumberFromEvidence(value: string): string | null {
   return credible.sort((left, right) => compactIdentifier(right).length - compactIdentifier(left).length)[0] || null;
 }
 
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function ticketNumberRegex(mask: string, example: string): RegExp | null {
+  const source = String(mask || ticketNumberPatternFromExample(example))
+    .normalize('NFKC').replace(/\s+/g, '').toUpperCase().slice(0, 160);
+  if (!source || !source.includes('N')) return null;
+  let pattern = '';
+  for (let index = 0; index < source.length;) {
+    const character = source[index]!;
+    if (source.startsWith('[N]', index)) {
+      pattern += '\\d?';
+      index += 3;
+    } else if (source.startsWith('AAAA', index)) {
+      pattern += '\\d{4}';
+      index += 4;
+    } else if (character === 'N') {
+      pattern += '\\d';
+      index += 1;
+    } else if (/[A-Z0-9]/.test(character)) {
+      pattern += escapeRegex(character);
+      index += 1;
+    } else if (/[./\-\u2010-\u2015]/.test(character)) {
+      pattern += '\\s*[./\\-\\u2010-\\u2015]\\s*';
+      index += 1;
+    } else if (/\s/.test(character)) {
+      pattern += '\\s*';
+      index += 1;
+    } else {
+      pattern += escapeRegex(character);
+      index += 1;
+    }
+  }
+  return new RegExp(`(?:^|[^A-Z0-9])(${pattern})(?![A-Z0-9])`, 'giu');
+}
+
+function profileTicketNumberSource(receipt: OcrReceipt, region: string): string {
+  const rawText = String(receipt.rawText || '');
+  if (region === 'footer') return `${receipt.headerText || ''}\n${rawText.slice(-3_000)}`;
+  if (region === 'body') return `${receipt.headerText || ''}\n${rawText.slice(0, 6_000)}`;
+  if (region === 'any') return `${receipt.headerText || ''}\n${rawText.slice(0, 8_000)}`;
+  return `${receipt.headerText || ''}\n${rawText.slice(0, 3_000)}`;
+}
+
+function recoverProfileTicketNumber(receipt: OcrReceipt, stores: StoreIdentity[]): OcrReceipt {
+  if (!receipt.isReceipt || hasVerifiedTicketNumber(receipt)) return receipt;
+  const store = findMatchingStore(stores, receipt);
+  const profile = store?.ocrProfile;
+  if (!store || !profile?.enabled || (!profile.ticketNumberPattern && !profile.ticketNumberExample)) return receipt;
+  const pattern = ticketNumberRegex(profile.ticketNumberPattern, profile.ticketNumberExample);
+  if (!pattern) return receipt;
+  const candidates = Array.from(profileTicketNumberSource(receipt, profile.ticketNumberRegion).matchAll(pattern))
+    .map((match) => String(match[1] || '').trim())
+    .filter((candidate) => compactIdentifier(candidate).length >= 3);
+  const unique = Array.from(new Map(candidates.map((candidate) => [compactIdentifier(candidate), candidate])).values());
+  // Without a readable label, accept only one unambiguous value matching the
+  // learned merchant syntax. Multiple candidates still require manual review.
+  if (unique.length !== 1) return receipt;
+  const ticketNumber = unique[0]!;
+  return {
+    ...receipt,
+    ticketNumber,
+    evidence: { ...(receipt.evidence || {}), ticketNumberText: ticketNumber },
+  };
+}
+
 function centsFromEvidence(value: string): number | null {
   const matches = [...value.matchAll(/(\d{1,3}(?:[.\s]\d{3})*|\d+)[,.](\d{2})/g)];
   const match = matches.at(-1);
@@ -495,6 +562,9 @@ function authorizedStoreReference(stores: StoreIdentity[]): string {
           ticketNumber: {
             labels: store.ocrProfile.ticketNumberLabels.slice(0, 8),
             region: store.ocrProfile.ticketNumberRegion,
+            help: store.ocrProfile.ticketNumberHelp.slice(0, 240),
+            example: store.ocrProfile.ticketNumberExample.slice(0, 160),
+            pattern: store.ocrProfile.ticketNumberPattern.slice(0, 160),
           },
           purchaseDate: {
             labels: store.ocrProfile.dateLabels.slice(0, 8),
@@ -568,6 +638,9 @@ Reglas para storeName:
 - Comercios autorizados y alias: ${storeReference}.
 - Algunos comercios incluyen un profile aprendido de ejemplos verificados. Úsalo solo para localizar
   etiquetas y zonas después de comprobar una firma visible del comercio; nunca copies valores del perfil.
+- Si la etiqueta del número está parcialmente ilegible, usa su posición y el example del profile para
+  localizarlo. Devuelve ticketNumber solo si la secuencia completa es visible y transcribe en
+  ticketNumberText únicamente el fragmento realmente legible; no inventes las letras dañadas.
 - Si coincide claramente, devuelve exactamente su name; sin evidencia visible, déjalo vacío.
 
 Usa exclusivamente la fecha impresa. El total es el importe final pagado, no subtotal, ahorro ni efectivo entregado.
@@ -590,7 +663,9 @@ ticketNumber, ticketNumberText, purchaseDate (YYYY-MM-DD), purchaseDateTime, pur
 totalCents (entero), totalText, currency y rawText.
 
 Los campos *Text deben ser transcripciones literales de la imagen. Deja vacíos los valores que no
-aparezcan en este recorte; no deduzcas ni inventes caracteres. Interpreta las fechas numéricas en orden
+aparezcan en este recorte; no deduzcas ni inventes caracteres. Si la etiqueta del número está parcialmente
+ilegible pero la secuencia completa coincide con el example del profile, conserva el número y transcribe
+solo la parte de la etiqueta que realmente se vea. Interpreta las fechas numéricas en orden
 español día/mes/año y devuelve purchaseDate como YYYY-MM-DD. Conserva la hora solo si aparece impresa,
 normalizada a HH:mm. Comercios autorizados: ${storeReference}.${declaredReceiptReference(hints)}`;
 }
@@ -675,7 +750,7 @@ export async function readReceipt(
       bytes, contentType, prompt: extractionPrompt(storeReference, false, hints),
     }, metrics);
     const response = initial.response;
-    let receipt = preferVerifiedIdentity(initial.receipt);
+    let receipt = preferVerifiedIdentity(recoverProfileTicketNumber(initial.receipt, authorizedStores));
     let issues = verifyOcr(receipt);
     let durationMs = preflight ? Date.now() - startedAt : response.durationMs;
 
@@ -715,7 +790,10 @@ export async function readReceipt(
       const totalsReceipt = totalsResult.status === 'fulfilled' ? totalsResult.value.receipt : receipt;
       if (headerResult.status === 'rejected') console.warn('OCR header region failed open', headerResult.reason);
       if (totalsResult.status === 'rejected') console.warn('OCR totals region failed open', totalsResult.reason);
-      receipt = preferVerifiedIdentity(mergeRegionResults(receipt, headerReceipt, totalsReceipt));
+      receipt = preferVerifiedIdentity(recoverProfileTicketNumber(
+        mergeRegionResults(receipt, headerReceipt, totalsReceipt),
+        authorizedStores,
+      ));
       issues = verifyOcr(receipt);
       durationMs = Date.now() - startedAt;
     }
