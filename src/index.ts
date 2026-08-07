@@ -896,7 +896,6 @@ async function handleStores(request: Request, env: Env): Promise<Response> {
         code: store.code,
         name: store.name,
         aliases: store.aliases,
-        ...storeParticipationView(store.participation_level),
         ticketNumberHint,
         logoUrl: store.logo_key
           ? `/api/stores/${store.id}/logo?v=${encodeURIComponent(store.logo_updated_at || store.logo_key)}`
