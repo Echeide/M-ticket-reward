@@ -62,7 +62,7 @@ import {
   settingDefinition,
   validateAppSettingPeriod,
 } from './domain/app-settings';
-import { readReceipt } from './integrations/ocr';
+import { OcrReadError, readReceipt } from './integrations/ocr';
 import { classifyOcrFailure, ocrMaxAttempts, ocrRetryDelaySeconds } from './domain/ocr-failure';
 import { adminAccessSyncConfigured, syncAdminAccessEmails } from './integrations/cloudflare-access';
 import { adminInvitationMailConfigured, sendAdminInvitation } from './integrations/mailjet';
@@ -2998,15 +2998,17 @@ async function handleAdminTrainingEvaluate(
     return json({ success: true, evaluation: trainingEvaluationView(created) });
   } catch (caught) {
     const message = (caught instanceof Error ? caught.message : 'OCR_EVALUATION_FAILED').slice(0, 500);
+    const attemptCount = caught instanceof OcrReadError ? caught.attemptCount : 0;
+    const durationMs = caught instanceof OcrReadError ? caught.durationMs : null;
     const created = await withDatabase(env, async (client) => {
       const insert = await client.query<TrainingEvaluationRow>(
         `INSERT INTO store_training_evaluations
           (id, sample_id, provider, model, status, matches, context, verification_issues,
-           attempt_count, error_message, created_by)
-         VALUES ($1, $2, $3, $4, 'ERROR', $5::jsonb, $6::jsonb, $7::jsonb, 0, $8, $9)
+           attempt_count, duration_ms, error_message, created_by)
+         VALUES ($1, $2, $3, $4, 'ERROR', $5::jsonb, $6::jsonb, $7::jsonb, $8, $9, $10, $11)
          RETURNING *`,
         [evaluationId, sampleId, env.OCR_PROVIDER || 'workers-ai', env.OCR_MODEL,
-          JSON.stringify({}), JSON.stringify(context), JSON.stringify([]), message, managerEmail],
+          JSON.stringify({}), JSON.stringify(context), JSON.stringify([]), attemptCount, durationMs, message, managerEmail],
       );
       return insert.rows[0]!;
     });

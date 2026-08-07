@@ -4,11 +4,19 @@ import {
   purchaseTimeFromEvidence,
   type OcrReceipt,
 } from '../domain/receipt';
+import { classifyOcrFailure } from '../domain/ocr-failure';
 import { profileHasGuidance } from '../domain/ocr-profile';
 import { findMatchingStore, type StoreIdentity } from '../domain/store';
 import { prepareOcrRegions } from '../platform/image';
 import type { Env } from '../types';
-import { createOcrProvider, imageDataUrl, providerResponseText } from './ocr-provider';
+import {
+  createOcrProvider,
+  imageDataUrl,
+  providerResponseText,
+  type OcrProvider,
+  type OcrProviderRequest,
+  type OcrProviderResponse,
+} from './ocr-provider';
 
 type OcrEvidence = {
   ticketNumberText?: string;
@@ -24,6 +32,20 @@ export type OcrReadResult = {
   durationMs: number;
   verificationIssues: string[];
 };
+
+export class OcrReadError extends Error {
+  readonly reason: string;
+  readonly attemptCount: number;
+  readonly durationMs: number;
+
+  constructor(message: string, reason: string, attemptCount: number, durationMs: number) {
+    super(message);
+    this.name = 'OcrReadError';
+    this.reason = reason;
+    this.attemptCount = attemptCount;
+    this.durationMs = durationMs;
+  }
+}
 
 export type ReceiptOcrHints = {
   storeName?: string;
@@ -87,54 +109,183 @@ No expliques la respuesta. Ante cualquier duda responde DUDA.`,
   }
 }
 
-function parseJsonObject(value: string): Record<string, unknown> {
-  const start = value.indexOf('{');
-  const end = value.lastIndexOf('}');
-  if (start < 0 || end <= start) throw new Error('OCR_INVALID_JSON');
-  const candidate = value.slice(start, end + 1);
-  try {
-    return JSON.parse(candidate) as Record<string, unknown>;
-  } catch (caught) {
-    // Some vision models return otherwise valid JSON with literal newlines or tabs
-    // inside rawText/evidence strings. Escape only control characters that occur
-    // inside JSON strings so malformed structure still fails normally.
-    let repaired = '';
-    let insideString = false;
-    let escaped = false;
-    for (const character of candidate) {
-      if (escaped) {
-        repaired += character;
-        escaped = false;
-        continue;
+function jsonObjectCandidates(value: string): string[] {
+  const candidates: string[] = [];
+  let start = -1;
+  let depth = 0;
+  let quote = '';
+  let escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (depth === 0) {
+      if (character === '{') {
+        start = index;
+        depth = 1;
       }
-      if (insideString && character === '\\') {
-        repaired += character;
-        escaped = true;
-        continue;
-      }
-      if (character === '"') {
-        repaired += character;
-        insideString = !insideString;
-        continue;
-      }
-      const code = character.charCodeAt(0);
-      if (insideString && code <= 0x1f) {
-        if (character === '\n') repaired += '\\n';
-        else if (character === '\r') repaired += '\\r';
-        else if (character === '\t') repaired += '\\t';
-        else if (character === '\b') repaired += '\\b';
-        else if (character === '\f') repaired += '\\f';
-        else repaired += `\\u${code.toString(16).padStart(4, '0')}`;
-        continue;
-      }
-      repaired += character;
+      continue;
     }
-    try {
-      return JSON.parse(repaired) as Record<string, unknown>;
-    } catch {
-      throw caught;
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = '';
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '{') {
+      depth += 1;
+    } else if (character === '}' && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        const candidate = value.slice(start, index + 1);
+        candidates.push(candidate);
+        // Llama occasionally wraps the requested object in a second pair of braces.
+        if (candidate.startsWith('{{') && candidate.endsWith('}}')) candidates.push(candidate.slice(1, -1));
+        start = -1;
+      }
     }
   }
+  return [...new Set(candidates)].sort((left, right) => right.length - left.length);
+}
+
+function escapeJsonControlCharacters(candidate: string): string {
+  let repaired = '';
+  let insideString = false;
+  let escaped = false;
+  for (const character of candidate) {
+    if (escaped) {
+      repaired += character;
+      escaped = false;
+      continue;
+    }
+    if (insideString && character === '\\') {
+      repaired += character;
+      escaped = true;
+      continue;
+    }
+    if (character === '"') {
+      repaired += character;
+      insideString = !insideString;
+      continue;
+    }
+    const code = character.charCodeAt(0);
+    if (insideString && code <= 0x1f) {
+      if (character === '\n') repaired += '\\n';
+      else if (character === '\r') repaired += '\\r';
+      else if (character === '\t') repaired += '\\t';
+      else if (character === '\b') repaired += '\\b';
+      else if (character === '\f') repaired += '\\f';
+      else repaired += `\\u${code.toString(16).padStart(4, '0')}`;
+      continue;
+    }
+    repaired += character;
+  }
+  return repaired;
+}
+
+function repairJsonLike(candidate: string): string {
+  let repaired = '';
+  let quote = '';
+  let escaped = false;
+  for (const character of candidate) {
+    if (!quote) {
+      if (character === '"' || character === "'") {
+        quote = character;
+        repaired += '"';
+      } else {
+        repaired += character;
+      }
+      continue;
+    }
+    if (escaped) {
+      repaired += quote === "'" && character === "'" ? "'" : `\\${character}`;
+      escaped = false;
+      continue;
+    }
+    if (character === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (character === quote) {
+      repaired += '"';
+      quote = '';
+      continue;
+    }
+    if (quote === "'" && character === '"') repaired += '\\"';
+    else repaired += character;
+  }
+  if (escaped) repaired += '\\\\';
+  repaired = escapeJsonControlCharacters(repaired);
+  let normalized = '';
+  let outside = '';
+  let insideString = false;
+  let stringEscaped = false;
+  const flushOutside = () => {
+    normalized += outside
+      .replace(/(^|[{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, '$1"$2"$3')
+      .replace(/\bTrue\b/g, 'true')
+      .replace(/\bFalse\b/g, 'false')
+      .replace(/\bNone\b/g, 'null')
+      .replace(/,\s*([}\]])/g, '$1');
+    outside = '';
+  };
+  for (const character of repaired) {
+    if (!insideString) {
+      if (character === '"') {
+        flushOutside();
+        normalized += character;
+        insideString = true;
+      } else outside += character;
+      continue;
+    }
+    normalized += character;
+    if (stringEscaped) stringEscaped = false;
+    else if (character === '\\') stringEscaped = true;
+    else if (character === '"') insideString = false;
+  }
+  flushOutside();
+  return normalized;
+}
+
+function parseJsonObject(value: string): Record<string, unknown> {
+  for (const candidate of jsonObjectCandidates(value)) {
+    const variants = [candidate, escapeJsonControlCharacters(candidate), repairJsonLike(candidate)];
+    for (const variant of new Set(variants)) {
+      try {
+        const parsed: unknown = JSON.parse(variant);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed as Record<string, unknown>;
+        }
+      } catch {
+        // Try the next conservative repair. Never evaluate model output as code.
+      }
+    }
+  }
+  throw new Error('OCR_INVALID_JSON');
+}
+
+type OcrCallMetrics = { calls: number };
+
+async function extractParsedReceipt(
+  provider: OcrProvider,
+  request: OcrProviderRequest,
+  metrics: OcrCallMetrics,
+  maxAttempts = 2,
+): Promise<{ response: OcrProviderResponse; receipt: OcrReceipt }> {
+  let lastError: unknown = new Error('OCR_PROCESSING_FAILED');
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    metrics.calls += 1;
+    try {
+      const response = await provider.extract(request);
+      return { response, receipt: normalizeOcr(parseJsonObject(response.text)) };
+    } catch (caught) {
+      lastError = caught;
+      if (attempt >= maxAttempts || !classifyOcrFailure(caught).retryable) break;
+    }
+  }
+  throw lastError;
 }
 
 export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
@@ -518,60 +669,67 @@ export async function readReceipt(
     };
   }
   const preflightCalls = preflight ? 1 : 0;
-  let response = await provider.extract({
-    bytes, contentType, prompt: extractionPrompt(storeReference, false, hints),
-  });
-  let receipt = preferVerifiedIdentity(normalizeOcr(parseJsonObject(response.text)));
-  let issues = verifyOcr(receipt);
-  let attemptCount = preflightCalls + 1;
-  let durationMs = preflight ? Date.now() - startedAt : response.durationMs;
+  const metrics: OcrCallMetrics = { calls: preflightCalls };
+  try {
+    const initial = await extractParsedReceipt(provider, {
+      bytes, contentType, prompt: extractionPrompt(storeReference, false, hints),
+    }, metrics);
+    const response = initial.response;
+    let receipt = preferVerifiedIdentity(initial.receipt);
+    let issues = verifyOcr(receipt);
+    let durationMs = preflight ? Date.now() - startedAt : response.durationMs;
 
-  // A confident negative classification must not trigger the expensive header and totals passes.
-  // Uncertain negatives still get the focused verification to avoid rejecting a poorly photographed receipt.
-  if (!receipt.isReceipt && receipt.confidence >= 0.8) {
+    // A confident negative classification must not trigger the expensive header and totals passes.
+    // Uncertain negatives still get the focused verification to avoid rejecting a poorly photographed receipt.
+    if (!receipt.isReceipt && receipt.confidence >= 0.8) {
+      return {
+        receipt,
+        provider: response.provider,
+        model: response.model,
+        attemptCount: metrics.calls,
+        durationMs,
+        verificationIssues: [],
+      };
+    }
+
+    if (receipt.confidence < 0.75 || !receipt.isReceipt || issues.length > 0) {
+      const matchedStore = findMatchingStore(authorizedStores, receipt);
+      const declaredStore = hints?.storeName
+        ? authorizedStores.find((store) => store.name === hints.storeName)
+        : undefined;
+      const focusedStoreReference = authorizedStoreReference(
+        matchedStore ? [matchedStore] : declaredStore ? [declaredStore] : authorizedStores,
+      );
+      const regions = await prepareOcrRegions(env, bytes);
+      const [headerResult, totalsResult] = await Promise.allSettled([
+        // The full-image call already has a retry. Region failures are fail-open:
+        // a timeout or malformed crop must not discard useful evidence from the initial read.
+        extractParsedReceipt(provider, {
+          bytes: regions.header, contentType: 'image/webp', prompt: regionPrompt(focusedStoreReference, 'header', hints),
+        }, metrics, 1),
+        extractParsedReceipt(provider, {
+          bytes: regions.totals, contentType: 'image/webp', prompt: regionPrompt(focusedStoreReference, 'totals', hints),
+        }, metrics, 1),
+      ]);
+      const headerReceipt = headerResult.status === 'fulfilled' ? headerResult.value.receipt : receipt;
+      const totalsReceipt = totalsResult.status === 'fulfilled' ? totalsResult.value.receipt : receipt;
+      if (headerResult.status === 'rejected') console.warn('OCR header region failed open', headerResult.reason);
+      if (totalsResult.status === 'rejected') console.warn('OCR totals region failed open', totalsResult.reason);
+      receipt = preferVerifiedIdentity(mergeRegionResults(receipt, headerReceipt, totalsReceipt));
+      issues = verifyOcr(receipt);
+      durationMs = Date.now() - startedAt;
+    }
+
     return {
       receipt,
       provider: response.provider,
       model: response.model,
-      attemptCount,
+      attemptCount: metrics.calls,
       durationMs,
-      verificationIssues: [],
+      verificationIssues: issues,
     };
+  } catch (caught) {
+    const failure = classifyOcrFailure(caught);
+    throw new OcrReadError(failure.error, failure.reason, metrics.calls, Date.now() - startedAt);
   }
-
-  if (receipt.confidence < 0.75 || !receipt.isReceipt || issues.length > 0) {
-    const matchedStore = findMatchingStore(authorizedStores, receipt);
-    const declaredStore = hints?.storeName
-      ? authorizedStores.find((store) => store.name === hints.storeName)
-      : undefined;
-    const focusedStoreReference = authorizedStoreReference(
-      matchedStore ? [matchedStore] : declaredStore ? [declaredStore] : authorizedStores,
-    );
-    const regions = await prepareOcrRegions(env, bytes);
-    const [headerResponse, totalsResponse] = await Promise.all([
-      provider.extract({
-        bytes: regions.header, contentType: 'image/webp', prompt: regionPrompt(focusedStoreReference, 'header', hints),
-      }),
-      provider.extract({
-        bytes: regions.totals, contentType: 'image/webp', prompt: regionPrompt(focusedStoreReference, 'totals', hints),
-      }),
-    ]);
-    receipt = preferVerifiedIdentity(mergeRegionResults(
-      receipt,
-      normalizeOcr(parseJsonObject(headerResponse.text)),
-      normalizeOcr(parseJsonObject(totalsResponse.text)),
-    ));
-    issues = verifyOcr(receipt);
-    attemptCount = preflightCalls + 3;
-    durationMs = Date.now() - startedAt;
-  }
-
-  return {
-    receipt,
-    provider: response.provider,
-    model: response.model,
-    attemptCount,
-    durationMs,
-    verificationIssues: issues,
-  };
 }

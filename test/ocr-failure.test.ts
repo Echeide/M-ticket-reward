@@ -15,6 +15,7 @@ test('OCR quota and configuration errors are terminal', () => {
   });
   assert.equal(classifyOcrFailure({ code: 5016, message: 'Model agreement required' }).retryable, false);
   assert.equal(classifyOcrFailure(new Error('Workers AI error 3006 request too large')).retryable, false);
+  assert.equal(classifyOcrFailure(new Error('OCR_PROVIDER_CONFIGURATION_ERROR')).retryable, false);
 });
 
 test('OCR capacity, rate limit and timeout errors can be retried', () => {
@@ -22,6 +23,7 @@ test('OCR capacity, rate limit and timeout errors can be retried', () => {
   assert.equal(classifyOcrFailure(new Error('HTTP 429 too many requests')).reason, 'OCR_PROVIDER_RATE_LIMITED');
   assert.equal(classifyOcrFailure(new Error('OCR_PROVIDER_TIMEOUT')).reason, 'OCR_PROVIDER_TIMEOUT');
   assert.equal(classifyOcrFailure(new Error('fetch failed')).retryable, true);
+  assert.equal(classifyOcrFailure(new Error('Expected property name in JSON')).reason, 'OCR_INVALID_JSON');
 });
 
 test('OCR error telemetry is bounded and retry settings are conservative', () => {

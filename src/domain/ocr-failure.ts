@@ -43,13 +43,16 @@ export function classifyOcrFailure(caught: unknown): OcrFailure {
   const error = ocrErrorMessage(caught);
   const normalized = error.toUpperCase();
 
+  if (/OCR_INVALID_JSON|EXPECTED PROPERTY NAME|JSON.*(?:POSITION|COLUMN)|UNTERMINATED STRING/.test(normalized)) {
+    return { error, reason: 'OCR_INVALID_JSON', retryable: true };
+  }
   if (/\b3036\b|DAILY FREE ALLOCATION|QUOTA|USAGE LIMIT/.test(normalized)) {
     return { error, reason: 'OCR_PROVIDER_QUOTA_EXCEEDED', retryable: false };
   }
   if (/\b5016\b|MODEL AGREEMENT|LICENSE|LICENCE/.test(normalized)) {
     return { error, reason: 'OCR_PROVIDER_LICENSE_REQUIRED', retryable: false };
   }
-  if (/\b(?:5004|5007|3003|3006|3042)\b|INVALID (?:DATA|MODEL)|REQUEST TOO LARGE|INCOMPLETE REQUEST|UNSUPPORTED/.test(normalized)) {
+  if (/OCR_PROVIDER_CONFIGURATION_ERROR|\b(?:5004|5007|3003|3006|3042)\b|INVALID (?:DATA|MODEL)|REQUEST TOO LARGE|INCOMPLETE REQUEST|UNSUPPORTED/.test(normalized)) {
     return { error, reason: 'OCR_PROVIDER_CONFIGURATION_ERROR', retryable: false };
   }
   if (/\b3040\b|OUT OF CAPACITY|NO MORE DATA CENTERS|CAPACITY/.test(normalized)) {

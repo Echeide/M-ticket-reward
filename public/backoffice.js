@@ -743,7 +743,22 @@ function trainingEvaluationDetails(evaluation, expected) {
   if (!evaluation) return '<span class="training-not-evaluated">Sin evaluar</span>';
   if (evaluation.status === 'ERROR') {
     const retryLabel = evaluation.retryable ? 'Se puede reintentar' : 'Requiere revisión';
-    return `<div class="training-evaluation-heading"><span class="status-chip auto_rejected">Error técnico</span><small>${escapeHtml(retryLabel)}</small></div><p class="training-error-detail">${escapeHtml(evaluation.errorMessage || evaluation.errorReason || 'No se pudo ejecutar el OCR')}</p>`;
+    const attempts = evaluation.attemptCount ? ` · ${evaluation.attemptCount} intentos` : '';
+    const duration = evaluation.durationMs === null || evaluation.durationMs === undefined
+      ? '' : ` · ${evaluation.durationMs} ms`;
+    const friendlyErrors = {
+      OCR_INVALID_JSON: 'El modelo devolvió una respuesta con formato inválido incluso después de reintentarlo.',
+      OCR_PROVIDER_TIMEOUT: 'El proveedor de OCR no respondió dentro del tiempo disponible incluso después de reintentarlo.',
+      OCR_PROVIDER_CAPACITY: 'El proveedor de OCR no tenía capacidad disponible en este momento.',
+      OCR_PROVIDER_RATE_LIMITED: 'El proveedor de OCR ha limitado temporalmente las peticiones.',
+      OCR_PROVIDER_UNAVAILABLE: 'El proveedor de OCR no estaba disponible temporalmente.',
+      OCR_PROVIDER_CONFIGURATION_ERROR: 'La configuración actual del proveedor o del modelo OCR no es válida.',
+      OCR_PROVIDER_QUOTA_EXCEEDED: 'Se ha agotado la cuota disponible del proveedor OCR.',
+      OCR_PROVIDER_LICENSE_REQUIRED: 'El modelo OCR necesita aceptar una licencia o acuerdo antes de utilizarse.',
+    };
+    const detail = friendlyErrors[evaluation.errorReason]
+      || evaluation.errorMessage || evaluation.errorReason || 'No se pudo ejecutar el OCR';
+    return `<div class="training-evaluation-heading"><span class="status-chip auto_rejected">Error técnico</span><small>${escapeHtml(retryLabel + attempts + duration)}</small></div><p class="training-error-detail">${escapeHtml(detail)}</p>`;
   }
   const labels = {
     store: 'Comercio', ticketNumber: 'Número', purchaseDate: 'Fecha', purchaseTime: 'Hora', total: 'Importe', evidence: 'Evidencias',

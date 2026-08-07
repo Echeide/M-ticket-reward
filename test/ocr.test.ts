@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeOcr, readReceipt, verifyOcr } from '../src/integrations/ocr';
+import { normalizeOcr, OcrReadError, readReceipt, verifyOcr } from '../src/integrations/ocr';
 import { providerResponseText } from '../src/integrations/ocr-provider';
 import type { Env } from '../src/types';
 
@@ -226,6 +226,81 @@ test('OCR reading repairs literal control characters inside JSON strings', async
   assert.deepEqual(result.verificationIssues, []);
 });
 
+test('OCR reading accepts conservative JSON-like repairs without another model call', async () => {
+  let calls = 0;
+  const relaxed = `{{${JSON.stringify(validExtraction).slice(1, -1)
+    .replace('"isReceipt":true', 'isReceipt: True')
+    .replace('"storeName":"Hiperdino"', "storeName: 'Hiperdino'")},}}`;
+  const env = {
+    OCR_MODE: 'workers-ai',
+    OCR_PROVIDER: 'workers-ai',
+    OCR_MODEL: '@cf/meta/llama-3.2-11b-vision-instruct',
+    OCR_WORKERS_AI_FORMAT: 'chat',
+    OCR_TIMEOUT_MS: '5000',
+    AI: {
+      async run() {
+        calls += 1;
+        return { choices: [{ message: { content: `Here's the result:\n${relaxed}` } }] };
+      },
+    },
+  } as unknown as Env;
+
+  const result = await readReceipt(env, new Uint8Array([1, 2, 3]).buffer, 'image/webp');
+
+  assert.equal(calls, 1);
+  assert.equal(result.attemptCount, 1);
+  assert.equal(result.receipt.storeName, 'Hiperdino');
+  assert.deepEqual(result.verificationIssues, []);
+});
+
+test('OCR reading retries a malformed model response once', async () => {
+  let calls = 0;
+  const env = {
+    OCR_MODE: 'workers-ai',
+    OCR_PROVIDER: 'workers-ai',
+    OCR_MODEL: '@cf/meta/llama-3.2-11b-vision-instruct',
+    OCR_WORKERS_AI_FORMAT: 'chat',
+    OCR_TIMEOUT_MS: '5000',
+    AI: {
+      async run() {
+        calls += 1;
+        const content = calls === 1 ? '{ definitely not json }' : JSON.stringify(validExtraction);
+        return { choices: [{ message: { content } }] };
+      },
+    },
+  } as unknown as Env;
+
+  const result = await readReceipt(env, new Uint8Array([1, 2, 3]).buffer, 'image/webp');
+
+  assert.equal(calls, 2);
+  assert.equal(result.attemptCount, 2);
+  assert.deepEqual(result.verificationIssues, []);
+});
+
+test('OCR reading reports attempts and duration after a definitive provider timeout', async () => {
+  let calls = 0;
+  const env = {
+    OCR_MODE: 'workers-ai',
+    OCR_PROVIDER: 'workers-ai',
+    OCR_MODEL: '@cf/meta/llama-3.2-11b-vision-instruct',
+    OCR_WORKERS_AI_FORMAT: 'chat',
+    OCR_TIMEOUT_MS: '5000',
+    AI: {
+      async run() {
+        calls += 1;
+        throw new Error('OCR_PROVIDER_TIMEOUT');
+      },
+    },
+  } as unknown as Env;
+
+  await assert.rejects(
+    () => readReceipt(env, new Uint8Array([1, 2, 3]).buffer, 'image/webp'),
+    (caught: unknown) => caught instanceof OcrReadError &&
+      caught.reason === 'OCR_PROVIDER_TIMEOUT' && caught.attemptCount === 2 && caught.durationMs >= 0,
+  );
+  assert.equal(calls, 2);
+});
+
 test('OCR normalization repairs malformed dates and identifiers from labelled evidence', () => {
   const receipt = normalizeOcr({
     ...validExtraction,
@@ -373,6 +448,42 @@ test('OCR retries an incomplete reading with focused regions', async () => {
   assert.match(String(requests[1]!.question), /Fecha operación/);
   assert.match(String(requests[2]!.question), /parte INFERIOR/i);
   assert.match(String(requests[2]!.question), /TOTAL COMPRA/);
+});
+
+test('OCR keeps the initial evidence when one focused region fails', async () => {
+  let calls = 0;
+  const env = {
+    OCR_MODE: 'workers-ai',
+    OCR_PROVIDER: 'workers-ai',
+    OCR_MODEL: '@cf/meta/llama-3.2-11b-vision-instruct',
+    OCR_WORKERS_AI_FORMAT: 'chat',
+    OCR_TIMEOUT_MS: '5000',
+    AI: {
+      async run() {
+        calls += 1;
+        if (calls === 2) throw new Error('OCR_PROVIDER_TIMEOUT');
+        const extraction = calls === 1 ? { ...validExtraction, confidence: 0.5 } : validExtraction;
+        return { choices: [{ message: { content: JSON.stringify(extraction) } }] };
+      },
+    },
+    IMAGES: {
+      info: async () => ({ width: 1200, height: 1600, format: 'image/webp' }),
+      input: () => {
+        const transformer = {
+          transform: () => transformer,
+          output: () => ({ response: () => new Response(new Uint8Array([4, 5, 6])) }),
+        };
+        return transformer;
+      },
+    },
+  } as unknown as Env;
+
+  const result = await readReceipt(env, new Uint8Array([1, 2, 3]).buffer, 'image/webp');
+
+  assert.equal(calls, 3);
+  assert.equal(result.attemptCount, 3);
+  assert.equal(result.receipt.ticketNumber, validExtraction.ticketNumber);
+  assert.deepEqual(result.verificationIssues, []);
 });
 
 test('Workers AI chat format supports Llama vision with JSON mode', async () => {
