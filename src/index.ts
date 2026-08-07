@@ -1,5 +1,5 @@
 import type { DbClient } from './platform/db';
-import { buildTicketFingerprint } from './domain/deduplication';
+import { buildTicketFingerprint, buildTicketIdentityKey } from './domain/deduplication';
 import {
   type OcrReceipt,
   type ReceiptFields,
@@ -122,6 +122,7 @@ type ReceiptRow = {
   declared_total_cents: number | null;
   currency: string;
   ticket_fingerprint: string | null;
+  ticket_identity_key: string | null;
   ocr_payload: OcrReceipt | null;
   ocr_confidence: number | null;
   ocr_provider: string | null;
@@ -284,6 +285,34 @@ const ACTIVE_DUPLICATE_STATUSES = [
   'REWARD_FAILED',
   'REVOKE_PENDING',
 ] as const;
+
+const IDENTITY_DUPLICATE_STATUSES = [
+  'READY_FOR_CONFIRMATION',
+  'REWARD_PENDING',
+  'REWARDED',
+  'REVOKE_PENDING',
+  'REVOKED',
+] as const;
+
+async function hasGlobalTicketIdentityDuplicate(
+  client: DbClient,
+  identityKeys: Array<string | null>,
+  excludedReceiptId = '',
+): Promise<boolean> {
+  const keys = Array.from(new Set(identityKeys.filter((key): key is string => Boolean(key))));
+  if (!keys.length) return false;
+  const result = await client.query(
+    `SELECT id FROM receipts
+      WHERE ticket_identity_key = ANY($1::text[]) AND id <> $2
+        AND (
+          status = ANY($3::text[])
+          OR (status = 'REWARD_FAILED' AND points_awarded > 0)
+        )
+      LIMIT 1`,
+    [keys, excludedReceiptId, [...IDENTITY_DUPLICATE_STATUSES]],
+  );
+  return Boolean(result.rowCount);
+}
 
 function uuid(): string {
   return crypto.randomUUID();
@@ -767,6 +796,9 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
   const receiptId = uuid();
   const ticketPublicId = publicId();
   const objectKey = `receipts/${session.user_ref}/${new Date().getUTCFullYear()}/${receiptId}/optimized.${storedImage.extension}`;
+  const declaredIdentityKey = declaration?.storeId
+    ? buildTicketIdentityKey(declaration.storeId, declaration.ticketNumber)
+    : null;
 
   const uploadReserved = await withDatabase(env, (client) => reserveUserUpload(client, session.external_user_id));
   if (!uploadReserved) {
@@ -776,51 +808,57 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
   let duplicate = false;
   try {
     duplicate = await withDatabase(env, async (client) => {
-    const existing = await client.query(
-      `SELECT id FROM receipts
-        WHERE user_ref = $1 AND image_sha256 = $2 AND status = ANY($3::text[])
-        LIMIT 1`,
-      [session.user_ref, digest, [...ACTIVE_DUPLICATE_STATUSES]],
-    );
-    await env.TICKETS.put(objectKey, storedImage.bytes, {
-      httpMetadata: { contentType: storedImage.contentType },
-      customMetadata: {
-        receiptId,
-        userRef: session.user_ref,
+      const existingImage = await client.query(
+        `SELECT id FROM receipts
+          WHERE image_sha256 = $1 AND status = ANY($2::text[])
+          LIMIT 1`,
+        [digest, [...ACTIVE_DUPLICATE_STATUSES]],
+      );
+      const existingIdentity = await hasGlobalTicketIdentityDuplicate(client, [declaredIdentityKey]);
+      const duplicateReasons = [
+        ...(existingImage.rowCount ? ['DUPLICATE_IMAGE'] : []),
+        ...(existingIdentity ? ['DUPLICATE_TICKET_IDENTITY'] : []),
+      ];
+      await env.TICKETS.put(objectKey, storedImage.bytes, {
+        httpMetadata: { contentType: storedImage.contentType },
+        customMetadata: {
+          receiptId,
+          userRef: session.user_ref,
+          sha256: digest,
+          originalBytes: String(storedImage.originalBytes),
+          storedBytes: String(storedImage.bytes.byteLength),
+          storedDimensions: `${storedImage.width}x${storedImage.height}`,
+          ocrReady: String(storedImage.ocrReady),
+        },
         sha256: digest,
-        originalBytes: String(storedImage.originalBytes),
-        storedBytes: String(storedImage.bytes.byteLength),
-        storedDimensions: `${storedImage.width}x${storedImage.height}`,
-        ocrReady: String(storedImage.ocrReady),
-      },
-      sha256: digest,
-    });
-    await client.query(
-      `INSERT INTO receipts
-         (id, public_id, session_id, user_ref, image_key, image_sha256,
-          image_content_type, image_size, status, validation_reasons,
-          rtales_lookup_code_snapshot, external_user_id, declared_store_id,
-          declared_ticket_number, declared_total_cents)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15)`,
-      [
-        receiptId,
-        ticketPublicId,
-        session.id,
-        session.user_ref,
-        objectKey,
-        digest,
-        storedImage.contentType,
-        storedImage.bytes.byteLength,
-        existing.rowCount ? 'DUPLICATE' : 'OCR_QUEUED',
-        JSON.stringify(existing.rowCount ? ['DUPLICATE_IMAGE'] : []),
-        session.rtales_lookup_code,
-        session.external_user_id,
-        declaration?.storeId || null,
-        declaration?.ticketNumber || null,
-        declaration?.totalCents || null,
-      ],
-    );
-      return Boolean(existing.rowCount);
+      });
+      await client.query(
+        `INSERT INTO receipts
+           (id, public_id, session_id, user_ref, image_key, image_sha256,
+            image_content_type, image_size, status, validation_reasons,
+            rtales_lookup_code_snapshot, external_user_id, declared_store_id,
+            declared_ticket_number, declared_total_cents, ticket_identity_key)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16)`,
+        [
+          receiptId,
+          ticketPublicId,
+          session.id,
+          session.user_ref,
+          objectKey,
+          digest,
+          storedImage.contentType,
+          storedImage.bytes.byteLength,
+          duplicateReasons.length ? 'DUPLICATE' : 'OCR_QUEUED',
+          JSON.stringify(duplicateReasons),
+          session.rtales_lookup_code,
+          session.external_user_id,
+          declaration?.storeId || null,
+          declaration?.ticketNumber || null,
+          declaration?.totalCents || null,
+          duplicateReasons.length ? null : declaredIdentityKey,
+        ],
+      );
+      return duplicateReasons.length > 0;
     });
   } catch (uploadError) {
     await env.TICKETS.delete(objectKey).catch(() => undefined);
@@ -1008,19 +1046,21 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
         currency: /^[A-Z]{3}$/.test(receipt.currency || '') ? receipt.currency : 'EUR',
       };
       const fingerprint = buildTicketFingerprint(fields);
+      const identityKey = buildTicketIdentityKey(fields.storeId, fields.ticketNumber);
+      const identityDuplicate = await hasGlobalTicketIdentityDuplicate(client, [identityKey], receiptId);
       const duplicate = await client.query(
         `SELECT id FROM receipts
-          WHERE user_ref = $1 AND ticket_fingerprint = $2 AND id <> $3
-            AND status = ANY($4::text[])
+          WHERE ticket_fingerprint = $1 AND id <> $2
+            AND status = ANY($3::text[])
           LIMIT 1`,
-        [session.user_ref, fingerprint, receiptId, [...ACTIVE_DUPLICATE_STATUSES]],
+        [fingerprint, receiptId, [...ACTIVE_DUPLICATE_STATUSES]],
       );
       const appSettings = await loadAppSettings(client);
       const validation = validateReceiptAutomatically({
         fields,
         ocr: receipt.ocr_payload || { isReceipt: false, confidence: 0 },
         storeActive: selectedStore?.active === true,
-        duplicate: Boolean(duplicate.rowCount),
+        duplicate: identityDuplicate || Boolean(duplicate.rowCount),
         allowedPurchaseStart: appSettings['validation.startAt'],
         allowedPurchaseEnd: appSettings['validation.endAt'],
       });
@@ -1035,7 +1075,7 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
         await client.query(
           `UPDATE receipts SET status = $2, store_id = $3, store_name = $4,
              ticket_number = $5, purchase_date = $6, total_cents = $7,
-             currency = $8, ticket_fingerprint = $9, risk_score = $10,
+             currency = $8, ticket_fingerprint = $9, ticket_identity_key = NULL, risk_score = $10,
              validation_reasons = $11::jsonb, updated_at = NOW()
            WHERE id = $1`,
           [receiptId, status, selectedStore?.id || null, fields.storeName, fields.ticketNumber,
@@ -1062,12 +1102,13 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
       await client.query(
         `UPDATE receipts SET status = 'REWARD_PENDING', session_id = $2,
            store_id = $3, store_name = $4, ticket_number = $5, purchase_date = $6,
-           total_cents = $7, currency = $8, ticket_fingerprint = $9, risk_score = $10,
-           validation_reasons = '[]'::jsonb, points_awarded = $11, updated_at = NOW()
+           total_cents = $7, currency = $8, ticket_fingerprint = $9,
+           ticket_identity_key = $10, risk_score = $11,
+           validation_reasons = '[]'::jsonb, points_awarded = $12, updated_at = NOW()
          WHERE id = $1`,
         [receiptId, session.id, selectedStore!.id, selectedStore!.name, fields.ticketNumber,
           fields.purchaseDate, fields.totalCents, fields.currency, fingerprint,
-          validation.riskScore, points],
+          identityKey, validation.riskScore, points],
       );
       await client.query(
         `INSERT INTO reward_outbox
@@ -1199,6 +1240,35 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
       ocr.isReceipt && declaration?.storeId && declaredStore &&
       fields.storeId === declaration.storeId && !storeHasVisibleEvidence(declaredStore, ocr)
     ) declarationIssues.push('DECLARED_STORE_UNVERIFIED');
+    const declaredIdentityKey = declaration?.storeId
+      ? buildTicketIdentityKey(declaration.storeId, declaration.ticketNumber)
+      : null;
+    const ocrIdentityKey = selectedStore?.id && fields.ticketNumber
+      ? buildTicketIdentityKey(selectedStore.id, fields.ticketNumber)
+      : null;
+    const identityDuplicate = await hasGlobalTicketIdentityDuplicate(
+      client, [declaredIdentityKey, ocrIdentityKey], receiptId,
+    );
+    if (identityDuplicate) {
+      completedStatus = 'DUPLICATE';
+      await client.query(
+        `UPDATE receipts SET status = 'DUPLICATE', store_id = $2, store_name = $3,
+           ticket_number = $4, purchase_date = $5, total_cents = $6, currency = $7,
+           ticket_fingerprint = NULL, ticket_identity_key = NULL,
+           ocr_payload = $8::jsonb, ocr_confidence = $9,
+           ocr_provider = $10, ocr_model = $11, ocr_attempt_count = $12,
+           ocr_duration_ms = $13, ocr_completed_at = NOW(), ocr_last_error = NULL,
+           validation_reasons = $14::jsonb, review_status = 'CLEARED',
+           reviewed_at = NOW(), reviewed_by = 'SYSTEM', updated_at = NOW()
+         WHERE id = $1`,
+        [receiptId, selectedStore?.id || null, fields.storeName || null,
+          fields.ticketNumber || null, fields.purchaseDate || null, fields.totalCents || null,
+          fields.currency, JSON.stringify(ocr), ocr.confidence, ocrResult.provider,
+          ocrResult.model, ocrResult.attemptCount, ocrResult.durationMs,
+          JSON.stringify(['DUPLICATE', 'DUPLICATE_TICKET_IDENTITY'])],
+      );
+      return;
+    }
     if (ocrResult.verificationIssues.length > 0 || declarationIssues.length > 0) {
       const reasons = [
         'OCR_VERIFICATION_REQUIRED',
@@ -1209,7 +1279,8 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
       await client.query(
         `UPDATE receipts SET status = 'REWARD_FAILED', store_id = $2, store_name = $3,
            ticket_number = $4, purchase_date = $5, total_cents = $6, currency = $7,
-           ticket_fingerprint = NULL, ocr_payload = $8::jsonb, ocr_confidence = $9,
+           ticket_fingerprint = NULL, ticket_identity_key = NULL,
+           ocr_payload = $8::jsonb, ocr_confidence = $9,
            ocr_provider = $10, ocr_model = $11, ocr_attempt_count = $12,
            ocr_duration_ms = $13, ocr_completed_at = NOW(), ocr_last_error = NULL, risk_score = $15,
            validation_reasons = $14::jsonb, review_status = 'PENDING',
@@ -1225,10 +1296,10 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
     }
     const duplicate = fingerprint ? await client.query(
       `SELECT id FROM receipts
-        WHERE user_ref = $1 AND ticket_fingerprint = $2 AND id <> $3
-          AND status = ANY($4::text[])
+        WHERE ticket_fingerprint = $1 AND id <> $2
+          AND status = ANY($3::text[])
         LIMIT 1`,
-      [receipt.user_ref, fingerprint, receiptId, [...ACTIVE_DUPLICATE_STATUSES]],
+      [fingerprint, receiptId, [...ACTIVE_DUPLICATE_STATUSES]],
     ) : null;
     const validation = validateReceiptAutomatically({
       fields,
@@ -1263,21 +1334,25 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
       );
       rewardOutboxId = uuid();
     }
+    const persistedIdentityKey = (IDENTITY_DUPLICATE_STATUSES as readonly string[]).includes(status)
+      ? ocrIdentityKey || declaredIdentityKey
+      : null;
     await client.query(
       `UPDATE receipts SET status = $2, store_id = $3, store_name = $4,
          ticket_number = $5, purchase_date = $6, total_cents = $7, currency = $8,
-         ticket_fingerprint = $9, ocr_payload = $10::jsonb, ocr_confidence = $11,
-         risk_score = $12, validation_reasons = $13::jsonb,
-         ocr_provider = $14, ocr_model = $15, ocr_attempt_count = $16,
-         ocr_duration_ms = $17, ocr_completed_at = NOW(), ocr_last_error = NULL,
-         points_awarded = $18,
+         ticket_fingerprint = $9, ticket_identity_key = $10,
+         ocr_payload = $11::jsonb, ocr_confidence = $12,
+         risk_score = $13, validation_reasons = $14::jsonb,
+         ocr_provider = $15, ocr_model = $16, ocr_attempt_count = $17,
+         ocr_duration_ms = $18, ocr_completed_at = NOW(), ocr_last_error = NULL,
+         points_awarded = $19,
          review_status = 'CLEARED', reviewed_at = NOW(), reviewed_by = 'SYSTEM',
          updated_at = NOW()
        WHERE id = $1`,
       [receiptId, status, selectedStore?.id || null, fields.storeName || null,
         fields.ticketNumber || null, fields.purchaseDate || null, fields.totalCents || null,
         fields.currency, status === 'DUPLICATE' ? null : fingerprint,
-        JSON.stringify(ocr), ocr.confidence, validation.riskScore,
+        persistedIdentityKey, JSON.stringify(ocr), ocr.confidence, validation.riskScore,
         JSON.stringify(validation.reasons), ocrResult.provider, ocrResult.model,
         ocrResult.attemptCount, ocrResult.durationMs, points],
     );
@@ -1322,6 +1397,7 @@ async function markOcrFailed(env: Env, receiptId: string, reason: string, lastEr
   await withDatabase(env, async (client) => {
     await client.query(
       `UPDATE receipts SET status = 'REWARD_FAILED', validation_reasons = $2::jsonb,
+          ticket_identity_key = NULL,
           review_status = 'PENDING', reviewed_at = NULL, reviewed_by = NULL,
           ocr_last_error = $3, ocr_completed_at = NOW(), updated_at = NOW()
         WHERE id = $1 AND status = 'OCR_PROCESSING'`,
@@ -1914,7 +1990,7 @@ async function handleAdminReprocess(request: Request, env: Env, receiptId: strin
   }
 
   const queued = await withDatabase(env, async (client) => client.query(
-    `UPDATE receipts SET status = 'OCR_QUEUED', ticket_fingerprint = NULL,
+    `UPDATE receipts SET status = 'OCR_QUEUED', ticket_fingerprint = NULL, ticket_identity_key = NULL,
         validation_reasons = $3::jsonb, review_status = 'PENDING',
         reviewed_at = NULL, reviewed_by = NULL, ocr_last_error = NULL,
         ocr_job_attempt_count = 0, updated_at = NOW()
@@ -1928,12 +2004,12 @@ async function handleAdminReprocess(request: Request, env: Env, receiptId: strin
   } catch (caught) {
     await withDatabase(env, async (client) => {
       await client.query(
-        `UPDATE receipts SET status = $2, ticket_fingerprint = $3,
-            validation_reasons = $4::jsonb, review_status = $5,
-            reviewed_at = $6, reviewed_by = $7, ocr_last_error = $8,
-            ocr_job_attempt_count = $9, updated_at = NOW()
+        `UPDATE receipts SET status = $2, ticket_fingerprint = $3, ticket_identity_key = $4,
+            validation_reasons = $5::jsonb, review_status = $6,
+            reviewed_at = $7, reviewed_by = $8, ocr_last_error = $9,
+            ocr_job_attempt_count = $10, updated_at = NOW()
           WHERE id = $1 AND status = 'OCR_QUEUED'`,
-        [receiptId, receipt.status, receipt.ticket_fingerprint,
+        [receiptId, receipt.status, receipt.ticket_fingerprint, receipt.ticket_identity_key,
           JSON.stringify(receipt.validation_reasons), receipt.review_status,
           receipt.reviewed_at, receipt.reviewed_by, receipt.ocr_last_error,
           receipt.ocr_job_attempt_count],
@@ -2097,13 +2173,15 @@ async function handleAdminReview(
         confidence: receipt.ocr_payload?.confidence ?? receipt.ocr_confidence ?? 0,
       };
       const fingerprint = buildTicketFingerprint(fields);
+      const identityKey = buildTicketIdentityKey(store.id, ticketNumber);
+      const identityDuplicate = await hasGlobalTicketIdentityDuplicate(client, [identityKey], receiptId);
       const duplicate = await client.query(
         `SELECT id FROM receipts
-          WHERE user_ref = $1 AND ticket_fingerprint = $2 AND id <> $3
-            AND status = ANY($4::text[]) LIMIT 1`,
-        [receipt.user_ref, fingerprint, receiptId, [...ACTIVE_DUPLICATE_STATUSES]],
+          WHERE ticket_fingerprint = $1 AND id <> $2
+            AND status = ANY($3::text[]) LIMIT 1`,
+        [fingerprint, receiptId, [...ACTIVE_DUPLICATE_STATUSES]],
       );
-      if (duplicate.rowCount) return error('Este ticket ya había sido utilizado', 409);
+      if (identityDuplicate || duplicate.rowCount) return error('Este ticket ya había sido utilizado', 409);
       const appSettings = await loadAppSettings(client);
       if (await dailyStoreLimitReached(
         client, receipt.external_user_id, store.id, appSettings, receiptId,
@@ -2129,11 +2207,12 @@ async function handleAdminReview(
       await client.query(
         `UPDATE receipts SET status = 'REWARD_PENDING', store_id = $2, store_name = $3,
            ticket_number = $4, purchase_date = $5, total_cents = $6, currency = $7,
-           ticket_fingerprint = $8, ocr_payload = $9::jsonb, validation_reasons = '[]'::jsonb,
-           points_awarded = $10, review_status = 'CLEARED', reviewed_at = NOW(),
-           reviewed_by = $11, updated_at = NOW() WHERE id = $1`,
+           ticket_fingerprint = $8, ticket_identity_key = $9,
+           ocr_payload = $10::jsonb, validation_reasons = '[]'::jsonb,
+           points_awarded = $11, review_status = 'CLEARED', reviewed_at = NOW(),
+           reviewed_by = $12, updated_at = NOW() WHERE id = $1`,
         [receiptId, store.id, store.name, ticketNumber, purchaseDate, totalCents,
-          currency, fingerprint, JSON.stringify(correctedOcr), points, managerEmail],
+          currency, fingerprint, identityKey, JSON.stringify(correctedOcr), points, managerEmail],
       );
       await client.query(
         `INSERT INTO reward_outbox (id, receipt_id, operation, idempotency_key, payload)

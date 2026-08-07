@@ -14,3 +14,10 @@ export function buildTicketFingerprint(fields: ReceiptFields): string {
     normalize(fields.currency),
   ].join('|');
 }
+
+export function buildTicketIdentityKey(storeId: string, ticketNumber: string): string | null {
+  const store = normalize(storeId).replace(/[^A-Z0-9]/g, '');
+  const number = normalize(ticketNumber).replace(/[^A-Z0-9]/g, '');
+  if (!store || number.length < 3) return null;
+  return `${store}|${number}`;
+}

@@ -17,7 +17,7 @@ const validExtraction = {
   totalCents: 1592,
   totalText: 'TOTAL COMPRA 15,92',
   currency: 'EUROS',
-  rawText: 'DINOSOL\nDocumento 2026/934211-00100048\nFecha 06/08/2026\nTOTAL COMPRA 15,92',
+  rawText: 'DINOSOL\nDocumento 2026/934211-00100048\nFecha 06/08/2026 Hora 09:01\nTOTAL COMPRA 15,92',
 };
 
 test('OCR normalization keeps literal evidence and normalizes euros', () => {
@@ -26,6 +26,36 @@ test('OCR normalization keeps literal evidence and normalizes euros', () => {
   assert.equal(receipt.totalCents, 1592);
   assert.equal(receipt.evidence?.purchaseDateText, 'Fecha 06/08/2026 Hora 09:01');
   assert.deepEqual(verifyOcr(receipt), []);
+});
+
+test('OCR normalization trusts a visible decimal total over a shifted model integer', () => {
+  const receipt = normalizeOcr({
+    ...validExtraction,
+    totalCents: 1740,
+    totalText: 'TOTAL COMPRA: 1,74',
+    rawText: 'HIPERDINO\nFecha 06/08/2026 Hora 09:01\nARTICULO IMPORTE 1,74\nTOTAL COMPRA: 1,74',
+  });
+  assert.equal(receipt.totalCents, 174);
+  assert.equal(receipt.evidence?.totalText, 'TOTAL COMPRA: 1,74');
+  assert.deepEqual(verifyOcr(receipt), []);
+});
+
+test('OCR normalization rejects promotional text and dates absent from the raw evidence', () => {
+  const receipt = normalizeOcr({
+    ...validExtraction,
+    ticketNumber: 'VITAMINAS/VITAMINAS/B1',
+    ticketNumberText: 'Documento VITAMINAS/VITAMINAS/B1',
+    purchaseDate: '2026-08-07',
+    purchaseDateTime: '2026-08-07T08:39',
+    purchaseDateText: '07/08/2026 08:39',
+    totalCents: 174,
+    totalText: 'TOTAL COMPRA: 1,74',
+    rawText: 'HIPERDINO\nDOCUMENTO DE VENTA\nPLAN DINOBP\nVITAMINAS/VITAMINAS/B1 B2 B3 B9\nTOTAL COMPRA: 1,74',
+  });
+  assert.equal(receipt.ticketNumber, '');
+  assert.equal(receipt.purchaseDateTime, undefined);
+  assert.equal(receipt.evidence?.purchaseDateText, '');
+  assert.deepEqual(verifyOcr(receipt), ['MISSING_TICKET_NUMBER_OR_TIME', 'UNVERIFIED_DATE']);
 });
 
 test('OCR verification accepts printed dates with a two-digit year', () => {
@@ -242,7 +272,7 @@ test('OCR verification rejects unsupported critical fields', () => {
   });
   assert.equal(receipt.totalCents, 1599);
   assert.deepEqual(verifyOcr(receipt), [
-    'UNVERIFIED_TICKET_NUMBER',
+    'MISSING_TICKET_NUMBER_OR_TIME',
     'UNVERIFIED_DATE',
   ]);
 });

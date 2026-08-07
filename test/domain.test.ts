@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildTicketFingerprint } from '../src/domain/deduplication';
+import { buildTicketFingerprint, buildTicketIdentityKey } from '../src/domain/deduplication';
 import {
   canReprocessReceipt,
   compareReceiptDeclaration,
@@ -197,6 +197,18 @@ test('fingerprints and Rtales operations are deterministic', () => {
   }), 'STORE-1|@TIME:2026-08-02T09:17|2026-08-02|7500|EUR');
   assert.equal(rewardIdempotencyKey('receipt-1'), 'ticket:receipt-1:grant:v1');
   assert.equal(reversalIdempotencyKey('receipt-1'), 'ticket:receipt-1:revoke:v1');
+});
+
+test('ticket identities ignore formatting and remain global to the merchant', () => {
+  assert.equal(
+    buildTicketIdentityKey('store-1', '2026/934211.00100591'),
+    buildTicketIdentityKey('store-1', '2026 / 934211-00100591'),
+  );
+  assert.notEqual(
+    buildTicketIdentityKey('store-1', '2026/934211.00100591'),
+    buildTicketIdentityKey('store-2', '2026/934211.00100591'),
+  );
+  assert.equal(buildTicketIdentityKey('store-1', 'x'), null);
 });
 
 test('store input normalizes codes and unique OCR aliases', () => {

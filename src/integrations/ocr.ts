@@ -144,12 +144,18 @@ export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
   const ticketNumberText = String(value.ticketNumberText || '').trim().slice(0, 300);
   const purchaseDateText = String(value.purchaseDateText || '').trim().slice(0, 300);
   const rawText = String(value.rawText || '').slice(0, 8_000);
-  const totalFromFields = Number.isInteger(total) && total > 0 ? total : centsFromEvidence(totalText);
-  const rawTotalText = totalEvidenceFromRaw(rawText, totalFromFields);
-  const normalizedTotal = totalFromFields || centsFromEvidence(rawTotalText);
-  const verifiedTotalText = normalizedTotal && centsFromEvidence(totalText) === normalizedTotal
-    ? totalText
-    : rawTotalText || totalText;
+  const modelTotal = Number.isInteger(total) && total > 0 ? total : null;
+  const literalTotal = centsFromEvidence(totalText);
+  const rawTotalText = totalEvidenceFromRaw(rawText, literalTotal || modelTotal);
+  const rawTotal = centsFromEvidence(rawTotalText);
+  // Visible evidence wins over the model's calculated integer. Vision models
+  // occasionally shift the decimal place even when they transcribe "1,74"
+  // correctly, producing totalCents=1740. Keep the model value only as a last
+  // resort when neither literal evidence source contains a parseable amount.
+  const normalizedTotal = rawTotal || literalTotal || modelTotal;
+  const verifiedTotalText = rawTotal
+    ? rawTotalText
+    : literalTotal ? totalText : rawTotalText || totalText;
   const rawPurchaseDate = String(value.purchaseDate || '').trim();
   const evidencedDate = isoDateFromEvidence(purchaseDateText, rawPurchaseDate);
   const literalDate = isoDateFromEvidence(rawPurchaseDate, rawPurchaseDate);
@@ -157,9 +163,10 @@ export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
   // date to the wrong ISO month/day order.
   const normalizedDate = evidencedDate || literalDate || rawPurchaseDate;
   const rawPurchaseDateText = dateTimeEvidenceFromRaw(rawText, normalizedDate);
-  const verifiedPurchaseDateText = isoDateFromEvidence(purchaseDateText, normalizedDate) === normalizedDate
+  const verifiedPurchaseDateText = rawPurchaseDateText || (!rawText.trim()
+    && isoDateFromEvidence(purchaseDateText, normalizedDate) === normalizedDate
     ? purchaseDateText
-    : rawPurchaseDateText || purchaseDateText;
+    : '');
   const directTicketNumber = ticketNumberFromEvidence(ticketNumberText);
   const rawTicketNumber = directTicketNumber ? null : ticketNumberFromEvidence(rawText.slice(0, 2_000));
   const evidencedTicketNumber = directTicketNumber || rawTicketNumber;
@@ -193,7 +200,7 @@ export function normalizeOcr(value: Record<string, unknown>): OcrReceipt {
     confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
     storeName: String(value.storeName || '').trim(),
     headerText: String(value.headerText || '').trim().slice(0, 2_000),
-    ticketNumber: evidencedTicketNumber || String(value.ticketNumber || '').trim(),
+    ticketNumber: evidencedTicketNumber || '',
     purchaseDate: normalizedDate,
     purchaseDateTime: normalizedDateTime,
     totalCents: normalizedTotal && normalizedTotal > 0 ? normalizedTotal : undefined,
@@ -224,8 +231,9 @@ function preferVerifiedIdentity(receipt: OcrReceipt): OcrReceipt {
 function ticketNumberFromEvidence(value: string): string | null {
   const labelled = /(?:^|\b)(?:documento|ticket|factura|recibo|transacci[oó]n|operaci[oó]n|folio|n[º°o]\.?)\s*[:#-]*\s+(.+)/i.exec(value);
   if (!labelled) return null;
-  const candidates = (labelled[1] || '').match(/[A-Z0-9][A-Z0-9./-]{3,}/gi) || [];
-  return candidates.sort((left, right) => compactIdentifier(right).length - compactIdentifier(left).length)[0] || null;
+  const candidates = (labelled[1] || '').slice(0, 160).match(/[A-Z0-9][A-Z0-9./-]{3,}/gi) || [];
+  const credible = candidates.filter((candidate) => (candidate.match(/\d/g) || []).length >= 3);
+  return credible.sort((left, right) => compactIdentifier(right).length - compactIdentifier(left).length)[0] || null;
 }
 
 function centsFromEvidence(value: string): number | null {
@@ -240,7 +248,7 @@ function centsFromEvidence(value: string): number | null {
 function totalEvidenceFromRaw(value: string, expectedCents: number | null): string {
   const matches = [...value.matchAll(/(?:TOTAL(?:\s+COMPRA)?|IMPORTE\s+TOTAL)\s*:?\s*(\d{1,3}(?:[.\s]\d{3})*|\d+)[,.](\d{2})/gi)];
   const matching = expectedCents
-    ? matches.find((match) => centsFromEvidence(match[0]) === expectedCents)
+    ? matches.find((match) => centsFromEvidence(match[0]) === expectedCents) || matches.at(-1)
     : matches.at(-1);
   return matching?.[0]?.trim().slice(0, 300) || '';
 }
@@ -291,7 +299,16 @@ function dateTimeEvidenceFromRaw(value: string, expectedDate: string): string {
   ].sort((left, right) => (left.index || 0) - (right.index || 0));
   const candidates = dates
     .filter((match) => isoDateFromEvidence(match[0], expectedDate) === expectedDate)
-    .map((match) => value.slice(Math.max(0, (match.index || 0) - 24), Math.min(value.length, (match.index || 0) + match[0].length + 48)).trim());
+    .map((match) => {
+      const index = match.index || 0;
+      const lineStart = value.lastIndexOf('\n', index - 1) + 1;
+      const followingBreak = value.indexOf('\n', index + match[0].length);
+      const lineEnd = followingBreak === -1 ? value.length : followingBreak;
+      const line = value.slice(lineStart, lineEnd).trim();
+      return line.length <= 200
+        ? line
+        : value.slice(Math.max(0, index - 40), Math.min(value.length, index + match[0].length + 80)).trim();
+    });
   return candidates.find((candidate) => purchaseTimeFromEvidence(candidate))
     || candidates[0]
     || '';
