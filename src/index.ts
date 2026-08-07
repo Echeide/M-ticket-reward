@@ -843,15 +843,22 @@ async function handleStores(request: Request, env: Env): Promise<Response> {
   });
   return json({
     success: true,
-    stores: stores.map((store) => ({
-      id: store.id,
-      code: store.code,
-      name: store.name,
-      aliases: store.aliases,
-      logoUrl: store.logo_key
-        ? `/api/stores/${store.id}/logo?v=${encodeURIComponent(store.logo_updated_at || store.logo_key)}`
-        : '',
-    })),
+    stores: stores.map((store) => {
+      const profile = normalizeStoreOcrProfile(store.ocr_profile);
+      const ticketNumberHint = profile.enabled && (profile.ticketNumberHelp || profile.ticketNumberExample)
+        ? { text: profile.ticketNumberHelp, example: profile.ticketNumberExample }
+        : null;
+      return {
+        id: store.id,
+        code: store.code,
+        name: store.name,
+        aliases: store.aliases,
+        ticketNumberHint,
+        logoUrl: store.logo_key
+          ? `/api/stores/${store.id}/logo?v=${encodeURIComponent(store.logo_updated_at || store.logo_key)}`
+          : '',
+      };
+    }),
   });
 }
 

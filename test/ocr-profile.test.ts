@@ -7,12 +7,16 @@ test('OCR profiles normalize editable guidance safely', () => {
     enabled: true,
     headerSignatures: ['  Comercio Uno  ', 'Comercio Uno'],
     ticketNumberRegion: 'somewhere',
+    ticketNumberHelp: '  Busca el número debajo de Documento.  ',
+    ticketNumberExample: '  2026/123456.00123456  ',
     totalRegion: 'footer',
     instructions: '  Buscar el número junto a CAJA  ',
   });
   assert.equal(profile.enabled, true);
   assert.deepEqual(profile.headerSignatures, ['Comercio Uno']);
   assert.equal(profile.ticketNumberRegion, 'header');
+  assert.equal(profile.ticketNumberHelp, 'Busca el número debajo de Documento.');
+  assert.equal(profile.ticketNumberExample, '2026/123456.00123456');
   assert.equal(profile.totalRegion, 'footer');
   assert.equal(profile.instructions, 'Buscar el número junto a CAJA');
   assert.ok(profile.ignoredTotalLabels.includes('Subtotal'));
@@ -46,6 +50,8 @@ test('training evaluations generate merchant-specific OCR landmarks', () => {
   assert.equal(profile.sampleCount, 1);
   assert.ok(profile.headerSignatures.includes('B12345678'));
   assert.deepEqual(profile.ticketNumberLabels, ['Documento']);
+  assert.equal(profile.ticketNumberHelp, 'Busca el número identificado como «Documento» en la cabecera del ticket.');
+  assert.equal(profile.ticketNumberExample, 'A-98765');
   assert.deepEqual(profile.dateLabels, ['Fecha operación', 'Hora']);
   assert.deepEqual(profile.totalLabels, ['TOTAL A PAGAR']);
   assert.equal(profile.dateFormat, 'DD/MM/AAAA');
@@ -65,6 +71,26 @@ test('OCR profiles learn the majority Spanish date order across separators', () 
     [result('Fecha 06-08-2026'), result('Fecha 06/08/2026'), result('Fecha 2026-08-06')],
   );
   assert.equal(profile.dateFormat, 'DD/MM/AAAA');
+});
+
+test('OCR profiles preserve the Hiperdino ticket syntax without exposing a real number', () => {
+  const profile = generateStoreOcrProfile(
+    { name: 'Hiperdino' },
+    [{
+      matches: { store: true, ticketNumber: true },
+      receipt: {
+        isReceipt: true,
+        confidence: 0.98,
+        storeName: 'Hiperdino',
+        ticketNumber: '2026/934211.00100048',
+        evidence: { ticketNumberText: 'Documento\n2026/934211.00100048' },
+      },
+    }],
+  );
+  assert.deepEqual(profile.ticketNumberLabels, ['Documento']);
+  assert.equal(profile.ticketNumberHelp, 'Busca el número debajo de «Documento».');
+  assert.equal(profile.ticketNumberExample, '2026/123456.00123456');
+  assert.notEqual(profile.ticketNumberExample, '2026/934211.00100048');
 });
 
 test('OCR profiles ignore landmarks from samples matched to another merchant', () => {

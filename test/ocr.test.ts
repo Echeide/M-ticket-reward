@@ -324,6 +324,7 @@ test('OCR retries an incomplete reading with focused regions', async () => {
       ocrProfile: {
         version: 1, enabled: true, headerSignatures: ['DINOSOL SUPERMERCADOS'],
         ticketNumberLabels: ['Documento'], dateLabels: ['Fecha operación'],
+        ticketNumberHelp: '', ticketNumberExample: '',
         totalLabels: ['TOTAL COMPRA'], ignoredTotalLabels: ['Subtotal'],
         ticketNumberRegion: 'header', dateRegion: 'header', totalRegion: 'footer',
         dateFormat: 'DD/MM/AAAA', instructions: 'Ignorar el número de caja.', sampleCount: 3,

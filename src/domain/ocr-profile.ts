@@ -7,6 +7,8 @@ export type StoreOcrProfile = {
   enabled: boolean;
   headerSignatures: string[];
   ticketNumberLabels: string[];
+  ticketNumberHelp: string;
+  ticketNumberExample: string;
   dateLabels: string[];
   totalLabels: string[];
   ignoredTotalLabels: string[];
@@ -46,6 +48,8 @@ export function emptyStoreOcrProfile(): StoreOcrProfile {
     enabled: false,
     headerSignatures: [],
     ticketNumberLabels: [],
+    ticketNumberHelp: '',
+    ticketNumberExample: '',
     dateLabels: [],
     totalLabels: [],
     ignoredTotalLabels: ['Subtotal', 'Ahorro', 'Cambio', 'Efectivo entregado'],
@@ -66,6 +70,8 @@ export function normalizeStoreOcrProfile(value: unknown): StoreOcrProfile {
     enabled: input.enabled === true,
     headerSignatures: cleanList(input.headerSignatures, 20),
     ticketNumberLabels: cleanList(input.ticketNumberLabels, 20),
+    ticketNumberHelp: String(input.ticketNumberHelp || '').replace(/\s+/g, ' ').trim().slice(0, 240),
+    ticketNumberExample: String(input.ticketNumberExample || '').replace(/\s+/g, ' ').trim().slice(0, 160),
     dateLabels: cleanList(input.dateLabels, 20),
     totalLabels: cleanList(input.totalLabels, 20),
     ignoredTotalLabels: cleanList(input.ignoredTotalLabels ?? defaults.ignoredTotalLabels, 30),
@@ -76,6 +82,48 @@ export function normalizeStoreOcrProfile(value: unknown): StoreOcrProfile {
     instructions: String(input.instructions || '').trim().slice(0, 2_000),
     sampleCount: Math.max(0, Math.min(10_000, Number.parseInt(String(input.sampleCount || 0), 10) || 0)),
   };
+}
+
+function syntheticTicketNumberExample(value: string): string {
+  const source = String(value || '').trim().slice(0, 160);
+  let groupIndex = 0;
+  const example = source.replace(/\d+/g, (digits) => {
+    groupIndex += 1;
+    if (groupIndex === 1 && /^20\d{2}$/.test(digits)) return digits;
+    const leadingZeroCount = Math.min(digits.match(/^0+/)?.[0].length || 0, digits.length - 1);
+    const replacementLength = digits.length - leadingZeroCount;
+    const replacement = '1234567890'.repeat(Math.ceil(replacementLength / 10)).slice(0, replacementLength);
+    return `${'0'.repeat(leadingZeroCount)}${replacement}`;
+  });
+  if (!/\d/.test(source)) return '';
+  if (example !== source) return example;
+  return source.replace(/\d+/g, (digits) => {
+    const replacement = '9876543210'.repeat(Math.ceil(digits.length / 10));
+    return replacement.slice(0, digits.length);
+  });
+}
+
+function ticketNumberHelp(label: string, region: OcrProfileRegion): string {
+  if (!label) return '';
+  const locations: Record<OcrProfileRegion, string> = {
+    header: 'en la cabecera del ticket',
+    body: 'en la zona central del ticket',
+    footer: 'al final del ticket',
+    any: 'en el ticket',
+  };
+  return `Busca el número identificado como «${label}» ${locations[region]}.`;
+}
+
+function normalizedEvidencePart(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function ticketNumberIsBelowLabel(evidence: string, label: string, ticketNumber: string): boolean {
+  const lines = evidence.split(/\r?\n/).map((line) => normalizedEvidencePart(line)).filter(Boolean);
+  const normalizedLabel = normalizedEvidencePart(label);
+  const normalizedTicketNumber = normalizedEvidencePart(ticketNumber);
+  return lines.some((line, index) => line.includes(normalizedLabel)
+    && Boolean(lines[index + 1]?.includes(normalizedTicketNumber)));
 }
 
 function firstLabel(value: string, patterns: RegExp[]): string {
@@ -102,6 +150,8 @@ export function generateStoreOcrProfile(
 ): StoreOcrProfile {
   const headerSignatures = cleanList([store.name, ...(store.aliases || [])], 20);
   const ticketNumberLabels: string[] = [];
+  const ticketNumberHelpCandidates: string[] = [];
+  const ticketNumberExamples: string[] = [];
   const dateLabels: string[] = [];
   const totalLabels: string[] = [];
   const formats: string[] = [];
@@ -119,10 +169,17 @@ export function generateStoreOcrProfile(
     if (identityLine) headerSignatures.push(identityLine);
 
     if (result.matches?.ticketNumber === true) {
-      const label = firstLabel(receipt.evidence?.ticketNumberText || '', [
-        /\b((?:n(?:[º°o]|úm(?:ero)?)|documento|ticket|factura|recibo|transacci[oó]n|operaci[oó]n|folio)(?:\s+[^:#\n]{1,24})?)\s*[:#-]/i,
+      const ticketNumberEvidence = receipt.evidence?.ticketNumberText || '';
+      const label = firstLabel(ticketNumberEvidence, [
+        /\b((?:n(?:[º°o]|úm(?:ero)?)|documento|ticket|factura|recibo|transacci[oó]n|operaci[oó]n|folio)(?:[ \t]+[^:#\n]{1,24})?)[ \t]*(?::|#|-|\r?\n)[ \t]*(?=[A-Z0-9])/i,
       ]);
-      if (label) ticketNumberLabels.push(label);
+      if (label) {
+        ticketNumberLabels.push(label);
+        ticketNumberHelpCandidates.push(ticketNumberIsBelowLabel(
+          ticketNumberEvidence, label, receipt.ticketNumber || '',
+        ) ? `Busca el número debajo de «${label}».` : ticketNumberHelp(label, 'header'));
+      }
+      if (receipt.ticketNumber) ticketNumberExamples.push(syntheticTicketNumberExample(receipt.ticketNumber));
     }
     if (result.matches?.purchaseDate === true) {
       const evidence = receipt.evidence?.purchaseDateText || '';
@@ -154,10 +211,14 @@ export function generateStoreOcrProfile(
     .sort((left, right) => right[1] - left[1]
       || preferredFormats.indexOf(left[0]) - preferredFormats.indexOf(right[0]))[0]?.[0]
     || 'DD/MM/AAAA';
+  const normalizedTicketNumberLabels = cleanList(ticketNumberLabels, 20);
   const profile = normalizeStoreOcrProfile({
     enabled: false,
     headerSignatures,
-    ticketNumberLabels,
+    ticketNumberLabels: normalizedTicketNumberLabels,
+    ticketNumberHelp: ticketNumberHelpCandidates[0]
+      || ticketNumberHelp(normalizedTicketNumberLabels[0] || '', 'header'),
+    ticketNumberExample: ticketNumberExamples[0] || '',
     dateLabels,
     totalLabels,
     ignoredTotalLabels: ['Subtotal', 'Ahorro', 'Cambio', 'Efectivo entregado', 'Total impuestos'],

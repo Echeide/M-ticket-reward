@@ -217,6 +217,8 @@
               <label class="ocr-profile-wide">Firmas visibles del comercio<textarea id="ocr-profile-signatures" rows="3" placeholder="Nombre fiscal, CIF o texto inequívoco de cabecera; uno por línea"></textarea></label>
               <label>Etiquetas del número<textarea id="ocr-profile-ticket-labels" rows="3" placeholder="Documento&#10;Nº operación"></textarea></label>
               <label>Zona del número<select id="ocr-profile-ticket-region"><option value="header">Cabecera</option><option value="body">Zona central</option><option value="footer">Pie</option><option value="any">Cualquier zona</option></select></label>
+              <label>Ayuda para el usuario<input id="ocr-profile-ticket-help" maxlength="240" placeholder="Busca el número debajo de «Documento»." /></label>
+              <label>Ejemplo de numeración<input id="ocr-profile-ticket-example" maxlength="160" placeholder="2026/123456.00123456" /><small>Usa un ejemplo ficticio con el formato real; nunca un número de ticket válido.</small></label>
               <label>Etiquetas de fecha y hora<textarea id="ocr-profile-date-labels" rows="3" placeholder="Fecha operación&#10;Hora"></textarea></label>
               <label>Zona de fecha/hora y formato de fecha<select id="ocr-profile-date-region"><option value="header">Cabecera</option><option value="body">Zona central</option><option value="footer">Pie</option><option value="any">Cualquier zona</option></select><input id="ocr-profile-date-format" maxlength="40" placeholder="DD/MM/AAAA" /></label>
               <label>Etiquetas del total<textarea id="ocr-profile-total-labels" rows="3" placeholder="TOTAL A PAGAR&#10;TOTAL COMPRA"></textarea></label>
@@ -312,6 +314,6 @@
         <div id="ticket-user-detail-body"></div>
       </div>
     </dialog>
-    <script type="module" src="/backoffice.js?v=assisted-scan-1"></script>
+    <script type="module" src="/backoffice.js?v=ticket-hints-1"></script>
   </body>
 </html>

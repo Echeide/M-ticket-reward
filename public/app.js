@@ -75,6 +75,15 @@ function scanStoreRequired() {
   return state.appSettings['scan.assisted.requireStore'] !== 'false';
 }
 
+function updateScanTicketNumberHint() {
+  const input = document.querySelector('#scan-ticket-number');
+  const help = document.querySelector('#scan-ticket-number-help');
+  const storeId = document.querySelector('#scan-store').value;
+  const hint = state.stores.find((store) => store.id === storeId)?.ticketNumberHint;
+  input.placeholder = hint?.example ? `Ej.: ${hint.example}` : 'Tal como aparece en el ticket';
+  help.textContent = hint?.text || 'Puede aparecer como Documento, Ticket, Factura, Recibo o Folio.';
+}
+
 function prepareScanDetailsForm() {
   const form = document.querySelector('#scan-details-form');
   const select = document.querySelector('#scan-store');
@@ -86,6 +95,7 @@ function prepareScanDetailsForm() {
   document.querySelector('#scan-store-field').hidden = !requireStore;
   select.required = requireStore;
   if (!requireStore) select.value = '';
+  updateScanTicketNumberHint();
   document.querySelector('#scan-details-error').textContent = '';
   return form;
 }
@@ -794,6 +804,7 @@ document.querySelectorAll('[data-ticket-input]').forEach((input) => {
   });
 });
 document.querySelector('#open-scan-flow').addEventListener('click', openScanFlow);
+document.querySelector('#scan-store').addEventListener('change', updateScanTicketNumberHint);
 document.querySelector('#scan-details-form').addEventListener('submit', continueToCamera);
 document.querySelector('#close-scan-details').addEventListener('click', () => closeScanFlow(true));
 document.querySelector('#cancel-scan-details').addEventListener('click', () => closeScanFlow(true));

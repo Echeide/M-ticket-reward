@@ -796,6 +796,8 @@ function renderOcrProfile(profile = {}) {
   document.querySelector('#ocr-profile-enabled').checked = profile.enabled === true;
   document.querySelector('#ocr-profile-signatures').value = profileLines(profile.headerSignatures);
   document.querySelector('#ocr-profile-ticket-labels').value = profileLines(profile.ticketNumberLabels);
+  document.querySelector('#ocr-profile-ticket-help').value = profile.ticketNumberHelp || '';
+  document.querySelector('#ocr-profile-ticket-example').value = profile.ticketNumberExample || '';
   document.querySelector('#ocr-profile-date-labels').value = profileLines(profile.dateLabels);
   document.querySelector('#ocr-profile-total-labels').value = profileLines(profile.totalLabels);
   document.querySelector('#ocr-profile-ignore-labels').value = profileLines(profile.ignoredTotalLabels);
@@ -821,6 +823,8 @@ function ocrProfileFormValue() {
     enabled: document.querySelector('#ocr-profile-enabled').checked,
     headerSignatures: linesFromProfileField('#ocr-profile-signatures'),
     ticketNumberLabels: linesFromProfileField('#ocr-profile-ticket-labels'),
+    ticketNumberHelp: document.querySelector('#ocr-profile-ticket-help').value.trim(),
+    ticketNumberExample: document.querySelector('#ocr-profile-ticket-example').value.trim(),
     dateLabels: linesFromProfileField('#ocr-profile-date-labels'),
     totalLabels: linesFromProfileField('#ocr-profile-total-labels'),
     ignoredTotalLabels: linesFromProfileField('#ocr-profile-ignore-labels'),

@@ -212,7 +212,7 @@
         </label>
         <label>Número de documento
           <input id="scan-ticket-number" name="ticketNumber" maxlength="160" autocomplete="off" required placeholder="Tal como aparece en el ticket" />
-          <small>Puede aparecer como Documento, Ticket, Factura, Recibo o Folio.</small>
+          <small id="scan-ticket-number-help">Puede aparecer como Documento, Ticket, Factura, Recibo o Folio.</small>
         </label>
         <label>Total de compra
           <span class="money-field"><input id="scan-total" name="total" type="number" inputmode="decimal" min="0.01" max="1000000" step="0.01" required placeholder="0,00" /><span>€</span></span>
@@ -227,6 +227,6 @@
         </div>
       </form>
     </dialog>
-    <script type="module" src="/app.js?v=assisted-scan-1"></script>
+    <script type="module" src="/app.js?v=ticket-hints-1"></script>
   </body>
 </html>
