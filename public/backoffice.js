@@ -49,6 +49,10 @@ const reasonLabels = {
   OCR_UNVERIFIED_DATE: 'La fecha no coincide con su evidencia visible.',
   OCR_MISSING_TOTAL: 'Falta el importe total.',
   OCR_UNVERIFIED_TOTAL: 'El importe no coincide con su evidencia visible.',
+  DECLARED_STORE_MISMATCH: 'El comercio reconocido no coincide con el indicado por el usuario.',
+  DECLARED_STORE_UNVERIFIED: 'El comercio indicado no se ha podido confirmar en la cabecera visible.',
+  DECLARED_TICKET_NUMBER_MISMATCH: 'El número reconocido no coincide con el indicado por el usuario.',
+  DECLARED_TOTAL_MISMATCH: 'El total reconocido no coincide con el indicado por el usuario.',
   NOT_A_RECEIPT: 'La imagen no parece un ticket de compra.',
   DUPLICATE: 'El ticket ya había sido utilizado.',
   DUPLICATE_IMAGE: 'La misma imagen ya había sido enviada.',
@@ -435,6 +439,9 @@ async function loadSettings() {
   document.querySelector('#daily-store-ticket-limit').value = state.settings.find((item) => item.key === 'limits.dailyTicketsPerUserStore')?.value || '3';
   document.querySelector('#total-upload-limit').value = state.settings.find((item) => item.key === 'limits.totalUploadsPerUser')?.value || '30';
   document.querySelector('#ban-score-threshold').value = state.settings.find((item) => item.key === 'limits.banScoreThreshold')?.value || '6';
+  document.querySelector('#assisted-scan-enabled').checked = state.settings.find((item) => item.key === 'scan.assisted.enabled')?.value !== 'false';
+  document.querySelector('#assisted-scan-require-store').checked = state.settings.find((item) => item.key === 'scan.assisted.requireStore')?.value !== 'false';
+  document.querySelector('#assisted-scan-require-store').disabled = isOperator() || !document.querySelector('#assisted-scan-enabled').checked;
   document.querySelector('#manager-email').textContent = payload.manager || '';
   const select = document.querySelector('#setting-select');
   const previous = select.value;
@@ -496,6 +503,26 @@ async function saveParticipationLimits(event) {
     showNotice('Límites de participación actualizados.');
   } catch (error) {
     errorNode.textContent = error instanceof Error ? error.message : 'No se pudieron guardar los límites';
+  } finally { button.disabled = false; }
+}
+
+async function saveScanFlowSettings(event) {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector('button[type="submit"]');
+  const errorNode = document.querySelector('#scan-flow-settings-error');
+  button.disabled = true;
+  errorNode.textContent = '';
+  try {
+    await request('/api/admin/settings/scan-flow', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        enabled: String(document.querySelector('#assisted-scan-enabled').checked),
+        requireStore: String(document.querySelector('#assisted-scan-require-store').checked),
+      }),
+    });
+    await loadSettings();
+    showNotice('Flujo de escaneo actualizado.');
+  } catch (error) {
+    errorNode.textContent = error instanceof Error ? error.message : 'No se pudo guardar el flujo de escaneo';
   } finally { button.disabled = false; }
 }
 
@@ -1248,6 +1275,9 @@ async function select(id, suppliedReceipt = null) {
   const canConfirmFraud = receipt.review.status !== 'FRAUD' && (receipt.status === 'AUTO_REJECTED' ||
     (receipt.status === 'REWARD_FAILED' && !receipt.reward.resultId));
   const reasons = Array.isArray(receipt.reasons) ? receipt.reasons : [];
+  const declared = receipt.declared || {};
+  const declaredStore = state.stores.find((store) => store.id === declared.storeId);
+  const hasDeclaration = Boolean(declared.ticketNumber || declared.totalCents || declared.storeId);
   const activeStoreOptions = state.stores.filter((store) => store.active).map((store) =>
     `<option value="${escapeHtml(store.id)}" ${store.id === receipt.fields.storeId ? 'selected' : ''}>${escapeHtml(store.name)}</option>`).join('');
   const panel = document.querySelector('#review-panel');
@@ -1273,6 +1303,7 @@ async function select(id, suppliedReceipt = null) {
       <p class="eyebrow">${escapeHtml(receipt.publicId)}</p>
       <h2>${escapeHtml(receipt.fields.storeName || 'Sin tienda')}</h2>
       <dl><div><dt>Usuario</dt><dd>${escapeHtml(receipt.user.displayName || receipt.user.subject)}</dd></div><div class="lookup-code-field"><dt>Código de búsqueda</dt><dd>${escapeHtml(receipt.user.lookupCode || 'Histórico sin código')}</dd></div><div><dt>Número</dt><dd>${escapeHtml(receipt.fields.ticketNumber || (receipt.fields.purchaseDateTime ? 'Sin número; validado por hora' : '—'))}</dd></div><div><dt>Fecha y hora</dt><dd>${escapeHtml(formatSpanishDateTime(receipt.fields.purchaseDateTime || receipt.fields.purchaseDate))}</dd></div><div><dt>Importe</dt><dd>${formatMoney(receipt.fields.totalCents)}</dd></div><div><dt>Estado</dt><dd>${escapeHtml(receiptStatusLabel(receipt))}</dd></div></dl>
+      ${hasDeclaration ? `<section class="declared-ticket-data"><strong>Datos indicados antes de fotografiar</strong><dl><div><dt>Comercio</dt><dd>${escapeHtml(declaredStore?.name || (declared.storeId ? 'Comercio ya no disponible' : 'No solicitado'))}</dd></div><div><dt>Número</dt><dd>${escapeHtml(declared.ticketNumber || '—')}</dd></div><div><dt>Total</dt><dd>${formatMoney(declared.totalCents || 0)}</dd></div></dl></section>` : ''}
       ${reasons.length ? `<div class="review-reasons"><strong>Comprobación automática</strong><ul>${reasons.map((reason) => `<li>${escapeHtml(reasonLabels[reason] || reason)}</li>`).join('')}</ul></div>` : ''}
       ${canApproveManually ? `<div class="manual-correction"><strong>Corrección manual</strong><label>Comercio<select id="manual-store"><option value="">Selecciona un comercio</option>${activeStoreOptions}</select></label><label>Número de ticket <small>o indica la hora si no existe</small><input id="manual-ticket-number" value="${escapeHtml(receipt.fields.ticketNumber)}" /></label><label>Fecha<input id="manual-purchase-date" type="date" value="${escapeHtml(receipt.fields.purchaseDate)}" /></label><label>Hora de compra<input id="manual-purchase-time" type="time" value="${escapeHtml((receipt.fields.purchaseDateTime || '').slice(11, 16))}" /></label><label>Importe (€)<input id="manual-total" type="number" min="0.01" step="0.01" value="${(receipt.fields.totalCents / 100).toFixed(2)}" /></label></div>` : ''}
       <label>Nota de revisión<textarea id="review-reason" rows="3" placeholder="${canApproveManually ? 'Obligatoria para validar manualmente' : `Opcional al marcar como revisado${canRevoke ? '; obligatoria para retirar puntos' : ''}`}"></textarea></label>
@@ -1613,6 +1644,10 @@ document.querySelector('#setting-plain-value').addEventListener('input', updateS
 document.querySelector('#setting-rich-value').addEventListener('input', updateSettingPreview);
 document.querySelector('#setting-form').addEventListener('submit', saveSetting);
 document.querySelector('#participation-limits-form').addEventListener('submit', saveParticipationLimits);
+document.querySelector('#scan-flow-settings-form').addEventListener('submit', saveScanFlowSettings);
+document.querySelector('#assisted-scan-enabled').addEventListener('change', (event) => {
+  document.querySelector('#assisted-scan-require-store').disabled = !event.currentTarget.checked;
+});
 document.querySelector('#validation-period-form').addEventListener('submit', saveValidationPeriod);
 document.querySelector('#admin-user-form').addEventListener('submit', saveAdminUser);
 document.querySelector('[name="review"]').value = 'PENDING';

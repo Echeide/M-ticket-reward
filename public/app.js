@@ -8,6 +8,7 @@ const state = {
   receipt: null,
   stores: [],
   appSettings: {},
+  pendingDeclaration: null,
   canUpload: true,
   pollGeneration: 0,
 };
@@ -64,6 +65,79 @@ function applyHomeSettings(settings) {
   if (typeof settings['home.privacyNote'] === 'string') {
     renderFormattedText(document.querySelector('#home-privacy-note'), settings['home.privacyNote']);
   }
+}
+
+function assistedScanEnabled() {
+  return state.appSettings['scan.assisted.enabled'] !== 'false';
+}
+
+function scanStoreRequired() {
+  return state.appSettings['scan.assisted.requireStore'] !== 'false';
+}
+
+function prepareScanDetailsForm() {
+  const form = document.querySelector('#scan-details-form');
+  const select = document.querySelector('#scan-store');
+  const previousStore = select.value;
+  select.replaceChildren(new Option('Selecciona un establecimiento', ''));
+  for (const store of state.stores) select.add(new Option(store.name, store.id));
+  if ([...select.options].some((option) => option.value === previousStore)) select.value = previousStore;
+  const requireStore = scanStoreRequired();
+  document.querySelector('#scan-store-field').hidden = !requireStore;
+  select.required = requireStore;
+  if (!requireStore) select.value = '';
+  document.querySelector('#scan-details-error').textContent = '';
+  return form;
+}
+
+function openScanFlow() {
+  if (!state.canUpload) return showUserBan();
+  const input = document.querySelector('#ticket-input');
+  input.value = '';
+  if (!assistedScanEnabled()) {
+    state.pendingDeclaration = null;
+    input.click();
+    return;
+  }
+  const dialog = document.querySelector('#scan-details-dialog');
+  prepareScanDetailsForm();
+  dialog.showModal();
+  requestAnimationFrame(() => {
+    const firstInput = scanStoreRequired()
+      ? document.querySelector('#scan-store')
+      : document.querySelector('#scan-ticket-number');
+    firstInput.focus();
+  });
+}
+
+function closeScanFlow(reset = false) {
+  const dialog = document.querySelector('#scan-details-dialog');
+  if (dialog.open) dialog.close();
+  if (reset) {
+    document.querySelector('#scan-details-form').reset();
+    state.pendingDeclaration = null;
+  }
+}
+
+function continueToCamera(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (!form.reportValidity()) return;
+  const totalCents = Math.round(Number(document.querySelector('#scan-total').value) * 100);
+  const ticketNumber = document.querySelector('#scan-ticket-number').value.trim();
+  const storeId = scanStoreRequired() ? document.querySelector('#scan-store').value : '';
+  const errorNode = document.querySelector('#scan-details-error');
+  if (!ticketNumber || ticketNumber.length < 3) {
+    errorNode.textContent = 'Introduce el número de documento tal como aparece en el ticket.';
+    return;
+  }
+  if (!Number.isInteger(totalCents) || totalCents <= 0) {
+    errorNode.textContent = 'Introduce un importe total válido.';
+    return;
+  }
+  state.pendingDeclaration = { storeId, ticketNumber, totalCents };
+  closeScanFlow();
+  document.querySelector('#ticket-input').click();
 }
 
 const RECEIPT_STATUSES = {
@@ -290,7 +364,13 @@ async function upload(file) {
   const optimizedFile = await optimizeTicketFile(file).catch(() => file);
   const form = new FormData();
   form.append('ticket', optimizedFile);
+  if (state.pendingDeclaration) {
+    form.append('storeId', state.pendingDeclaration.storeId);
+    form.append('ticketNumber', state.pendingDeclaration.ticketNumber);
+    form.append('totalCents', String(state.pendingDeclaration.totalCents));
+  }
   const payload = await api('/api/receipts', { method: 'POST', body: form });
+  state.pendingDeclaration = null;
   state.receiptId = payload.receiptId;
   sessionStorage.setItem('ticket-receipt-id', state.receiptId);
   if (payload.status === 'DUPLICATE') return show('duplicate');
@@ -689,6 +769,7 @@ function retry() {
   state.receiptId = '';
   sessionStorage.removeItem('ticket-receipt-id');
   state.receipt = null;
+  state.pendingDeclaration = null;
   document.querySelectorAll('[data-ticket-input]').forEach((input) => { input.value = ''; });
   show(state.sessionToken ? (state.canUpload ? 'welcome' : 'user-banned') : 'connection-error');
 }
@@ -711,6 +792,13 @@ document.querySelectorAll('[data-ticket-input]').forEach((input) => {
     const file = event.target.files?.[0];
     if (file) upload(file).catch(showError);
   });
+});
+document.querySelector('#open-scan-flow').addEventListener('click', openScanFlow);
+document.querySelector('#scan-details-form').addEventListener('submit', continueToCamera);
+document.querySelector('#close-scan-details').addEventListener('click', () => closeScanFlow(true));
+document.querySelector('#cancel-scan-details').addEventListener('click', () => closeScanFlow(true));
+document.querySelector('#scan-details-dialog').addEventListener('click', (event) => {
+  if (event.target === event.currentTarget) closeScanFlow(true);
 });
 document.querySelector('#confirm-ocr').addEventListener('click', () => confirmReceipt().catch(showError));
 document.querySelectorAll('[data-action="retry"]').forEach((button) => button.addEventListener('click', retry));

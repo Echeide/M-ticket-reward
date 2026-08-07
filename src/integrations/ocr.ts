@@ -25,6 +25,13 @@ export type OcrReadResult = {
   verificationIssues: string[];
 };
 
+export type ReceiptOcrHints = {
+  storeName?: string;
+  ticketNumber: string;
+  totalCents: number;
+  currency?: string;
+};
+
 type ReceiptPreflight = {
   decision: 'TICKET' | 'NO_TICKET' | 'UNCERTAIN';
   durationMs: number;
@@ -346,7 +353,23 @@ function authorizedStoreReference(stores: StoreIdentity[]): string {
   return `[${entries.join(',')}]`;
 }
 
-function extractionPrompt(storeReference: string, retry: boolean): string {
+function declaredReceiptReference(hints?: ReceiptOcrHints): string {
+  if (!hints) return '';
+  return `
+
+Datos declarados por el usuario antes de fotografiar el ticket:
+${JSON.stringify({
+    ...(hints.storeName ? { storeName: hints.storeName } : {}),
+    ticketNumber: hints.ticketNumber,
+    totalCents: hints.totalCents,
+    currency: hints.currency || 'EUR',
+  })}
+Son candidatos que debes comprobar contra la imagen, no evidencia ni valores garantizados. Úsalos para
+localizar mejor las líneas correspondientes, pero devuelve siempre lo que esté literalmente impreso. Si
+la declaración no coincide con la fotografía, conserva el valor visible y su transcripción literal.`;
+}
+
+function extractionPrompt(storeReference: string, retry: boolean, hints?: ReceiptOcrHints): string {
   return `Analiza la imagen como un ticket de compra y devuelve exclusivamente un objeto JSON válido con:
 isReceipt (boolean), confidence (0..1), storeName, headerText, ticketNumber,
 ticketNumberText, purchaseDate (YYYY-MM-DD), purchaseDateTime (YYYY-MM-DDTHH:mm o cadena vacía),
@@ -380,10 +403,10 @@ Reglas para storeName:
 - Si coincide claramente, devuelve exactamente su name; sin evidencia visible, déjalo vacío.
 
 Usa exclusivamente la fecha impresa. El total es el importe final pagado, no subtotal, ahorro ni efectivo entregado.
-Expresa el importe en céntimos y transcribe en rawText las líneas relevantes de cabecera, documento, fecha y total.`;
+Expresa el importe en céntimos y transcribe en rawText las líneas relevantes de cabecera, documento, fecha y total.${declaredReceiptReference(hints)}`;
 }
 
-function regionPrompt(storeReference: string, region: 'header' | 'totals'): string {
+function regionPrompt(storeReference: string, region: 'header' | 'totals', hints?: ReceiptOcrHints): string {
   const focus = region === 'header'
     ? `Esta imagen muestra la CABECERA y primera parte del ticket. Localiza el comercio, la línea de
 DOCUMENTO/TICKET/FACTURA y la FECHA/HORA. ticketNumber debe ser el valor completo que aparece después
@@ -401,7 +424,7 @@ totalCents (entero), totalText, currency y rawText.
 Los campos *Text deben ser transcripciones literales de la imagen. Deja vacíos los valores que no
 aparezcan en este recorte; no deduzcas ni inventes caracteres. Interpreta las fechas numéricas en orden
 español día/mes/año y devuelve purchaseDate como YYYY-MM-DD. Conserva la hora solo si aparece impresa,
-normalizada a HH:mm. Comercios autorizados: ${storeReference}.`;
+normalizada a HH:mm. Comercios autorizados: ${storeReference}.${declaredReceiptReference(hints)}`;
 }
 
 function mergeRegionResults(
@@ -431,6 +454,7 @@ export async function readReceipt(
   bytes: ArrayBuffer,
   contentType = 'image/jpeg',
   authorizedStores: StoreIdentity[] = [],
+  hints?: ReceiptOcrHints,
 ): Promise<OcrReadResult> {
   if (env.OCR_MODE === 'mock') {
     const today = new Date().toISOString().slice(0, 10);
@@ -478,7 +502,7 @@ export async function readReceipt(
   }
   const preflightCalls = preflight ? 1 : 0;
   let response = await provider.extract({
-    bytes, contentType, prompt: extractionPrompt(storeReference, false),
+    bytes, contentType, prompt: extractionPrompt(storeReference, false, hints),
   });
   let receipt = preferVerifiedIdentity(normalizeOcr(parseJsonObject(response.text)));
   let issues = verifyOcr(receipt);
@@ -500,14 +524,19 @@ export async function readReceipt(
 
   if (receipt.confidence < 0.75 || !receipt.isReceipt || issues.length > 0) {
     const matchedStore = findMatchingStore(authorizedStores, receipt);
-    const focusedStoreReference = authorizedStoreReference(matchedStore ? [matchedStore] : authorizedStores);
+    const declaredStore = hints?.storeName
+      ? authorizedStores.find((store) => store.name === hints.storeName)
+      : undefined;
+    const focusedStoreReference = authorizedStoreReference(
+      matchedStore ? [matchedStore] : declaredStore ? [declaredStore] : authorizedStores,
+    );
     const regions = await prepareOcrRegions(env, bytes);
     const [headerResponse, totalsResponse] = await Promise.all([
       provider.extract({
-        bytes: regions.header, contentType: 'image/webp', prompt: regionPrompt(focusedStoreReference, 'header'),
+        bytes: regions.header, contentType: 'image/webp', prompt: regionPrompt(focusedStoreReference, 'header', hints),
       }),
       provider.extract({
-        bytes: regions.totals, contentType: 'image/webp', prompt: regionPrompt(focusedStoreReference, 'totals'),
+        bytes: regions.totals, contentType: 'image/webp', prompt: regionPrompt(focusedStoreReference, 'totals', hints),
       }),
     ]);
     receipt = preferVerifiedIdentity(mergeRegionResults(

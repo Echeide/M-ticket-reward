@@ -3,10 +3,13 @@ import { buildTicketFingerprint } from './domain/deduplication';
 import {
   type OcrReceipt,
   type ReceiptFields,
+  type ReceiptDeclaration,
   canaryDateTimeToTimestamp,
   canReprocessReceipt,
+  compareReceiptDeclaration,
   isValidIsoDate,
   isValidPurchaseDateTime,
+  normalizeReceiptDeclaration,
   receiptStatusAfterOcr,
   validateReceiptAutomatically,
 } from './domain/receipt';
@@ -20,7 +23,7 @@ import {
   rewardMaxAttempts,
   rewardRetryDelaySeconds,
 } from './domain/reward-delivery';
-import { findMatchingStore, normalizeStoreInput } from './domain/store';
+import { findMatchingStore, normalizeStoreInput, storeHasVisibleEvidence } from './domain/store';
 import {
   buildTrainingOcrCatalog,
   compareTrainingResult,
@@ -53,6 +56,7 @@ import {
 import {
   APP_SETTING_DEFINITIONS,
   appSettingsWithDefaults,
+  booleanAppSetting,
   numericAppSetting,
   normalizeAppSettingValue,
   settingDefinition,
@@ -113,6 +117,9 @@ type ReceiptRow = {
   ticket_number: string | null;
   purchase_date: string | null;
   total_cents: number | null;
+  declared_store_id: string | null;
+  declared_ticket_number: string | null;
+  declared_total_cents: number | null;
   currency: string;
   ticket_fingerprint: string | null;
   ocr_payload: OcrReceipt | null;
@@ -331,6 +338,12 @@ function receiptView(row: ReceiptRow, includeManagerFields = false) {
       reviewedBy: row.reviewed_by,
     },
     ...(includeManagerFields ? {
+      declared: {
+        storeId: row.declared_store_id || '',
+        ticketNumber: row.declared_ticket_number || '',
+        totalCents: row.declared_total_cents || 0,
+        currency: 'EUR',
+      },
       user: {
         subject: row.user_ref,
         lookupCode: row.user_lookup_code || row.rtales_lookup_code_snapshot || '',
@@ -718,6 +731,36 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
   const maximumBytes = Math.min(15 * 1024 * 1024, Number(env.MAX_TICKET_BYTES) || 10 * 1024 * 1024);
   if (image.size <= 0 || image.size > maximumBytes) return error('La imagen supera el tamaño permitido', 413);
 
+  const uploadSettings = await withDatabase(env, loadAppSettings);
+  let declaration: ReceiptDeclaration | null = null;
+  if (booleanAppSetting(uploadSettings, 'scan.assisted.enabled')) {
+    try {
+      declaration = normalizeReceiptDeclaration({
+        storeId: form.get('storeId'),
+        ticketNumber: form.get('ticketNumber'),
+        totalCents: form.get('totalCents'),
+      }, booleanAppSetting(uploadSettings, 'scan.assisted.requireStore'));
+    } catch (caught) {
+      const messages: Record<string, string> = {
+        DECLARED_STORE_REQUIRED: 'Selecciona el establecimiento del ticket',
+        DECLARED_STORE_INVALID: 'El establecimiento seleccionado no es válido',
+        DECLARED_TICKET_NUMBER_INVALID: 'Introduce un número de documento válido',
+        DECLARED_TOTAL_INVALID: 'Introduce un importe total válido',
+      };
+      return error(messages[caught instanceof Error ? caught.message : ''] || 'Revisa los datos del ticket', 400);
+    }
+    if (declaration.storeId) {
+      const selected = await withDatabase(env, async (client) => {
+        const result = await client.query<Pick<StoreRow, 'id' | 'name'>>(
+          'SELECT id, name FROM stores WHERE id = $1 AND active = TRUE LIMIT 1', [declaration!.storeId],
+        );
+        return result.rows[0];
+      });
+      if (!selected) return error('El establecimiento seleccionado no está autorizado', 400);
+      declaration.storeName = selected.name;
+    }
+  }
+
   const originalBytes = await image.arrayBuffer();
   const storedImage = await optimizeTicketImage(env, originalBytes, image.type);
   const digest = await sha256Hex(storedImage.bytes);
@@ -756,8 +799,9 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
       `INSERT INTO receipts
          (id, public_id, session_id, user_ref, image_key, image_sha256,
           image_content_type, image_size, status, validation_reasons,
-          rtales_lookup_code_snapshot, external_user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)`,
+          rtales_lookup_code_snapshot, external_user_id, declared_store_id,
+          declared_ticket_number, declared_total_cents)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15)`,
       [
         receiptId,
         ticketPublicId,
@@ -771,6 +815,9 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
         JSON.stringify(existing.rowCount ? ['DUPLICATE_IMAGE'] : []),
         session.rtales_lookup_code,
         session.external_user_id,
+        declaration?.storeId || null,
+        declaration?.ticketNumber || null,
+        declaration?.totalCents || null,
       ],
     );
       return Boolean(existing.rowCount);
@@ -1077,13 +1124,14 @@ async function enqueueRewardOutbox(env: Env, receiptId: string, outboxId: string
 
 async function processOcr(env: Env, receiptId: string): Promise<void> {
   const receipt = await withDatabase(env, async (client) => {
-    const result = await client.query<Pick<ReceiptRow, 'id' | 'public_id' | 'external_user_id' | 'session_id' | 'user_ref' | 'image_key' | 'image_content_type' | 'status'>>(
+    const result = await client.query<Pick<ReceiptRow, 'id' | 'public_id' | 'external_user_id' | 'session_id' | 'user_ref' | 'image_key' | 'image_content_type' | 'status' | 'declared_store_id' | 'declared_ticket_number' | 'declared_total_cents'>>(
       `UPDATE receipts SET status = 'OCR_PROCESSING', ocr_started_at = NOW(),
           ocr_completed_at = NULL,
           ocr_job_attempt_count = ocr_job_attempt_count + 1,
           updated_at = NOW()
         WHERE id = $1 AND status IN ('OCR_QUEUED', 'OCR_PROCESSING')
-        RETURNING id, public_id, external_user_id, session_id, user_ref, image_key, image_content_type, status`,
+        RETURNING id, public_id, external_user_id, session_id, user_ref, image_key, image_content_type,
+          status, declared_store_id, declared_ticket_number, declared_total_cents`,
       [receiptId],
     );
     return result.rows[0];
@@ -1104,7 +1152,23 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
     );
     return result.rows.map(storeIdentity);
   });
-  const ocrResult = await readReceipt(env, ocrBytes, receipt.image_content_type || 'image/webp', stores);
+  const declaredStore = stores.find((store) => store.id === receipt.declared_store_id);
+  const declaration = receipt.declared_ticket_number && receipt.declared_total_cents
+    ? {
+        storeId: receipt.declared_store_id || '',
+        storeName: declaredStore?.name,
+        ticketNumber: receipt.declared_ticket_number,
+        totalCents: receipt.declared_total_cents,
+        currency: 'EUR',
+      } satisfies ReceiptDeclaration
+    : null;
+  const ocrResult = await readReceipt(
+    env,
+    ocrBytes,
+    receipt.image_content_type || 'image/webp',
+    stores,
+    declaration || undefined,
+  );
   const ocr = ocrResult.receipt;
   let rewardOutboxId = '';
   let completedStatus = '';
@@ -1121,24 +1185,34 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
       currency: /^[A-Z]{3}$/.test(ocr.currency || '') ? ocr.currency! : 'EUR',
     };
     const fingerprint = ocr.isReceipt ? buildTicketFingerprint(fields) : null;
-    if (ocrResult.verificationIssues.length > 0) {
+    const declarationIssues = ocr.isReceipt && declaration
+      ? compareReceiptDeclaration(declaration, fields)
+      : [];
+    if (
+      ocr.isReceipt && declaration?.storeId && declaredStore &&
+      fields.storeId === declaration.storeId && !storeHasVisibleEvidence(declaredStore, ocr)
+    ) declarationIssues.push('DECLARED_STORE_UNVERIFIED');
+    if (ocrResult.verificationIssues.length > 0 || declarationIssues.length > 0) {
       const reasons = [
         'OCR_VERIFICATION_REQUIRED',
         ...ocrResult.verificationIssues.map((issue) => `OCR_${issue}`),
+        ...declarationIssues,
       ];
+      completedStatus = 'REWARD_FAILED';
       await client.query(
         `UPDATE receipts SET status = 'REWARD_FAILED', store_id = $2, store_name = $3,
            ticket_number = $4, purchase_date = $5, total_cents = $6, currency = $7,
            ticket_fingerprint = NULL, ocr_payload = $8::jsonb, ocr_confidence = $9,
            ocr_provider = $10, ocr_model = $11, ocr_attempt_count = $12,
-           ocr_duration_ms = $13, ocr_completed_at = NOW(), ocr_last_error = NULL, risk_score = 0,
+           ocr_duration_ms = $13, ocr_completed_at = NOW(), ocr_last_error = NULL, risk_score = $15,
            validation_reasons = $14::jsonb, review_status = 'PENDING',
            reviewed_at = NULL, reviewed_by = NULL, updated_at = NOW()
          WHERE id = $1`,
         [receiptId, selectedStore?.id || null, fields.storeName || null,
           fields.ticketNumber || null, fields.purchaseDate || null, fields.totalCents || null,
           fields.currency, JSON.stringify(ocr), ocr.confidence, ocrResult.provider,
-          ocrResult.model, ocrResult.attemptCount, ocrResult.durationMs, JSON.stringify(reasons)],
+          ocrResult.model, ocrResult.attemptCount, ocrResult.durationMs, JSON.stringify(reasons),
+          Math.min(100, declarationIssues.length * 25)],
       );
       return;
     }
@@ -1585,10 +1659,11 @@ function csvCell(value: unknown): string {
 async function handleAdminCsv(request: Request, env: Env): Promise<Response> {
   if (!managerIdentity(request, env)) return error('Acceso de gestor requerido', 401);
   const rows = await adminRows(env, new URL(request.url));
-  const header = ['ID', 'Usuario', 'Código búsqueda', 'Correo', 'Subject Rtales', 'Espacio', 'Instalación', 'Estado', 'Revisión', 'Tienda', 'Número', 'Fecha compra', 'Importe', 'Moneda', 'Puntos', 'Riesgo', 'Creado'];
+  const header = ['ID', 'Usuario', 'Código búsqueda', 'Correo', 'Subject Rtales', 'Espacio', 'Instalación', 'Estado', 'Revisión', 'Tienda', 'Número', 'Fecha compra', 'Importe', 'Moneda', 'Comercio declarado', 'Número declarado', 'Importe declarado', 'Puntos', 'Riesgo', 'Creado'];
   const lines = rows.map((row) => [row.public_id, row.user_display_name, row.user_lookup_code, row.user_email,
     row.user_ref, row.user_space_code, row.user_installation_id, row.status, row.review_status, row.store_name,
-    row.ticket_number, row.purchase_date, row.total_cents, row.currency,
+    row.ticket_number, row.purchase_date, row.total_cents, row.currency, row.declared_store_id,
+    row.declared_ticket_number, row.declared_total_cents,
     row.points_awarded, row.risk_score, row.created_at].map(csvCell).join(','));
   return new Response(`\uFEFF${header.map(csvCell).join(',')}\n${lines.join('\n')}`, {
     headers: {
@@ -2943,17 +3018,21 @@ function appSettingView(definition: typeof APP_SETTING_DEFINITIONS[number], valu
     maxLength: definition.maxLength,
     minimum: definition.minimum,
     maximum: definition.maximum,
+    adminOnly: definition.adminOnly === true,
   };
 }
 
 async function handleAdminSettings(request: Request, env: Env): Promise<Response> {
-  const manager = managerIdentity(request, env);
-  if (!manager) return error('Acceso de gestor requerido', 401);
+  const current = await authorizedAdmin(request, env);
+  if (!current) return error('Acceso de gestor requerido', 401);
   const values = await withDatabase(env, loadAppSettings);
+  const definitions = current.role === 'OPERATOR'
+    ? APP_SETTING_DEFINITIONS.filter((definition) => !definition.adminOnly)
+    : APP_SETTING_DEFINITIONS;
   return json({
     success: true,
-    manager,
-    settings: APP_SETTING_DEFINITIONS.map((definition) => appSettingView(definition, values[definition.key]!)),
+    manager: current.email,
+    settings: definitions.map((definition) => appSettingView(definition, values[definition.key]!)),
   });
 }
 
@@ -3287,6 +3366,35 @@ async function handleAdminParticipationLimits(request: Request, env: Env): Promi
   return json({ success: true, limits: Object.fromEntries(updates) });
 }
 
+async function handleAdminScanFlow(request: Request, env: Env): Promise<Response> {
+  const manager = managerIdentity(request, env);
+  if (!manager) return error('Acceso de administrador requerido', 401);
+  const body = await readJson(request);
+  const updates = [
+    ['scan.assisted.enabled', normalizeAppSettingValue('scan.assisted.enabled', body.enabled)],
+    ['scan.assisted.requireStore', normalizeAppSettingValue('scan.assisted.requireStore', body.requireStore)],
+  ] as const;
+  await withDatabase(env, (client) => inTransaction(client, async () => {
+    for (const [key, value] of updates) {
+      const definition = settingDefinition(key);
+      const current = await client.query<Pick<AppSettingRow, 'value'>>(
+        'SELECT value FROM app_settings WHERE key = $1 LIMIT 1', [key],
+      );
+      await client.query(
+        `INSERT INTO app_settings (key, value, updated_at, updated_by) VALUES ($1, $2, NOW(), $3)
+         ON CONFLICT(key) DO UPDATE SET value = $2, updated_at = NOW(), updated_by = $3`,
+        [key, value, manager],
+      );
+      await client.query(
+        `INSERT INTO app_setting_audit_log (id, setting_key, manager_email, previous_value, new_value)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [uuid(), key, manager, current.rows[0]?.value ?? definition.defaultValue, value],
+      );
+    }
+  }));
+  return json({ success: true, scanFlow: Object.fromEntries(updates) });
+}
+
 async function handleFetch(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   try {
@@ -3399,6 +3507,9 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     }
     if (request.method === 'PATCH' && url.pathname === '/api/admin/settings/participation-limits') {
       return await handleAdminParticipationLimits(request, env);
+    }
+    if (request.method === 'PATCH' && url.pathname === '/api/admin/settings/scan-flow') {
+      return await handleAdminScanFlow(request, env);
     }
     if (url.pathname === '/api/admin/users' && ['GET', 'POST'].includes(request.method)) {
       return await handleAdminUsers(request, env);

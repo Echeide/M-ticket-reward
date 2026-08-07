@@ -1,4 +1,4 @@
-export type AppSettingFormat = 'plain' | 'rich' | 'datetime' | 'integer';
+export type AppSettingFormat = 'plain' | 'rich' | 'datetime' | 'integer' | 'boolean';
 
 export type AppSettingDefinition = {
   key: string;
@@ -10,9 +10,30 @@ export type AppSettingDefinition = {
   maxLength: number;
   minimum?: number;
   maximum?: number;
+  adminOnly?: boolean;
 };
 
 export const APP_SETTING_DEFINITIONS: readonly AppSettingDefinition[] = [
+  {
+    key: 'scan.assisted.enabled',
+    group: 'Flujo de escaneo',
+    label: 'Solicitar datos antes de fotografiar',
+    help: 'Muestra al usuario el formulario de número de documento e importe antes de abrir la cámara.',
+    format: 'boolean',
+    defaultValue: 'true',
+    maxLength: 5,
+    adminOnly: true,
+  },
+  {
+    key: 'scan.assisted.requireStore',
+    group: 'Flujo de escaneo',
+    label: 'Solicitar establecimiento',
+    help: 'Añade al formulario previo un selector obligatorio con los comercios autorizados.',
+    format: 'boolean',
+    defaultValue: 'true',
+    maxLength: 5,
+    adminOnly: true,
+  },
   {
     key: 'validation.startAt',
     group: 'Validación de tickets',
@@ -156,6 +177,10 @@ export function normalizeAppSettingValue(key: string, value: unknown): string {
     }
     return String(number);
   }
+  if (definition.format === 'boolean') {
+    if (normalized !== 'true' && normalized !== 'false') throw new Error('APP_SETTING_BOOLEAN_INVALID');
+    return normalized;
+  }
   if (definition.format === 'datetime' && normalized) {
     const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(normalized);
     if (!match) throw new Error('APP_SETTING_DATETIME_INVALID');
@@ -172,6 +197,12 @@ export function normalizeAppSettingValue(key: string, value: unknown): string {
     ) throw new Error('APP_SETTING_DATETIME_INVALID');
   }
   return definition.format === 'plain' ? normalized.trim() : normalized;
+}
+
+export function booleanAppSetting(settings: Record<string, string>, key: string): boolean {
+  const definition = settingDefinition(key);
+  const value = settings[key] ?? definition.defaultValue;
+  return value === 'true';
 }
 
 export function numericAppSetting(settings: Record<string, string>, key: string): number {

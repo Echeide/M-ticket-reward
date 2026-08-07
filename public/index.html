@@ -60,11 +60,11 @@
         </div>
         <footer class="welcome-action-section">
           <div class="welcome-actions">
-            <label class="primary-button capture-button button-with-icon">
-              <input id="ticket-input" data-ticket-input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" />
+            <button class="primary-button capture-button button-with-icon" id="open-scan-flow" type="button">
               <svg class="button-icon" aria-hidden="true"><use href="#icon-camera"></use></svg>
               <span id="home-scan-label">Escanear ticket</span>
-            </label>
+            </button>
+            <input id="ticket-input" data-ticket-input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" hidden />
             <button class="secondary-button button-with-icon" data-action="open-history" type="button">
               <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
               <span id="home-history-label">Mis tickets</span>
@@ -200,6 +200,33 @@
         <button class="primary-button" data-action="close-game">Volver al sistema</button>
       </section>
     </main>
-    <script type="module" src="/app.js?v=ban-status-1"></script>
+    <dialog id="scan-details-dialog" class="scan-details-dialog">
+      <form id="scan-details-form" class="scan-details-form">
+        <div class="scan-details-heading">
+          <div><p class="eyebrow">Antes de fotografiar</p><h2>Datos del ticket</h2></div>
+          <button class="icon-only-button" id="close-scan-details" type="button" aria-label="Cerrar">×</button>
+        </div>
+        <p class="scan-details-intro">Indica los datos impresos en el ticket. Los comprobaremos con la fotografía para realizar una lectura más precisa.</p>
+        <label id="scan-store-field">Establecimiento
+          <select id="scan-store" name="storeId"><option value="">Selecciona un establecimiento</option></select>
+        </label>
+        <label>Número de documento
+          <input id="scan-ticket-number" name="ticketNumber" maxlength="160" autocomplete="off" required placeholder="Tal como aparece en el ticket" />
+          <small>Puede aparecer como Documento, Ticket, Factura, Recibo o Folio.</small>
+        </label>
+        <label>Total de compra
+          <span class="money-field"><input id="scan-total" name="total" type="number" inputmode="decimal" min="0.01" max="1000000" step="0.01" required placeholder="0,00" /><span>€</span></span>
+        </label>
+        <p id="scan-details-error" class="scan-details-error" role="alert"></p>
+        <div class="scan-details-actions">
+          <button class="secondary-button" id="cancel-scan-details" type="button">Cancelar</button>
+          <button class="primary-button button-with-icon" type="submit">
+            <svg class="button-icon" aria-hidden="true"><use href="#icon-camera"></use></svg>
+            Continuar y fotografiar
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <script type="module" src="/app.js?v=assisted-scan-1"></script>
   </body>
 </html>

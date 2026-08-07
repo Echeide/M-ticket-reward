@@ -24,6 +24,14 @@ export type ReceiptFields = {
   currency: string;
 };
 
+export type ReceiptDeclaration = {
+  storeId: string;
+  storeName?: string;
+  ticketNumber: string;
+  totalCents: number;
+  currency: string;
+};
+
 export type OcrReceipt = Partial<ReceiptFields> & {
   isReceipt: boolean;
   confidence: number;
@@ -52,6 +60,41 @@ export type AutomaticValidation = {
   riskScore: number;
   reasons: string[];
 };
+
+function compactIdentifier(value: string): string {
+  return value.normalize('NFKD').replace(/[^a-z0-9]/gi, '').toUpperCase();
+}
+
+export function normalizeReceiptDeclaration(
+  value: Record<string, unknown>,
+  requireStore: boolean,
+): ReceiptDeclaration {
+  const storeId = String(value.storeId || '').trim();
+  const ticketNumber = String(value.ticketNumber || '').trim();
+  const totalCents = Number(value.totalCents);
+  if (requireStore && !storeId) throw new Error('DECLARED_STORE_REQUIRED');
+  if (storeId.length > 100) throw new Error('DECLARED_STORE_INVALID');
+  if (ticketNumber.length < 3 || ticketNumber.length > 160 || compactIdentifier(ticketNumber).length < 3) {
+    throw new Error('DECLARED_TICKET_NUMBER_INVALID');
+  }
+  if (!Number.isInteger(totalCents) || totalCents <= 0 || totalCents > 100_000_000) {
+    throw new Error('DECLARED_TOTAL_INVALID');
+  }
+  return { storeId, ticketNumber, totalCents, currency: 'EUR' };
+}
+
+export function compareReceiptDeclaration(
+  declaration: ReceiptDeclaration,
+  fields: ReceiptFields,
+): string[] {
+  const issues: string[] = [];
+  if (declaration.storeId && declaration.storeId !== fields.storeId) issues.push('DECLARED_STORE_MISMATCH');
+  if (compactIdentifier(declaration.ticketNumber) !== compactIdentifier(fields.ticketNumber)) {
+    issues.push('DECLARED_TICKET_NUMBER_MISMATCH');
+  }
+  if (declaration.totalCents !== fields.totalCents) issues.push('DECLARED_TOTAL_MISMATCH');
+  return issues;
+}
 
 export function receiptStatusAfterOcr(validation: AutomaticValidation): ReceiptStatus {
   if (validation.reasons.includes('NOT_A_RECEIPT')) return 'NOT_A_RECEIPT';

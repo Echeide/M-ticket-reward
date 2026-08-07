@@ -19,6 +19,18 @@ export type StoreOcrEvidence = {
   rawText?: string;
 };
 
+export function storeHasVisibleEvidence(
+  store: StoreIdentity,
+  evidence: Pick<StoreOcrEvidence, 'headerText'>,
+): boolean {
+  const headerText = normalizeStoreText(evidence.headerText || '');
+  const learnedSignatures = store.ocrProfile?.enabled ? store.ocrProfile.headerSignatures : [];
+  return [store.name, ...(Array.isArray(store.aliases) ? store.aliases : []), ...learnedSignatures]
+    .map(normalizeStoreText)
+    .filter(Boolean)
+    .some((candidate) => evidenceScore(candidate, headerText, 85, true) > 0);
+}
+
 function normalizeStoreText(value: string): string {
   return value
     .normalize('NFD')

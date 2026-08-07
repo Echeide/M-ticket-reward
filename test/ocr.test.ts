@@ -374,6 +374,37 @@ test('Workers AI chat format supports Llama vision with JSON mode', async () => 
   assert.equal(input.task, undefined);
 });
 
+test('OCR prompts use user-declared values only as candidates requiring visible evidence', async () => {
+  let prompt = '';
+  const env = {
+    OCR_MODE: 'workers-ai',
+    OCR_PROVIDER: 'workers-ai',
+    OCR_MODEL: '@cf/meta/llama-3.2-11b-vision-instruct',
+    OCR_WORKERS_AI_FORMAT: 'chat',
+    OCR_TIMEOUT_MS: '5000',
+    AI: {
+      async run(_model: string, input: Record<string, unknown>) {
+        const messages = input.messages as Array<{ role: string; content: string }>;
+        prompt = messages.find((message) => message.role === 'user')?.content || '';
+        return { choices: [{ message: { content: JSON.stringify(validExtraction) } }] };
+      },
+    },
+  } as unknown as Env;
+
+  await readReceipt(
+    env,
+    new Uint8Array([1, 2, 3]).buffer,
+    'image/webp',
+    [{ name: 'Hiperdino', aliases: ['Dinosol'] }],
+    { storeName: 'Hiperdino', ticketNumber: '2026/934211-00100048', totalCents: 1592 },
+  );
+
+  assert.match(prompt, /Datos declarados por el usuario/);
+  assert.match(prompt, /2026\/934211-00100048/);
+  assert.match(prompt, /no evidencia ni valores garantizados/);
+  assert.match(prompt, /devuelve siempre lo que esté literalmente impreso/);
+});
+
 test('confident non-receipt images are rejected after one model call', async () => {
   let calls = 0;
   let prompt = '';

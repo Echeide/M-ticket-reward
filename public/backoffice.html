@@ -96,6 +96,15 @@
         <div><p class="eyebrow">Configuración</p><h2>Ajustes</h2><p>Gestiona el periodo de campaña, los textos públicos y los accesos al backoffice.</p></div>
       </section>
       <p class="read-only-notice" id="settings-read-only" hidden>Vista de consulta: el rol operador no puede modificar los ajustes.</p>
+      <section class="settings-card scan-flow-settings-card" data-operator-hidden>
+        <div class="settings-section-heading"><p class="eyebrow">Escaneo</p><h3>Datos previos del ticket</h3><p>Configuración exclusiva de administradores. Los datos declarados se contrastan con la fotografía y nunca sustituyen la evidencia OCR.</p></div>
+        <form id="scan-flow-settings-form" class="scan-flow-settings-form">
+          <label class="switch-row"><span><strong>Solicitar datos antes de fotografiar</strong><small>Activado por defecto. Si se desactiva, la cámara se abre directamente como hasta ahora.</small></span><input id="assisted-scan-enabled" type="checkbox" checked /></label>
+          <label class="switch-row"><span><strong>Solicitar establecimiento</strong><small>Muestra un selector obligatorio con los comercios autorizados.</small></span><input id="assisted-scan-require-store" type="checkbox" checked /></label>
+          <p id="scan-flow-settings-error" class="form-error" role="alert"></p>
+          <div class="dialog-actions"><button class="primary-button" type="submit">Guardar flujo de escaneo</button></div>
+        </form>
+      </section>
       <section class="settings-card settings-period-card">
         <div class="settings-section-heading"><p class="eyebrow">Campaña</p><h3>Periodo de validación</h3><p>Horario de Canarias. Los límites pueden dejarse vacíos.</p></div>
         <form id="validation-period-form" class="period-form">
@@ -303,6 +312,6 @@
         <div id="ticket-user-detail-body"></div>
       </div>
     </dialog>
-    <script type="module" src="/backoffice.js"></script>
+    <script type="module" src="/backoffice.js?v=assisted-scan-1"></script>
   </body>
 </html>

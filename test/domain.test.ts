@@ -3,7 +3,9 @@ import test from 'node:test';
 import { buildTicketFingerprint } from '../src/domain/deduplication';
 import {
   canReprocessReceipt,
+  compareReceiptDeclaration,
   receiptStatusAfterOcr,
+  normalizeReceiptDeclaration,
   validateReceiptAutomatically,
   isValidIsoDate,
 } from '../src/domain/receipt';
@@ -12,11 +14,12 @@ import {
   reversalIdempotencyKey,
   rewardIdempotencyKey,
 } from '../src/domain/rewards';
-import { findMatchingStore, normalizeStoreInput } from '../src/domain/store';
+import { findMatchingStore, normalizeStoreInput, storeHasVisibleEvidence } from '../src/domain/store';
 import { normalizeRewardTierInput } from '../src/domain/reward-tier';
 import {
   APP_SETTING_DEFINITIONS,
   appSettingsWithDefaults,
+  booleanAppSetting,
   normalizeAppSettingValue,
   validateAppSettingPeriod,
 } from '../src/domain/app-settings';
@@ -40,6 +43,32 @@ test('automatic validation approves a valid non-duplicate receipt', () => {
   });
   assert.equal(result.approved, true);
   assert.deepEqual(result.reasons, []);
+});
+
+test('receipt declarations are normalized and compared independently from OCR evidence', () => {
+  const declaration = normalizeReceiptDeclaration({
+    storeId: 'store-1', ticketNumber: ' A / 123 ', totalCents: '7500',
+  }, true);
+  assert.deepEqual(declaration, {
+    storeId: 'store-1', ticketNumber: 'A / 123', totalCents: 7500, currency: 'EUR',
+  });
+  assert.deepEqual(compareReceiptDeclaration(declaration, fields), []);
+  assert.deepEqual(compareReceiptDeclaration(declaration, {
+    ...fields, storeId: 'store-2', ticketNumber: 'A-124', totalCents: 7600,
+  }), [
+    'DECLARED_STORE_MISMATCH',
+    'DECLARED_TICKET_NUMBER_MISMATCH',
+    'DECLARED_TOTAL_MISMATCH',
+  ]);
+});
+
+test('assisted scan declarations require safe document, amount and optionally a store', () => {
+  assert.deepEqual(normalizeReceiptDeclaration({
+    ticketNumber: 'DOC-123', totalCents: 1592,
+  }, false).storeId, '');
+  assert.throws(() => normalizeReceiptDeclaration({ ticketNumber: 'DOC-123', totalCents: 1592 }, true), /DECLARED_STORE_REQUIRED/);
+  assert.throws(() => normalizeReceiptDeclaration({ storeId: 'store-1', ticketNumber: 'x', totalCents: 1592 }, true), /DECLARED_TICKET_NUMBER_INVALID/);
+  assert.throws(() => normalizeReceiptDeclaration({ storeId: 'store-1', ticketNumber: 'DOC-123', totalCents: 0 }, true), /DECLARED_TOTAL_INVALID/);
 });
 
 test('automatic validation accepts a verified purchase time when no ticket number is printed', () => {
@@ -202,6 +231,16 @@ test('store matching recovers an authorized merchant from the fiscal header', ()
   assert.equal(selected?.id, 'store-1');
 });
 
+test('a declared store still requires independent visible header evidence', () => {
+  const store = { name: 'Hiperdino', aliases: ['DINOSOL SUPERMERCADOS, S.L.'] };
+  assert.equal(storeHasVisibleEvidence(store, {
+    headerText: 'DINOSOL SUPERMERCADOS, S.L.\nCIF B61742565',
+  }), true);
+  assert.equal(storeHasVisibleEvidence(store, {
+    headerText: 'SUPERMERCADO DESCONOCIDO',
+  }), false);
+});
+
 test('store matching does not search merchant names deep in the item list', () => {
   const stores = [{ id: 'store-1', name: 'Comercial Teide', aliases: ['Teide Market'] }];
   const selected = findMatchingStore(stores, {
@@ -252,6 +291,9 @@ test('application settings retain defaults and override only stored values', () 
   ]);
   assert.equal(settings['home.title'], 'Una portada personalizada');
   assert.equal(settings['home.scanButton'], 'Escanear ticket');
+  assert.equal(settings['scan.assisted.enabled'], 'true');
+  assert.equal(settings['scan.assisted.requireStore'], 'true');
+  assert.equal(booleanAppSetting(settings, 'scan.assisted.enabled'), true);
   assert.equal(Object.keys(settings).length, APP_SETTING_DEFINITIONS.length);
   assert.equal(settings['unknown.setting'], undefined);
 });
@@ -266,6 +308,8 @@ test('application settings validate keys, normalize line endings and enforce lim
   assert.equal(normalizeAppSettingValue('validation.endAt', ''), '');
   assert.equal(normalizeAppSettingValue('limits.dailyTicketsPerUserStore', '03'), '3');
   assert.equal(normalizeAppSettingValue('limits.totalUploadsPerUser', '0'), '0');
+  assert.equal(normalizeAppSettingValue('scan.assisted.enabled', 'false'), 'false');
+  assert.throws(() => normalizeAppSettingValue('scan.assisted.enabled', '1'), /APP_SETTING_BOOLEAN_INVALID/);
   assert.throws(() => normalizeAppSettingValue('limits.banScoreThreshold', '-1'), /APP_SETTING_INTEGER_INVALID/);
   assert.throws(() => normalizeAppSettingValue('limits.dailyTicketsPerUserStore', '101'), /APP_SETTING_INTEGER_INVALID/);
   assert.throws(() => normalizeAppSettingValue('validation.startAt', '2026-02-30T09:30'), /APP_SETTING_DATETIME_INVALID/);
