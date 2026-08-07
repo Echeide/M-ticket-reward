@@ -323,22 +323,30 @@ async function openTicketUserDetail(lookupCode) {
     </div>
     <section class="ticket-user-offenses"><h3>Infracciones activas</h3>
       <div class="offense-summary"><span>No-tickets: <strong>${user.nonReceiptCount}</strong></span><span>Fraudes confirmados: <strong>${user.confirmedFraudCount}</strong></span></div>
-      ${payload.offenses.length ? payload.offenses.map((offense) => `<article><span><strong>${offense.category === 'CONFIRMED_FRAUD' ? 'Fraude confirmado' : 'Imagen no-ticket'}</strong><small><button class="text-button open-offense-ticket" data-id="${escapeHtml(offense.receiptId)}" type="button">${escapeHtml(offense.receiptPublicId)}</button> · ${escapeHtml(new Date(offense.createdAt).toLocaleString('es-ES'))}</small></span><b>+${offense.score}</b></article>`).join('') : '<p class="empty-state">No tiene infracciones activas.</p>'}
+      ${payload.offenses.length ? payload.offenses.map((offense) => `<article><span><strong>${offense.category === 'CONFIRMED_FRAUD' ? 'Fraude confirmado' : 'Imagen no-ticket'}</strong><small><button class="text-button open-offense-ticket" data-id="${escapeHtml(offense.receiptId)}" data-public-id="${escapeHtml(offense.receiptPublicId)}" type="button">${escapeHtml(offense.receiptPublicId)}</button> · ${escapeHtml(new Date(offense.createdAt).toLocaleString('es-ES'))}</small></span><b>+${offense.score}</b></article>`).join('') : '<p class="empty-state">No tiene infracciones activas.</p>'}
     </section>
     ${user.banStatus === 'BANNED' ? `<div class="dialog-actions"><button class="danger-button" id="detail-lift-ticket-user" type="button">Desbanear usuario</button></div>` : ''}`;
     document.querySelector('#detail-lift-ticket-user')?.addEventListener('click', () => liftTicketUserBan(user.banId));
-    document.querySelectorAll('.open-offense-ticket').forEach((button) => button.addEventListener('click', () => openOffenseTicket(button.dataset.id)));
+    document.querySelectorAll('.open-offense-ticket').forEach((button) => button.addEventListener('click', () =>
+      openOffenseTicket(button.dataset.id, button.dataset.publicId)));
   } catch (error) {
     body.innerHTML = `<p class="form-error">${escapeHtml(error instanceof Error ? error.message : 'No se pudo cargar el usuario')}</p>`;
   }
 }
 
-async function openOffenseTicket(receiptId) {
+async function openOffenseTicket(receiptId, receiptPublicId) {
   document.querySelector('#ticket-user-detail-dialog').close();
   const receiptsTab = document.querySelector('[data-admin-view="receipts"]');
   document.querySelectorAll('[data-admin-view]').forEach((item) => item.classList.toggle('active', item === receiptsTab));
   document.querySelectorAll('.admin-view').forEach((item) => item.classList.toggle('active', item.id === 'receipts-view'));
+  const filters = document.querySelector('#filters');
+  filters.reset();
+  document.querySelector('[name="attention"]').checked = false;
+  filters.elements.user.value = receiptPublicId || '';
+  updateFilterCount();
+  await load(1);
   await select(receiptId);
+  document.querySelector('#review-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 async function exportTicketUsers() {
@@ -1228,7 +1236,9 @@ function highlightSelectedRow() {
 
 async function select(id, suppliedReceipt = null) {
   if (!state.stores.length) await loadFilterStores();
-  state.selected = suppliedReceipt || state.rows.find((row) => row.id === id);
+  let selected = suppliedReceipt || state.rows.find((row) => row.id === id);
+  if (!selected) selected = (await request(`/api/admin/receipts/${encodeURIComponent(id)}`)).receipt;
+  state.selected = selected;
   const receipt = state.selected;
   if (!receipt) return;
   highlightSelectedRow();
@@ -1451,6 +1461,13 @@ function updateFilterCount() {
 
 document.querySelector('#filters').addEventListener('submit', (event) => {
   event.preventDefault();
+  const filters = event.currentTarget;
+  const search = filters.elements.user.value.trim();
+  if (/^TKT-[A-Z0-9_-]+$/i.test(search)) {
+    filters.reset();
+    filters.elements.user.value = search.toUpperCase();
+    document.querySelector('[name="attention"]').checked = false;
+  }
   if (document.querySelector('#filters-dialog').open) document.querySelector('#filters-dialog').close();
   updateFilterCount();
   load(1).catch((error) => alert(error.message));

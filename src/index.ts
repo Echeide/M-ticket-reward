@@ -1431,15 +1431,25 @@ function adminFilters(url: URL) {
     values.push(value);
     conditions.push(sql.replace('?', `$${values.length}`));
   };
-  if (url.searchParams.get('user')) {
-    const search = String(url.searchParams.get('user') || '').trim();
+  const search = String(url.searchParams.get('user') || '').trim();
+  if (/^TKT-[A-Z0-9_-]+$/i.test(search)) {
+    return {
+      where: 'UPPER(r.public_id) = $1',
+      values: [search.toUpperCase()],
+      orderBy: 'r.created_at DESC, r.id DESC',
+    };
+  }
+  if (search) {
     const normalizedLookup = normalizeLookupCode(search);
     values.push(normalizedLookup);
     const exactLookupPlaceholder = `$${values.length}`;
     values.push(`%${search}%`);
-    const displayNamePlaceholder = `$${values.length}`;
+    const textSearchPlaceholder = `$${values.length}`;
     conditions.push(`(u.rtales_lookup_code_normalized = ${exactLookupPlaceholder}
-      OR s.display_name ILIKE ${displayNamePlaceholder})`);
+      OR COALESCE(u.display_name, s.display_name) ILIKE ${textSearchPlaceholder}
+      OR COALESCE(u.email, s.user_email) ILIKE ${textSearchPlaceholder}
+      OR r.public_id ILIKE ${textSearchPlaceholder}
+      OR r.ticket_number ILIKE ${textSearchPlaceholder})`);
     lookupOrderPlaceholder = exactLookupPlaceholder;
   }
   if (url.searchParams.get('space')) {
