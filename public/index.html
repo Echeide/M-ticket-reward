@@ -9,7 +9,7 @@
     <script>
       if (window.parent !== window) document.documentElement.classList.add("is-embedded");
     </script>
-    <link rel="stylesheet" href="/styles.css?v=ticket-detail-actions-top-1" />
+    <link rel="stylesheet" href="/styles.css?v=ticket-detail-back-link-1" />
   </head>
   <body class="public-body theme-gcx26">
     <svg class="icon-library" aria-hidden="true">
@@ -156,6 +156,10 @@
       </section>
 
       <section class="screen history-screen" data-screen="ticket-detail">
+        <button class="primary-button button-with-icon detail-list-button" data-action="open-history" type="button">
+          <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
+          Volver al listado de tickets
+        </button>
         <div class="detail-heading">
           <span class="detail-heading-icon" aria-hidden="true">
             <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
@@ -164,10 +168,6 @@
         </div>
         <div class="detail-actions">
           <button class="primary-button" id="detail-action" type="button" hidden></button>
-          <button class="primary-button button-with-icon detail-list-button" data-action="open-history" type="button">
-            <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
-            Volver al listado de tickets
-          </button>
         </div>
         <h3 class="detail-reference" id="detail-title">Ticket</h3>
         <div class="ticket-detail-card">
