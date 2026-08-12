@@ -84,14 +84,14 @@
         <div class="status-icon danger">!</div>
         <h2>No parece un ticket de compra</h2>
         <p>Prueba de nuevo con el ticket completo, bien iluminado y sin reflejos.</p>
-        <button class="primary-button" data-action="retry">Volver a escanear</button>
+        <button class="primary-button" data-action="close-game">Volver al sistema</button>
       </section>
 
       <section class="screen" data-screen="duplicate">
         <div class="status-icon warning">↺</div>
         <h2>Este ticket ya había sido registrado</h2>
         <p>Cada ticket solo puede utilizarse una vez.</p>
-        <button class="primary-button" data-action="retry">Escanear otro ticket</button>
+        <button class="primary-button" data-action="close-game">Volver al sistema</button>
       </section>
 
       <section class="screen" data-screen="user-banned" role="alert">
@@ -123,7 +123,7 @@
         </div>
         <div class="ocr-validation-badge" id="ocr-validation-badge">Comprobando…</div>
         <button class="primary-button" id="confirm-ocr" type="button">Continuar y obtener puntos</button>
-        <button class="secondary-button" id="retry-ocr" data-action="retry" type="button">Volver a escanear</button>
+        <button class="secondary-button" id="retry-ocr" data-action="close-game" type="button">Volver al sistema</button>
       </section>
 
       <section class="screen" data-screen="final">
@@ -146,10 +146,10 @@
             <svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>
           </button>
         </div>
-        <p>Consulta aquí el estado de tus tickets. El envío reiterado de imágenes que no sean tickets puede provocar la suspensión de tu acceso.</p>
-        <button class="primary-button button-with-icon history-home-button" data-action="history-home" type="button">
-          <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
-          Escanear otro ticket
+        <p>Consulta aquí el estado de tus tickets. Para enviar otro ticket, vuelve al sistema y abre de nuevo este módulo.</p>
+        <button class="primary-button button-with-icon history-home-button" data-action="close-game" type="button">
+          <svg class="button-icon" aria-hidden="true"><use href="#icon-arrow-left"></use></svg>
+          Volver al sistema
         </button>
         <p class="visually-hidden" id="history-live-status" aria-live="polite"></p>
         <div class="ticket-history-list" id="ticket-history-list"></div>
@@ -227,6 +227,6 @@
         </div>
       </form>
     </dialog>
-    <script type="module" src="/app.js?v=scan-form-no-zoom-1"></script>
+    <script type="module" src="/app.js?v=single-ticket-session-1"></script>
   </body>
 </html>

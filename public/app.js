@@ -437,6 +437,11 @@ async function upload(file) {
     if (payload.status === 'DUPLICATE') return show('duplicate');
     await openHistoryAfterRegistered();
   } catch (caught) {
+    if (caught?.code === 'SESSION_RECEIPT_LIMIT') {
+      state.pendingDeclaration = null;
+      sessionStorage.removeItem(UPLOAD_REQUEST_STORAGE_KEY);
+      return openHistory();
+    }
     const recoveredReceipt = await recoverUploadAttempt(uploadRequestId).catch(() => null);
     if (!recoveredReceipt) throw caught;
     state.pendingDeclaration = null;
@@ -905,7 +910,6 @@ document.querySelectorAll('[data-action="retry"]').forEach((button) => {
 document.querySelectorAll('[data-action="open-history"]').forEach((button) => {
   button.addEventListener('click', () => openHistory().catch(showError));
 });
-document.querySelector('[data-action="history-home"]').addEventListener('click', retry);
 document.querySelector('[data-action="refresh-history"]').addEventListener('click', () => openHistory().catch(showError));
 document.querySelectorAll('[data-action="close-game"]').forEach((button) => {
   button.addEventListener('click', closeGame);

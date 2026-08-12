@@ -23,6 +23,8 @@ import {
 } from './domain/rewards';
 import {
   databaseTimestampAfter,
+  isRetryableRewardFailure,
+  rewardFailureMinimumDelaySeconds,
   rewardMaxAttempts,
   rewardRetryDelaySeconds,
 } from './domain/reward-delivery';
@@ -135,6 +137,7 @@ type ReceiptRow = {
   declared_ticket_number: string | null;
   declared_total_cents: number | null;
   upload_request_id: string | null;
+  session_slot: number;
   currency: string;
   ticket_fingerprint: string | null;
   ticket_identity_key: string | null;
@@ -767,6 +770,37 @@ async function dailyStoreLimitReached(
   return Number(result.rows[0]?.total || 0) >= limit;
 }
 
+async function loadSessionReceipt(
+  client: DbClient,
+  sessionId: string,
+): Promise<Pick<ReceiptRow, 'id' | 'public_id' | 'status'> | null> {
+  const result = await client.query<Pick<ReceiptRow, 'id' | 'public_id' | 'status'>>(
+    `SELECT id, public_id, status FROM receipts
+      WHERE session_id = $1 ORDER BY created_at ASC LIMIT 1`,
+    [sessionId],
+  );
+  return result.rows[0] || null;
+}
+
+function sessionReceiptLimitResponse(
+  receipt: Pick<ReceiptRow, 'id' | 'public_id' | 'status'>,
+): Response {
+  return json({
+    success: false,
+    code: 'SESSION_RECEIPT_LIMIT',
+    error: 'Ya has registrado un ticket en esta sesión. Para enviar otro, vuelve al sistema y abre de nuevo el módulo.',
+    receiptId: receipt.id,
+    publicId: receipt.public_id,
+    status: receipt.status,
+  }, 409);
+}
+
+function isSessionReceiptConflict(caught: unknown): boolean {
+  const message = caught instanceof Error ? caught.message : String(caught || '');
+  return message.includes('receipts_single_ticket_session_unique') ||
+    message.includes('UNIQUE constraint failed: receipts.session_id');
+}
+
 async function handleUpload(
   request: Request,
   env: Env,
@@ -793,6 +827,11 @@ async function handleUpload(
       return uploadReceiptResponse(existing.id, existing.public_id, existing.status);
     }
   }
+  const existingSessionReceipt = await withDatabase(
+    env,
+    (client) => loadSessionReceipt(client, session.id),
+  );
+  if (existingSessionReceipt) return sessionReceiptLimitResponse(existingSessionReceipt);
   const image = form.get('ticket');
   if (!(image instanceof File)) return error('Selecciona una imagen del ticket', 400);
   const acceptedTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
@@ -878,8 +917,8 @@ async function handleUpload(
             image_content_type, image_size, status, validation_reasons,
             rtales_lookup_code_snapshot, external_user_id, declared_store_id,
             declared_ticket_number, declared_total_cents, ticket_identity_key,
-            upload_request_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17)`,
+            upload_request_id, session_slot)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17, 1)`,
         [
           receiptId,
           ticketPublicId,
@@ -917,6 +956,10 @@ async function handleUpload(
   } catch (uploadError) {
     await env.TICKETS.delete(objectKey).catch(() => undefined);
     await withDatabase(env, (client) => releaseUserUpload(client, session.external_user_id)).catch(() => undefined);
+    if (isSessionReceiptConflict(uploadError)) {
+      const existing = await withDatabase(env, (client) => loadSessionReceipt(client, session.id));
+      if (existing) return sessionReceiptLimitResponse(existing);
+    }
     throw uploadError;
   }
 
@@ -1020,16 +1063,15 @@ async function handleReceiptList(request: Request, env: Env): Promise<Response> 
   });
 }
 
-async function handleLatestPendingReceipt(request: Request, env: Env): Promise<Response> {
+async function handleCurrentSessionReceipt(request: Request, env: Env): Promise<Response> {
   return withDatabase(env, async (client) => {
     const session = await authenticatedSession(request, env, client);
     if (!session) return error('Sesión no válida', 401);
     const result = await client.query<ReceiptRow>(
       `SELECT * FROM receipts
-        WHERE user_ref = $1
-          AND status IN ('OCR_QUEUED', 'OCR_PROCESSING', 'READY_FOR_CONFIRMATION', 'REWARD_PENDING')
+        WHERE session_id = $1
         ORDER BY created_at DESC LIMIT 1`,
-      [session.user_ref],
+      [session.id],
     );
     return json({ success: true, receipt: result.rows[0] ? publicReceiptView(result.rows[0]) : null });
   });
@@ -1636,15 +1678,15 @@ async function processOutbox(env: Env, outboxId: string): Promise<number | null>
   }
 
   if (!delivery.response.ok || !delivery.payload.success) {
-    const retryable = delivery.response.status >= 500 || [408, 425, 429].includes(delivery.response.status);
     const failure = String(delivery.payload.error || `HTTP_${delivery.response.status}`);
-    if (retryable) {
+    if (isRetryableRewardFailure(delivery.response.status, failure)) {
+      const serverRetryAfter = delivery.response.status === 429 ? retryAfterSeconds(delivery.response) : 0;
       return scheduleOutboxRetry(
         env,
         outboxId,
         outbox.attempt_count,
         failure,
-        delivery.response.status === 429 ? retryAfterSeconds(delivery.response) : 0,
+        Math.max(serverRetryAfter, rewardFailureMinimumDelaySeconds(failure)),
       );
     }
     await markOutboxTerminalFailure(env, outboxId, failure);
@@ -3777,7 +3819,7 @@ async function handleFetch(request: Request, env: Env, context: ExecutionContext
     }
     if (request.method === 'GET' && url.pathname === '/api/receipts') return await handleReceiptList(request, env);
     if (request.method === 'GET' && url.pathname === '/api/receipts/latest') {
-      return await handleLatestPendingReceipt(request, env);
+      return await handleCurrentSessionReceipt(request, env);
     }
     const uploadAttemptMatch = url.pathname.match(/^\/api\/receipts\/upload-attempt\/([^/]+)$/);
     if (request.method === 'GET' && uploadAttemptMatch?.[1]) {

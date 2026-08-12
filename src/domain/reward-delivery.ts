@@ -14,6 +14,15 @@ export function rewardRetryDelaySeconds(attempt: number, retryAfterSeconds = 0):
   return Math.min(3600, Math.max(exponentialDelay, Math.max(0, retryAfterSeconds)));
 }
 
+export function isRetryableRewardFailure(status: number, failure: string): boolean {
+  if (status >= 500 || [408, 425, 429].includes(status)) return true;
+  return failure.trim().toLowerCase().includes('game session is not ready to receive results');
+}
+
+export function rewardFailureMinimumDelaySeconds(failure: string): number {
+  return failure.trim().toLowerCase().includes('game session is not ready to receive results') ? 30 : 0;
+}
+
 export function databaseTimestampAfter(delaySeconds: number, now = Date.now()): string {
   return new Date(now + delaySeconds * 1000).toISOString().replace('T', ' ').slice(0, 19);
 }
