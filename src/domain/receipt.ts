@@ -116,6 +116,10 @@ export function requiresManualReceiptReview(status: string, reasons: string[] = 
     ['OCR_PROCESSING_FAILED', 'OCR_VERIFICATION_REQUIRED'].includes(reason));
 }
 
+export function canConfirmReceiptFraud(status: string, hasRewardResult: boolean): boolean {
+  return status === 'AUTO_REJECTED' || (status === 'REWARD_FAILED' && !hasRewardResult);
+}
+
 export function canReprocessReceipt(status: string, reasons: string[] = []): boolean {
   if (['AUTO_REJECTED', 'NOT_A_RECEIPT', 'READY_FOR_CONFIRMATION'].includes(status)) return true;
   return requiresManualReceiptReview(status, reasons);

@@ -5,6 +5,7 @@ import {
   type ReceiptFields,
   type ReceiptDeclaration,
   canaryDateTimeToTimestamp,
+  canConfirmReceiptFraud,
   canReprocessReceipt,
   compareReceiptDeclaration,
   isValidIsoDate,
@@ -385,6 +386,7 @@ function receiptView(row: ReceiptRow, includeManagerFields = false) {
       reviewedBy: row.reviewed_by,
     },
     ...(includeManagerFields ? {
+      canConfirmFraud: canConfirmReceiptFraud(row.status, Boolean(row.rtales_result_id)),
       declared: {
         storeId: row.declared_store_id || '',
         ticketNumber: row.declared_ticket_number || '',
@@ -898,6 +900,18 @@ async function handleUpload(
           uploadRequestId || null,
         ],
       );
+      if (duplicateReasons.length) {
+        await client.query(
+          `UPDATE receipts SET review_status = 'CLEARED', reviewed_at = NOW(),
+             reviewed_by = 'SYSTEM', updated_at = NOW() WHERE id = $1`,
+          [receiptId],
+        );
+        await recordUserOffense(client, {
+          id: receiptId,
+          public_id: ticketPublicId,
+          external_user_id: session.external_user_id,
+        }, 'CONFIRMED_FRAUD', 'AUTOMATIC', 'SYSTEM');
+      }
       return duplicateReasons.length > 0;
     });
   } catch (uploadError) {
@@ -1149,13 +1163,17 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
           `UPDATE receipts SET status = $2, store_id = $3, store_name = $4,
              ticket_number = $5, purchase_date = $6, total_cents = $7,
              currency = $8, ticket_fingerprint = $9, ticket_identity_key = NULL, risk_score = $10,
-             validation_reasons = $11::jsonb, updated_at = NOW()
+             validation_reasons = $11::jsonb, review_status = 'CLEARED',
+             reviewed_at = NOW(), reviewed_by = 'SYSTEM', updated_at = NOW()
            WHERE id = $1`,
           [receiptId, status, selectedStore?.id || null, fields.storeName, fields.ticketNumber,
             fields.purchaseDate || null, fields.totalCents, fields.currency,
             status === 'DUPLICATE' ? null : fingerprint,
             validation.riskScore, JSON.stringify(validation.reasons)],
         );
+        if (status === 'DUPLICATE') {
+          await recordUserOffense(client, receipt, 'CONFIRMED_FRAUD', 'AUTOMATIC', 'SYSTEM');
+        }
         return { response: json({ success: true, status, reasons: validation.reasons }) };
       }
 
@@ -1446,6 +1464,11 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
   if (completedStatus === 'NOT_A_RECEIPT') {
     await withDatabase(env, (client) => inTransaction(client, async () => {
       await recordUserOffense(client, receipt, 'NOT_A_RECEIPT', 'AUTOMATIC', 'SYSTEM');
+    }));
+  } else if (completedStatus === 'DUPLICATE') {
+    await withDatabase(env, (client) => inTransaction(client, async () => {
+      await clearAutomaticNonTicketOffense(client, receipt.id, receipt.external_user_id);
+      await recordUserOffense(client, receipt, 'CONFIRMED_FRAUD', 'AUTOMATIC', 'SYSTEM');
     }));
   } else if (completedStatus) {
     await withDatabase(env, (client) => inTransaction(client, async () => {
@@ -1853,6 +1876,7 @@ type TicketUserSummaryRow = {
   ban_reason: string | null;
   non_receipt_count: number;
   confirmed_fraud_count: number;
+  duplicate_ticket_count: number;
 };
 
 function ticketUserSummaryQuery(url: URL, configuredThreshold: number, pagination?: { limit: number; offset: number }) {
@@ -1881,7 +1905,11 @@ function ticketUserSummaryQuery(url: URL, configuredThreshold: number, paginatio
         COALESCE((SELECT COUNT(*) FROM user_offenses o
           WHERE o.external_user_id = u.id AND o.active = TRUE AND o.category = 'NOT_A_RECEIPT'), 0) AS non_receipt_count,
         COALESCE((SELECT COUNT(*) FROM user_offenses o
-          WHERE o.external_user_id = u.id AND o.active = TRUE AND o.category = 'CONFIRMED_FRAUD'), 0) AS confirmed_fraud_count
+          WHERE o.external_user_id = u.id AND o.active = TRUE
+            AND o.category = 'CONFIRMED_FRAUD' AND o.source = 'ADMIN'), 0) AS confirmed_fraud_count,
+        COALESCE((SELECT COUNT(*) FROM user_offenses o
+          WHERE o.external_user_id = u.id AND o.active = TRUE
+            AND o.category = 'CONFIRMED_FRAUD' AND o.source = 'AUTOMATIC'), 0) AS duplicate_ticket_count
       FROM receipts r JOIN player_sessions s ON s.id = r.session_id
       JOIN external_users u ON u.id = COALESCE(r.external_user_id, s.external_user_id)
       LEFT JOIN user_bans b ON b.external_user_id = u.id AND b.status IN ('ACTIVE', 'LIFTING')
@@ -1921,6 +1949,7 @@ function ticketUserView(row: TicketUserSummaryRow) {
     banReason: row.ban_reason,
     nonReceiptCount: Number(row.non_receipt_count),
     confirmedFraudCount: Number(row.confirmed_fraud_count),
+    duplicateTicketCount: Number(row.duplicate_ticket_count),
     authorizedTotalCents: Number(row.authorized_total_cents),
     lastSubmissionAt: row.last_submission_at,
   };
@@ -1969,11 +1998,11 @@ async function handleAdminTicketUsersCsv(request: Request, env: Env): Promise<Re
   });
   const header = ['ID usuario', 'Nombre', 'Correo', 'Espacio', 'Instalación', 'Tickets subidos',
     'Tickets validados', 'Tickets sin validar', 'Strikes', 'Umbral', 'No-tickets', 'Fraudes confirmados',
-    'Estado', 'Motivo baneo', 'Fecha baneo', 'Compras autorizadas EUR', 'Última subida'];
+    'Duplicados automáticos', 'Estado', 'Motivo baneo', 'Fecha baneo', 'Compras autorizadas EUR', 'Última subida'];
   const lines = users.map((user) => [
     user.rtales_lookup_code, user.display_name, user.email || '', user.space_code, user.installation_id,
     user.tickets_submitted, user.tickets_validated, user.tickets_unvalidated, user.strike_points,
-    user.ban_threshold, user.non_receipt_count, user.confirmed_fraud_count,
+    user.ban_threshold, user.non_receipt_count, user.confirmed_fraud_count, user.duplicate_ticket_count,
     user.ban_status === 'ACTIVE' ? 'BANEADO' : user.ban_status === 'LIFTING' ? 'DESBLOQUEO EN PROCESO' : 'PERMITIDO',
     user.ban_reason || '', user.banned_at || '', (Number(user.authorized_total_cents) / 100).toFixed(2), user.last_submission_at,
   ].map(csvCell).join(','));
@@ -2174,8 +2203,7 @@ async function handleAdminReview(
     const receipt = result.rows[0];
     if (!receipt) return error('Ticket no encontrado', 404);
     if (action === 'CONFIRM_FRAUD') {
-      const eligible = receipt.status === 'AUTO_REJECTED' ||
-        (receipt.status === 'REWARD_FAILED' && !receipt.rtales_result_id);
+      const eligible = canConfirmReceiptFraud(receipt.status, Boolean(receipt.rtales_result_id));
       if (!eligible) return error('Este ticket no admite marcarse como fraude sin revocación', 409);
       if (!reason) return error('Indica el motivo del fraude', 400);
       await client.query(
@@ -3976,6 +4004,29 @@ async function requeueStuckOcr(env: Env): Promise<void> {
   await Promise.all(receipts.map(({ id }) => env.OCR_JOBS.send({ kind: 'OCR_RECEIPT', receiptId: id })));
 }
 
+async function resolveDuplicateOffenses(env: Env): Promise<void> {
+  await withDatabase(env, async (client) => {
+    await client.query(
+      `UPDATE receipts SET review_status = 'CLEARED', reviewed_at = COALESCE(reviewed_at, NOW()),
+         reviewed_by = COALESCE(reviewed_by, 'SYSTEM'), updated_at = NOW()
+       WHERE status = 'DUPLICATE' AND review_status = 'PENDING'`,
+    );
+    const result = await client.query<Pick<ReceiptRow, 'id' | 'public_id' | 'external_user_id'>>(
+      `SELECT r.id, r.public_id, r.external_user_id
+         FROM receipts r
+         LEFT JOIN user_offenses o ON o.receipt_id = r.id AND o.category = 'CONFIRMED_FRAUD'
+        WHERE r.status = 'DUPLICATE' AND r.external_user_id IS NOT NULL AND o.id IS NULL
+        ORDER BY r.created_at ASC LIMIT 50`,
+    );
+    for (const receipt of result.rows) {
+      await inTransaction(client, async () => {
+        await clearAutomaticNonTicketOffense(client, receipt.id, receipt.external_user_id);
+        await recordUserOffense(client, receipt, 'CONFIRMED_FRAUD', 'AUTOMATIC', 'SYSTEM');
+      });
+    }
+  });
+}
+
 async function continueBanCleanups(env: Env): Promise<void> {
   const bans = await withDatabase(env, async (client) => {
     const result = await client.query<Pick<UserBanRow, 'external_user_id' | 'lifting_by'>>(
@@ -4024,6 +4075,11 @@ export default {
     }
   },
   async scheduled(_controller: ScheduledController, env: Env, context: ExecutionContext): Promise<void> {
-    context.waitUntil(Promise.all([requeueDueOutbox(env), requeueStuckOcr(env), continueBanCleanups(env)]));
+    context.waitUntil(Promise.all([
+      requeueDueOutbox(env),
+      requeueStuckOcr(env),
+      resolveDuplicateOffenses(env),
+      continueBanCleanups(env),
+    ]));
   },
 } satisfies ExportedHandler<Env, JobMessage>;

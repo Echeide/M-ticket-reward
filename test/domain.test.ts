@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildTicketFingerprint, buildTicketIdentityKey } from '../src/domain/deduplication';
 import {
+  canConfirmReceiptFraud,
   canReprocessReceipt,
   compareReceiptDeclaration,
   receiptStatusAfterOcr,
@@ -207,6 +208,14 @@ test('technical OCR failures and verification mismatches require staff review', 
   assert.equal(requiresManualReceiptReview('REWARD_FAILED', ['OCR_VERIFICATION_REQUIRED']), true);
   assert.equal(requiresManualReceiptReview('REWARD_FAILED', ['RTALES_DELIVERY_FAILED']), false);
   assert.equal(requiresManualReceiptReview('AUTO_REJECTED', ['OCR_PROCESSING_FAILED']), false);
+});
+
+test('staff fraud confirmation excludes duplicates because they are resolved automatically', () => {
+  assert.equal(canConfirmReceiptFraud('DUPLICATE', false), false);
+  assert.equal(canConfirmReceiptFraud('AUTO_REJECTED', false), true);
+  assert.equal(canConfirmReceiptFraud('REWARD_FAILED', false), true);
+  assert.equal(canConfirmReceiptFraud('REWARD_FAILED', true), false);
+  assert.equal(canConfirmReceiptFraud('REWARDED', true), false);
 });
 
 test('reward tiers select the highest eligible purchase threshold', () => {

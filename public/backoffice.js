@@ -342,8 +342,8 @@ async function openTicketUserDetail(lookupCode) {
       <div><span>Compras autorizadas</span><strong>${formatMoney(user.authorizedTotalCents)}</strong></div>
     </div>
     <section class="ticket-user-offenses"><h3>Infracciones activas</h3>
-      <div class="offense-summary"><span>No-tickets: <strong>${user.nonReceiptCount}</strong></span><span>Fraudes confirmados: <strong>${user.confirmedFraudCount}</strong></span></div>
-      ${payload.offenses.length ? payload.offenses.map((offense) => `<article><span><strong>${offense.category === 'CONFIRMED_FRAUD' ? 'Fraude confirmado' : 'Imagen no-ticket'}</strong><small><button class="text-button open-offense-ticket" data-id="${escapeHtml(offense.receiptId)}" data-public-id="${escapeHtml(offense.receiptPublicId)}" type="button">${escapeHtml(offense.receiptPublicId)}</button> · ${escapeHtml(new Date(offense.createdAt).toLocaleString('es-ES'))}</small></span><b>+${offense.score}</b></article>`).join('') : '<p class="empty-state">No tiene infracciones activas.</p>'}
+      <div class="offense-summary"><span>No-tickets: <strong>${user.nonReceiptCount}</strong></span><span>Duplicados: <strong>${user.duplicateTicketCount}</strong></span><span>Fraudes confirmados: <strong>${user.confirmedFraudCount}</strong></span></div>
+      ${payload.offenses.length ? payload.offenses.map((offense) => `<article><span><strong>${offense.category === 'CONFIRMED_FRAUD' ? (offense.source === 'AUTOMATIC' ? 'Ticket duplicado' : 'Fraude confirmado') : 'Imagen no-ticket'}</strong><small><button class="text-button open-offense-ticket" data-id="${escapeHtml(offense.receiptId)}" data-public-id="${escapeHtml(offense.receiptPublicId)}" type="button">${escapeHtml(offense.receiptPublicId)}</button> · ${escapeHtml(new Date(offense.createdAt).toLocaleString('es-ES'))}</small></span><b>+${offense.score}</b></article>`).join('') : '<p class="empty-state">No tiene infracciones activas.</p>'}
     </section>
     ${user.banStatus === 'BANNED' ? `<div class="dialog-actions"><button class="danger-button" id="detail-lift-ticket-user" type="button">Desbanear usuario</button></div>` : ''}`;
     document.querySelector('#detail-lift-ticket-user')?.addEventListener('click', () => liftTicketUserBan(user.banId));
@@ -1410,8 +1410,7 @@ async function select(id, suppliedReceipt = null) {
   const reprocessable = canReprocess(receipt);
   const canRevoke = receipt.status === 'REWARDED' && Boolean(receipt.reward.resultId);
   const canApproveManually = (receipt.status === 'AUTO_REJECTED' || receipt.verificationRequired) && receipt.review.status !== 'FRAUD';
-  const canConfirmFraud = receipt.review.status !== 'FRAUD' && (receipt.status === 'AUTO_REJECTED' ||
-    (receipt.status === 'REWARD_FAILED' && !receipt.reward.resultId));
+  const canConfirmFraud = receipt.review.status !== 'FRAUD' && receipt.canConfirmFraud === true;
   const reasons = Array.isArray(receipt.reasons) ? receipt.reasons : [];
   const declared = receipt.declared || {};
   const declaredStore = state.stores.find((store) => store.id === declared.storeId);
