@@ -383,8 +383,13 @@ function ticketNumberFromEvidence(value: string): string | null {
   const labelled = /(?:^|\b)(?:documento|ticket|factura|recibo|transacci[oó]n|operaci[oó]n|folio|n[º°o]\.?)\s*[:#-]*\s+(.+)/i.exec(value);
   if (!labelled) return null;
   const candidates = (labelled[1] || '').slice(0, 160).match(/[A-Z0-9][A-Z0-9./-]{3,}/gi) || [];
-  const credible = candidates.filter((candidate) => (candidate.match(/\d/g) || []).length >= 3);
+  const credible = candidates.filter((candidate) =>
+    (candidate.match(/\d/g) || []).length >= 3 && !isPrintedDateCandidate(candidate));
   return credible.sort((left, right) => compactIdentifier(right).length - compactIdentifier(left).length)[0] || null;
+}
+
+function isPrintedDateCandidate(value: string): boolean {
+  return /^(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})$/.test(value);
 }
 
 function escapeRegex(value: string): string {
@@ -433,19 +438,24 @@ function profileTicketNumberSource(receipt: OcrReceipt, region: string): string 
 }
 
 function recoverProfileTicketNumber(receipt: OcrReceipt, stores: StoreIdentity[]): OcrReceipt {
-  if (!receipt.isReceipt || hasVerifiedTicketNumber(receipt)) return receipt;
+  if (!receipt.isReceipt) return receipt;
   const store = findMatchingStore(stores, receipt);
   const profile = store?.ocrProfile;
   if (!store || !profile?.enabled || (!profile.ticketNumberPattern && !profile.ticketNumberExample)) return receipt;
   const pattern = ticketNumberRegex(profile.ticketNumberPattern, profile.ticketNumberExample);
   if (!pattern) return receipt;
+  const currentMatchesPattern = Boolean(receipt.ticketNumber) && Array.from(receipt.ticketNumber!.matchAll(pattern))
+    .some((match) => compactIdentifier(match[1] || '') === compactIdentifier(receipt.ticketNumber || ''));
+  if (hasVerifiedTicketNumber(receipt) && currentMatchesPattern) return receipt;
   const candidates = Array.from(profileTicketNumberSource(receipt, profile.ticketNumberRegion).matchAll(pattern))
     .map((match) => String(match[1] || '').trim())
     .filter((candidate) => compactIdentifier(candidate).length >= 3);
   const unique = Array.from(new Map(candidates.map((candidate) => [compactIdentifier(candidate), candidate])).values());
   // Without a readable label, accept only one unambiguous value matching the
   // learned merchant syntax. Multiple candidates still require manual review.
-  if (unique.length !== 1) return receipt;
+  if (unique.length !== 1) {
+    return receipt.ticketNumber && !currentMatchesPattern ? { ...receipt, ticketNumber: '' } : receipt;
+  }
   const ticketNumber = unique[0]!;
   return {
     ...receipt,
@@ -455,16 +465,17 @@ function recoverProfileTicketNumber(receipt: OcrReceipt, stores: StoreIdentity[]
 }
 
 function centsFromEvidence(value: string): number | null {
-  const matches = [...value.matchAll(/(\d{1,3}(?:[.\s]\d{3})*|\d+)[,.](\d{2})/g)];
+  const matches = [...value.matchAll(/(\d{1,3}(?:[.\s]\d{3})*|\d+)[,.](\d{1,2})(?!\d)/g)];
   const match = matches.at(-1);
   if (!match) return null;
   const units = Number(match[1]!.replace(/[.\s]/g, ''));
-  const cents = Number(match[2]!);
+  const decimal = match[2]!;
+  const cents = Number(decimal.length === 1 ? `${decimal}0` : decimal);
   return Number.isSafeInteger(units) ? (units * 100) + cents : null;
 }
 
 function totalEvidenceFromRaw(value: string, expectedCents: number | null): string {
-  const matches = [...value.matchAll(/(?:TOTAL(?:\s+COMPRA)?|IMPORTE\s+TOTAL)\s*:?\s*(\d{1,3}(?:[.\s]\d{3})*|\d+)[,.](\d{2})/gi)];
+  const matches = [...value.matchAll(/(?:TOTAL(?:\s+COMPRA)?|IMPORTE\s+TOTAL)\s*:?\s*(\d{1,3}(?:[.\s]\d{3})*|\d+)[,.](\d{1,2})(?!\d)/gi)];
   const matching = expectedCents
     ? matches.find((match) => centsFromEvidence(match[0]) === expectedCents) || matches.at(-1)
     : matches.at(-1);
@@ -641,6 +652,8 @@ Reglas para storeName:
 - Si la etiqueta del número está parcialmente ilegible, usa su posición y el example del profile para
   localizarlo. Devuelve ticketNumber solo si la secuencia completa es visible y transcribe en
   ticketNumberText únicamente el fragmento realmente legible; no inventes las letras dañadas.
+- Si la etiqueta comparte línea con fecha y hora, ticketNumber es el primer identificador situado
+  inmediatamente después de la etiqueta; una fecha o una hora nunca son el número del ticket.
 - Si coincide claramente, devuelve exactamente su name; sin evidencia visible, déjalo vacío.
 
 Usa exclusivamente la fecha impresa. El total es el importe final pagado, no subtotal, ahorro ni efectivo entregado.
@@ -652,7 +665,8 @@ function regionPrompt(storeReference: string, region: 'header' | 'totals', hints
     ? `Esta imagen muestra la CABECERA y primera parte del ticket. Localiza el comercio, la línea de
 DOCUMENTO/TICKET/FACTURA y la FECHA/HORA. ticketNumber debe ser el valor completo que aparece después
 de una etiqueta identificadora como Documento, Ticket, Factura, Recibo, Folio o Transacción. Un CIF/NIF,
-dirección, centro, caja, vendedor o código de tienda NO son el número del ticket. ticketNumberText debe
+fecha, hora, dirección, centro, caja, vendedor o código de tienda NO son el número del ticket. Si todos
+aparecen en la misma línea, utiliza el primer identificador inmediatamente posterior a la etiqueta. ticketNumberText debe
 incluir literalmente la etiqueta que identifica ese número.`
     : `Esta imagen muestra la parte INFERIOR del ticket. Localiza el TOTAL COMPRA o importe final
 pagado. No uses subtotales, ahorro, cambio, efectivo entregado ni importes de líneas de producto.`;

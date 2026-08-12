@@ -40,6 +40,29 @@ test('OCR normalization trusts a visible decimal total over a shifted model inte
   assert.deepEqual(verifyOcr(receipt), []);
 });
 
+test('OCR normalization separates an invoice number from its date and accepts one decimal totals', () => {
+  const receipt = normalizeOcr({
+    isReceipt: true,
+    confidence: 0.99,
+    storeName: 'Echeide',
+    headerText: 'ECHEIDE\nEcheide, Soluciones en Comunicación y Nuevas tecnologías SLU',
+    ticketNumber: '12/08/26',
+    ticketNumberText: 'Factura: 8008 - 12/08/26 - 10:27',
+    purchaseDate: '2026-08-12',
+    purchaseDateTime: '2026-08-12T10:27',
+    purchaseDateText: 'Factura: 8008 - 12/08/26 - 10:27',
+    totalCents: 606,
+    totalText: 'Total 6,06€',
+    currency: 'EUR',
+    rawText: 'ECHEIDE\nFactura: 8008 - 12/08/26 - 10:27\nTotal\n6,0€',
+  });
+
+  assert.equal(receipt.ticketNumber, '8008');
+  assert.equal(receipt.totalCents, 600);
+  assert.equal(receipt.evidence?.totalText, 'Total\n6,0');
+  assert.deepEqual(verifyOcr(receipt), []);
+});
+
 test('OCR normalization rejects promotional text and dates absent from the raw evidence', () => {
   const receipt = normalizeOcr({
     ...validExtraction,
@@ -336,6 +359,51 @@ test('OCR recovers a unique merchant-pattern number when its printed label is un
   assert.match(prompt, /2026\/123456-00123456/);
   assert.match(prompt, /AAAA\/NNNNNN-NNNNNNNN\[N\]/);
   assert.match(prompt, /etiqueta del número está parcialmente ilegible/);
+});
+
+test('OCR merchant pattern replaces a verified identifier that uses the wrong syntax', async () => {
+  const extraction = {
+    isReceipt: true,
+    confidence: 0.99,
+    storeName: 'Echeide',
+    headerText: 'ECHEIDE',
+    ticketNumber: 'CAJA-003',
+    ticketNumberText: 'Factura: CAJA-003',
+    purchaseDate: '2026-08-12',
+    purchaseDateTime: '2026-08-12T10:27',
+    purchaseDateText: '12/08/26 - 10:27',
+    totalCents: 600,
+    totalText: 'Total 6,0€',
+    currency: 'EUR',
+    rawText: 'ECHEIDE\n8008 - 12/08/26 - 10:27\nTotal 6,0€',
+  };
+  const env = {
+    OCR_MODE: 'workers-ai', OCR_PROVIDER: 'workers-ai',
+    OCR_MODEL: '@cf/meta/llama-3.2-11b-vision-instruct', OCR_WORKERS_AI_FORMAT: 'chat',
+    OCR_TIMEOUT_MS: '5000',
+    AI: { async run() { return { choices: [{ message: { content: JSON.stringify(extraction) } }] }; } },
+  } as unknown as Env;
+
+  const result = await readReceipt(
+    env,
+    new Uint8Array([1, 2, 3]).buffer,
+    'image/webp',
+    [{
+      name: 'Echeide', aliases: [],
+      ocrProfile: {
+        version: 1, enabled: true, headerSignatures: ['ECHEIDE'],
+        ticketNumberLabels: ['Factura'], ticketNumberHelp: '',
+        ticketNumberExample: '1234', ticketNumberPattern: 'NNNN',
+        dateLabels: ['Factura'], totalLabels: ['Total'], ignoredTotalLabels: [],
+        ticketNumberRegion: 'body', dateRegion: 'body', totalRegion: 'footer',
+        dateFormat: 'DD/MM/AA', instructions: '', sampleCount: 3,
+      },
+    }],
+  );
+
+  assert.equal(result.receipt.ticketNumber, '8008');
+  assert.equal(result.receipt.evidence?.ticketNumberText, '8008');
+  assert.deepEqual(result.verificationIssues, []);
 });
 
 test('OCR does not recover an unlabeled merchant-pattern number when candidates conflict', async () => {
