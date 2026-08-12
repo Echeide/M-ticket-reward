@@ -124,6 +124,7 @@ function openScanFlow() {
 
 function closeScanFlow(reset = false) {
   const dialog = document.querySelector('#scan-details-dialog');
+  if (dialog.contains(document.activeElement)) document.activeElement.blur();
   if (dialog.open) dialog.close();
   if (reset) {
     document.querySelector('#scan-details-form').reset();

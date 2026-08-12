@@ -41,7 +41,16 @@ const adminRoleLabels = {
 };
 const reasonLabels = {
   OCR_PROCESSING_FAILED: 'La lectura automática ha fallado y necesita revisión.',
+  OCR_PROVIDER_QUOTA_EXCEEDED: 'El proveedor de OCR ha agotado su cuota.',
+  OCR_PROVIDER_LICENSE_REQUIRED: 'El proveedor de OCR requiere revisar su licencia.',
+  OCR_PROVIDER_CONFIGURATION_ERROR: 'El proveedor de OCR tiene un problema de configuración.',
+  OCR_PROVIDER_CAPACITY: 'El proveedor de OCR no tenía capacidad disponible.',
+  OCR_PROVIDER_RATE_LIMITED: 'El proveedor de OCR limitó temporalmente las solicitudes.',
+  OCR_PROVIDER_TIMEOUT: 'El proveedor de OCR tardó demasiado en responder.',
+  OCR_PROVIDER_UNAVAILABLE: 'El proveedor de OCR no estaba disponible.',
   OCR_VERIFICATION_REQUIRED: 'El OCR no ha podido verificar todos los datos. No se ha rechazado automáticamente.',
+  STAFF_REJECTION_CONFIRMED: 'El staff ha revisado el ticket y ha confirmado el rechazo.',
+  STAFF_FRAUD_CONFIRMED: 'El staff ha revisado el ticket y lo ha marcado como fraude.',
   OCR_MISSING_TICKET_NUMBER: 'Falta el número de ticket.',
   OCR_MISSING_TICKET_NUMBER_OR_TIME: 'Falta un número de ticket o una hora de compra verificable.',
   OCR_UNVERIFIED_TICKET_NUMBER: 'El número no coincide con su evidencia visible.',

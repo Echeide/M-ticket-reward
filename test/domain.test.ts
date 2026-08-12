@@ -7,6 +7,7 @@ import {
   receiptStatusAfterOcr,
   normalizeReceiptDeclaration,
   normalizeUploadRequestId,
+  requiresManualReceiptReview,
   validateReceiptAutomatically,
   isValidIsoDate,
 } from '../src/domain/receipt';
@@ -195,6 +196,17 @@ test('OCR reprocessing is limited to receipts that cannot duplicate rewards', ()
   assert.equal(canReprocessReceipt('REWARDED'), false);
   assert.equal(canReprocessReceipt('REWARD_PENDING'), false);
   assert.equal(canReprocessReceipt('DUPLICATE'), false);
+});
+
+test('technical OCR failures and verification mismatches require staff review', () => {
+  assert.equal(requiresManualReceiptReview('REWARD_FAILED', ['OCR_PROCESSING_FAILED']), true);
+  assert.equal(requiresManualReceiptReview('REWARD_FAILED', [
+    'OCR_PROVIDER_TIMEOUT',
+    'OCR_PROCESSING_FAILED',
+  ]), true);
+  assert.equal(requiresManualReceiptReview('REWARD_FAILED', ['OCR_VERIFICATION_REQUIRED']), true);
+  assert.equal(requiresManualReceiptReview('REWARD_FAILED', ['RTALES_DELIVERY_FAILED']), false);
+  assert.equal(requiresManualReceiptReview('AUTO_REJECTED', ['OCR_PROCESSING_FAILED']), false);
 });
 
 test('reward tiers select the highest eligible purchase threshold', () => {

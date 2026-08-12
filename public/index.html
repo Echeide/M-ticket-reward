@@ -9,7 +9,7 @@
     <script>
       if (window.parent !== window) document.documentElement.classList.add("is-embedded");
     </script>
-    <link rel="stylesheet" href="/styles.css?v=embedded-height-1" />
+    <link rel="stylesheet" href="/styles.css?v=ticket-detail-actions-top-1" />
   </head>
   <body class="public-body theme-gcx26">
     <svg class="icon-library" aria-hidden="true">
@@ -162,6 +162,13 @@
           </span>
           <h2>Detalle del ticket</h2>
         </div>
+        <div class="detail-actions">
+          <button class="primary-button" id="detail-action" type="button" hidden></button>
+          <button class="primary-button button-with-icon detail-list-button" data-action="open-history" type="button">
+            <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
+            Volver al listado de tickets
+          </button>
+        </div>
         <h3 class="detail-reference" id="detail-title">Ticket</h3>
         <div class="ticket-detail-card">
           <img id="detail-ticket-image" class="detail-ticket-image" alt="Imagen del ticket" hidden />
@@ -175,13 +182,6 @@
             <div><dt>Puntos</dt><dd id="detail-points">—</dd></div>
             <div><dt>Enviado</dt><dd id="detail-created">—</dd></div>
           </dl>
-        </div>
-        <div class="detail-actions">
-          <button class="primary-button" id="detail-action" type="button" hidden></button>
-          <button class="primary-button button-with-icon detail-list-button" data-action="open-history" type="button">
-            <svg class="button-icon" aria-hidden="true"><use href="#icon-ticket"></use></svg>
-            Volver al listado de tickets
-          </button>
         </div>
       </section>
 
@@ -227,6 +227,6 @@
         </div>
       </form>
     </dialog>
-    <script type="module" src="/app.js?v=resilient-ticket-upload-1"></script>
+    <script type="module" src="/app.js?v=scan-form-no-zoom-1"></script>
   </body>
 </html>

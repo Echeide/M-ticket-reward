@@ -12,6 +12,7 @@ import {
   normalizeReceiptDeclaration,
   normalizeUploadRequestId,
   receiptStatusAfterOcr,
+  requiresManualReceiptReview,
   validateReceiptAutomatically,
 } from './domain/receipt';
 import {
@@ -347,8 +348,8 @@ function sessionView(row: SessionRow) {
 }
 
 function receiptView(row: ReceiptRow, includeManagerFields = false) {
-  const verificationRequired = row.status === 'REWARD_FAILED' &&
-    row.validation_reasons.includes('OCR_VERIFICATION_REQUIRED');
+  const verificationRequired = row.review_status === 'PENDING' &&
+    requiresManualReceiptReview(row.status, row.validation_reasons);
   return {
     id: row.id,
     publicId: row.public_id,
@@ -411,15 +412,17 @@ function receiptView(row: ReceiptRow, includeManagerFields = false) {
 }
 
 const PUBLIC_REASON_MESSAGES: Record<string, string> = {
-  OCR_PROCESSING_FAILED: 'No hemos podido leer el ticket. Prueba con una foto más clara.',
-  OCR_PROVIDER_QUOTA_EXCEEDED: 'No hemos podido procesar el ticket en este momento. El ticket queda registrado para poder volver a comprobarlo.',
-  OCR_PROVIDER_LICENSE_REQUIRED: 'No hemos podido procesar el ticket en este momento. El ticket queda registrado para poder volver a comprobarlo.',
-  OCR_PROVIDER_CONFIGURATION_ERROR: 'No hemos podido procesar el ticket en este momento. El ticket queda registrado para poder volver a comprobarlo.',
-  OCR_PROVIDER_CAPACITY: 'El servicio de lectura está saturado temporalmente. El ticket queda registrado para poder volver a comprobarlo.',
-  OCR_PROVIDER_RATE_LIMITED: 'El servicio de lectura está saturado temporalmente. El ticket queda registrado para poder volver a comprobarlo.',
-  OCR_PROVIDER_TIMEOUT: 'El servicio de lectura ha tardado demasiado. El ticket queda registrado para poder volver a comprobarlo.',
-  OCR_PROVIDER_UNAVAILABLE: 'El servicio de lectura no está disponible temporalmente. El ticket queda registrado para poder volver a comprobarlo.',
+  OCR_PROCESSING_FAILED: 'No hemos podido completar la lectura automática. El ticket queda pendiente de revisión por el equipo.',
+  OCR_PROVIDER_QUOTA_EXCEEDED: 'No hemos podido completar la lectura automática. El ticket queda pendiente de revisión por el equipo.',
+  OCR_PROVIDER_LICENSE_REQUIRED: 'No hemos podido completar la lectura automática. El ticket queda pendiente de revisión por el equipo.',
+  OCR_PROVIDER_CONFIGURATION_ERROR: 'No hemos podido completar la lectura automática. El ticket queda pendiente de revisión por el equipo.',
+  OCR_PROVIDER_CAPACITY: 'No hemos podido completar la lectura automática. El ticket queda pendiente de revisión por el equipo.',
+  OCR_PROVIDER_RATE_LIMITED: 'No hemos podido completar la lectura automática. El ticket queda pendiente de revisión por el equipo.',
+  OCR_PROVIDER_TIMEOUT: 'No hemos podido completar la lectura automática. El ticket queda pendiente de revisión por el equipo.',
+  OCR_PROVIDER_UNAVAILABLE: 'No hemos podido completar la lectura automática. El ticket queda pendiente de revisión por el equipo.',
   OCR_VERIFICATION_REQUIRED: 'El ticket está registrado, pero no hemos podido verificar todos sus datos automáticamente. Queda pendiente de revisión.',
+  STAFF_REJECTION_CONFIRMED: 'El equipo ha revisado el ticket y no ha podido validarlo.',
+  STAFF_FRAUD_CONFIRMED: 'El equipo ha revisado el ticket y lo ha rechazado.',
   NOT_A_RECEIPT: 'La imagen no parece un ticket de compra.',
   DUPLICATE: 'Este ticket ya se había enviado.',
   DUPLICATE_IMAGE: 'Esta imagen ya se había enviado.',
@@ -448,8 +451,8 @@ function publicReceiptMessage(row: ReceiptRow): string {
 }
 
 function publicReceiptView(row: ReceiptRow) {
-  const verificationRequired = row.status === 'REWARD_FAILED' &&
-    row.validation_reasons.includes('OCR_VERIFICATION_REQUIRED');
+  const verificationRequired = row.review_status === 'PENDING' &&
+    requiresManualReceiptReview(row.status, row.validation_reasons);
   const retryableReward = row.status === 'REWARD_FAILED' &&
     row.validation_reasons.includes('RTALES_DELIVERY_FAILED');
   return {
@@ -2181,16 +2184,20 @@ async function handleAdminReview(
         [uuid(), receiptId, managerEmail, reason],
       );
       await client.query(
-        `UPDATE receipts SET review_status = 'FRAUD', reviewed_at = NOW(),
+        `UPDATE receipts SET status = 'AUTO_REJECTED', review_status = 'FRAUD',
+           validation_reasons = $3::jsonb, reviewed_at = NOW(),
            reviewed_by = $2, updated_at = NOW() WHERE id = $1`,
-        [receiptId, managerEmail],
+        [receiptId, managerEmail, JSON.stringify([
+          'STAFF_FRAUD_CONFIRMED',
+          ...receipt.validation_reasons.filter((item) => item !== 'STAFF_FRAUD_CONFIRMED'),
+        ])],
       );
       await recordUserOffense(client, receipt, 'CONFIRMED_FRAUD', 'ADMIN', managerEmail);
-      return json({ success: true, status: receipt.status });
+      return json({ success: true, status: 'AUTO_REJECTED' });
     }
     if (action === 'CONFIRM_REJECTION') {
-      const verificationRequired = receipt.status === 'REWARD_FAILED' &&
-        receipt.validation_reasons.includes('OCR_VERIFICATION_REQUIRED');
+      const verificationRequired = receipt.review_status === 'PENDING' &&
+        requiresManualReceiptReview(receipt.status, receipt.validation_reasons);
       if (receipt.status !== 'AUTO_REJECTED' && !verificationRequired) {
         return error('Este ticket no admite confirmar el rechazo', 409);
       }
@@ -2200,15 +2207,19 @@ async function handleAdminReview(
         [uuid(), receiptId, managerEmail, reason || null],
       );
       await client.query(
-        `UPDATE receipts SET review_status = 'CLEARED', reviewed_at = NOW(),
+        `UPDATE receipts SET status = 'AUTO_REJECTED', review_status = 'CLEARED',
+           validation_reasons = $3::jsonb, reviewed_at = NOW(),
            reviewed_by = $2, updated_at = NOW() WHERE id = $1`,
-        [receiptId, managerEmail],
+        [receiptId, managerEmail, JSON.stringify([
+          'STAFF_REJECTION_CONFIRMED',
+          ...receipt.validation_reasons.filter((item) => item !== 'STAFF_REJECTION_CONFIRMED'),
+        ])],
       );
-      return json({ success: true, status: receipt.status });
+      return json({ success: true, status: 'AUTO_REJECTED' });
     }
     if (action === 'MANUAL_APPROVE') {
-      const verificationRequired = receipt.status === 'REWARD_FAILED' &&
-        receipt.validation_reasons.includes('OCR_VERIFICATION_REQUIRED');
+      const verificationRequired = receipt.review_status === 'PENDING' &&
+        requiresManualReceiptReview(receipt.status, receipt.validation_reasons);
       if (receipt.status !== 'AUTO_REJECTED' && !verificationRequired) {
         return error('Este ticket no admite validación manual', 409);
       }

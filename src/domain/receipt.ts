@@ -111,10 +111,14 @@ export function receiptStatusAfterOcr(validation: AutomaticValidation): ReceiptS
   return validation.approved ? 'REWARD_PENDING' : 'AUTO_REJECTED';
 }
 
-export function canReprocessReceipt(status: string, reasons: string[] = []): boolean {
-  if (['AUTO_REJECTED', 'NOT_A_RECEIPT', 'READY_FOR_CONFIRMATION'].includes(status)) return true;
+export function requiresManualReceiptReview(status: string, reasons: string[] = []): boolean {
   return status === 'REWARD_FAILED' && reasons.some((reason) =>
     ['OCR_PROCESSING_FAILED', 'OCR_VERIFICATION_REQUIRED'].includes(reason));
+}
+
+export function canReprocessReceipt(status: string, reasons: string[] = []): boolean {
+  if (['AUTO_REJECTED', 'NOT_A_RECEIPT', 'READY_FOR_CONFIRMATION'].includes(status)) return true;
+  return requiresManualReceiptReview(status, reasons);
 }
 
 export function validateReceiptAutomatically(
