@@ -3,7 +3,7 @@ const state = {
   currentAdmin: null,
   pagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
   ticketUserPagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
-  reviewing: false,
+  reviewing: false, storeDeletionPreview: null,
   trainingEvaluationRunning: false,
   trainingEvaluationSampleId: '',
   token: sessionStorage.getItem('admin-token') || '',
@@ -204,17 +204,24 @@ async function loadStores() {
   state.stores = payload.stores;
   populateStoreFilter();
   document.querySelector('#manager-email').textContent = payload.manager || '';
-  document.querySelector('#active-store-count').textContent = state.stores.filter((store) => store.active).length;
-  document.querySelector('#inactive-store-count').textContent = state.stores.filter((store) => !store.active).length;
+  document.querySelector('#active-store-count').textContent = state.stores.filter((store) => store.active && !store.archived).length;
+  document.querySelector('#inactive-store-count').textContent = state.stores.filter((store) => !store.active && !store.archived).length;
+  document.querySelector('#archived-store-count').textContent = state.stores.filter((store) => store.archived).length;
   document.querySelector('#linked-receipt-count').textContent = state.stores.reduce((total, store) => total + store.receiptCount, 0);
-  document.querySelector('#store-list').innerHTML = state.stores.map((store) => `
-    <article class="store-row ${store.active ? '' : 'inactive'}">
+  renderStores();
+}
+
+function renderStores() {
+  const showArchived = document.querySelector('#show-archived-stores').checked;
+  const stores = state.stores.filter((store) => showArchived || !store.archived);
+  document.querySelector('#store-list').innerHTML = stores.map((store) => `
+    <article class="store-row ${store.archived ? 'archived' : store.active ? '' : 'inactive'}">
       <span class="store-identity">${store.logoUrl ? `<img src="${escapeHtml(store.logoUrl)}" alt="" loading="lazy" />` : '<span class="store-logo-empty" aria-hidden="true">—</span>'}<span><strong>${escapeHtml(store.name)}</strong><small>${escapeHtml(store.code)}</small><small class="participation-chip">${escapeHtml(store.participationLabel || 'Estándar')} · ×${formatMultiplier(store.rewardMultiplierPercent)}</small></span></span>
       <span class="alias-list">${store.aliases.length ? store.aliases.map((alias) => `<small>${escapeHtml(alias)}</small>`).join('') : '<small>Sin alias</small>'}</span>
       <strong>${store.receiptCount}</strong>
-      <span class="status-chip ${store.active ? 'rewarded' : 'duplicate'}">${store.active ? 'ACTIVO' : 'INACTIVO'}</span>
-      <button class="secondary-button edit-store" data-id="${store.id}" type="button">${isOperator() ? 'Consultar' : 'Editar'}</button>
-    </article>`).join('') || '<p class="empty-state">Todavía no hay comercios.</p>';
+      <span class="status-chip ${store.archived ? 'archived' : store.active ? 'rewarded' : 'duplicate'}">${store.archived ? 'ARCHIVADO' : store.active ? 'ACTIVO' : 'INACTIVO'}</span>
+      <button class="secondary-button edit-store" data-id="${escapeHtml(store.id)}" type="button">${isOperator() || store.archived ? 'Consultar' : 'Editar'}</button>
+    </article>`).join('') || `<p class="empty-state">${showArchived ? 'Todavía no hay comercios.' : 'No hay comercios activos o inactivos.'}</p>`;
   document.querySelectorAll('.edit-store').forEach((button) => button.addEventListener('click', () => openStoreDialog(button.dataset.id)));
 }
 
@@ -659,7 +666,7 @@ async function saveTier(event) {
 
 function openStoreDialog(id = '') {
   const store = state.stores.find((item) => item.id === id);
-  const readOnly = isOperator();
+  const readOnly = isOperator() || Boolean(store?.archived);
   const form = document.querySelector('#store-form');
   form.reset();
   form.elements.id.value = store?.id || '';
@@ -677,7 +684,9 @@ function openStoreDialog(id = '') {
   document.querySelector('#training-tab-count').textContent = '0';
   document.querySelector('#store-training-tab').disabled = !store;
   setStorePanel('details');
-  document.querySelector('#store-dialog-title').textContent = readOnly ? 'Consultar comercio' : store ? 'Editar comercio' : 'Añadir comercio';
+  document.querySelector('#store-dialog-title').textContent = store?.archived
+    ? 'Comercio archivado' : readOnly ? 'Consultar comercio' : store ? 'Editar comercio' : 'Añadir comercio';
+  document.querySelector('#store-archived-notice').hidden = !store?.archived;
   document.querySelector('#store-form-error').textContent = '';
   form.querySelectorAll('input:not([type="hidden"]), textarea, select').forEach((control) => {
     control.disabled = readOnly;
@@ -689,6 +698,8 @@ function openStoreDialog(id = '') {
   document.querySelector('.training-batch-actions').hidden = readOnly;
   document.querySelector('#generate-ocr-profile').hidden = readOnly;
   document.querySelector('#save-ocr-profile').hidden = readOnly;
+  document.querySelector('#delete-store').hidden = !store || isOperator() || Boolean(store.archived);
+  document.querySelector('#restore-store').hidden = !store?.archived || isOperator();
   document.querySelector('#store-dialog').showModal();
 }
 
@@ -1246,6 +1257,97 @@ async function saveStore(event) {
   }
 }
 
+function closeStoreDeleteDialog() {
+  state.storeDeletionPreview = null;
+  document.querySelector('#store-delete-dialog').close();
+}
+
+async function openStoreDeleteDialog() {
+  const storeId = document.querySelector('#store-form').elements.id.value;
+  const store = state.stores.find((item) => item.id === storeId);
+  if (!store || store.archived || isOperator()) return;
+  const trigger = document.querySelector('#delete-store');
+  trigger.disabled = true;
+  try {
+    const preview = await request(`/api/admin/stores/${storeId}/deletion-preview`);
+    state.storeDeletionPreview = preview;
+    const permanent = preview.mode === 'DELETE';
+    const form = document.querySelector('#store-delete-form');
+    form.reset();
+    document.querySelector('#store-delete-title').textContent = `Eliminar “${preview.store.name}”`;
+    document.querySelector('#store-delete-consequence').textContent = permanent
+      ? 'Este comercio no tiene tickets ni ejemplos de entrenamiento. Se eliminará definitivamente junto con su configuración y logo.'
+      : 'Este comercio tiene información vinculada. Se archivará, dejará de aparecer públicamente y conservará todo su histórico.';
+    document.querySelector('#store-delete-counts').innerHTML = `
+      <span><strong>${Number(preview.counts.receiptCount || 0)}</strong> tickets vinculados</span>
+      <span><strong>${Number(preview.counts.trainingSampleCount || 0)}</strong> ejemplos de entrenamiento</span>`;
+    document.querySelector('#store-delete-confirmation-name').textContent = preview.store.name;
+    document.querySelector('#store-delete-error').textContent = '';
+    const confirmButton = document.querySelector('#confirm-store-delete');
+    confirmButton.textContent = permanent ? 'Eliminar definitivamente' : 'Archivar comercio';
+    confirmButton.disabled = true;
+    document.querySelector('#store-delete-dialog').showModal();
+    document.querySelector('#store-delete-name').focus();
+  } catch (error) {
+    document.querySelector('#store-form-error').textContent = error instanceof Error
+      ? error.message : 'No se pudo comprobar el comercio';
+  } finally {
+    trigger.disabled = false;
+  }
+}
+
+async function deleteStore(event) {
+  event.preventDefault();
+  const preview = state.storeDeletionPreview;
+  if (!preview) return;
+  const confirmationName = document.querySelector('#store-delete-name').value.trim();
+  const errorNode = document.querySelector('#store-delete-error');
+  const button = document.querySelector('#confirm-store-delete');
+  errorNode.textContent = '';
+  button.disabled = true;
+  const originalLabel = button.textContent;
+  button.textContent = preview.mode === 'DELETE' ? 'Eliminando…' : 'Archivando…';
+  try {
+    const result = await request(`/api/admin/stores/${preview.store.id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmationName }),
+    });
+    closeStoreDeleteDialog();
+    clearTrainingDrafts();
+    document.querySelector('#store-dialog').close();
+    await loadStores();
+    showNotice(result.mode === 'DELETED'
+      ? 'Comercio eliminado definitivamente.'
+      : 'Comercio archivado. Su histórico se conserva.');
+  } catch (error) {
+    errorNode.textContent = error instanceof Error ? error.message : 'No se pudo eliminar el comercio';
+    button.disabled = false;
+    button.textContent = originalLabel;
+  }
+}
+
+async function restoreStore() {
+  const storeId = document.querySelector('#store-form').elements.id.value;
+  const store = state.stores.find((item) => item.id === storeId);
+  if (!store?.archived || isOperator()) return;
+  if (!confirm(`¿Restaurar “${store.name}”? Volverá a estar activo y podrá recibir nuevos tickets.`)) return;
+  const button = document.querySelector('#restore-store');
+  button.disabled = true;
+  try {
+    await request(`/api/admin/stores/${store.id}/restore`, { method: 'POST' });
+    clearTrainingDrafts();
+    document.querySelector('#store-dialog').close();
+    await loadStores();
+    showNotice('Comercio restaurado y activado.');
+  } catch (error) {
+    document.querySelector('#store-form-error').textContent = error instanceof Error
+      ? error.message : 'No se pudo restaurar el comercio';
+  } finally {
+    button.disabled = false;
+  }
+}
+
 document.querySelector('#store-form [name="logo"]').addEventListener('change', (event) => {
   const file = event.currentTarget.files[0];
   setStoreLogoPreview(file ? URL.createObjectURL(file) : '', Boolean(file));
@@ -1650,6 +1752,9 @@ document.querySelector('#generate-ocr-profile').addEventListener('click', genera
 document.querySelector('#save-ocr-profile').addEventListener('click', saveOcrProfile);
 document.querySelector('#ocr-profile-enabled').addEventListener('change', updateOcrProfileStatus);
 closeDialogOnBackdrop(document.querySelector('#store-dialog'), clearTrainingDrafts);
+closeDialogOnBackdrop(document.querySelector('#store-delete-dialog'), () => {
+  state.storeDeletionPreview = null;
+});
 closeDialogOnBackdrop(document.querySelector('#training-receipts-dialog'));
 closeDialogOnBackdrop(document.querySelector('#training-image-dialog'));
 closeDialogOnBackdrop(document.querySelector('#ticket-user-filters-dialog'));
@@ -1662,6 +1767,16 @@ document.querySelector('#cancel-store').addEventListener('click', () => {
   clearTrainingDrafts();
   document.querySelector('#store-dialog').close();
 });
+document.querySelector('#show-archived-stores').addEventListener('change', renderStores);
+document.querySelector('#delete-store').addEventListener('click', openStoreDeleteDialog);
+document.querySelector('#restore-store').addEventListener('click', restoreStore);
+document.querySelector('#store-delete-form').addEventListener('submit', deleteStore);
+document.querySelector('#store-delete-name').addEventListener('input', (event) => {
+  const expected = state.storeDeletionPreview?.store.name || '';
+  document.querySelector('#confirm-store-delete').disabled = event.currentTarget.value.trim() !== expected;
+});
+document.querySelector('#close-store-delete').addEventListener('click', closeStoreDeleteDialog);
+document.querySelector('#cancel-store-delete').addEventListener('click', closeStoreDeleteDialog);
 document.querySelector('#new-tier').addEventListener('click', () => openTierDialog());
 document.querySelector('#tier-form').addEventListener('submit', saveTier);
 document.querySelector('#close-tier-dialog').addEventListener('click', () => document.querySelector('#tier-dialog').close());

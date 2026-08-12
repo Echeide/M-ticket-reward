@@ -15,7 +15,13 @@ import {
   reversalIdempotencyKey,
   rewardIdempotencyKey,
 } from '../src/domain/rewards';
-import { findMatchingStore, normalizeStoreInput, storeHasVisibleEvidence } from '../src/domain/store';
+import {
+  findMatchingStore,
+  normalizeStoreInput,
+  storeDeletionNameMatches,
+  storeHasVisibleEvidence,
+  storeRemovalMode,
+} from '../src/domain/store';
 import { normalizeRewardTierInput } from '../src/domain/reward-tier';
 import {
   APP_SETTING_DEFINITIONS,
@@ -242,6 +248,18 @@ test('store input rejects unsafe or incomplete identifiers', () => {
   assert.throws(() => normalizeStoreInput({
     code: 'OK', name: 'Tienda', aliases: [], participationLevel: 'PREMIUM',
   }), /STORE_PARTICIPATION_LEVEL_INVALID/);
+});
+
+test('store removal deletes only merchants without receipts or training data', () => {
+  assert.equal(storeRemovalMode({ receiptCount: 0, trainingSampleCount: 0 }), 'DELETE');
+  assert.equal(storeRemovalMode({ receiptCount: 1, trainingSampleCount: 0 }), 'ARCHIVE');
+  assert.equal(storeRemovalMode({ receiptCount: 0, trainingSampleCount: 1 }), 'ARCHIVE');
+});
+
+test('store deletion confirmation requires the exact current merchant name', () => {
+  assert.equal(storeDeletionNameMatches(' Hiperdino ', 'Hiperdino'), true);
+  assert.equal(storeDeletionNameMatches('hiperdino', 'Hiperdino'), false);
+  assert.equal(storeDeletionNameMatches('Hiperdino Express', 'Hiperdino'), false);
 });
 
 test('store matching recovers an authorized merchant from the fiscal header', () => {

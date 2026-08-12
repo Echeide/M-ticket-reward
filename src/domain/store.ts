@@ -24,6 +24,19 @@ export type StoreOcrEvidence = {
   rawText?: string;
 };
 
+export type StoreDependencyCounts = {
+  receiptCount: number;
+  trainingSampleCount: number;
+};
+
+export function storeRemovalMode(counts: StoreDependencyCounts): 'DELETE' | 'ARCHIVE' {
+  return counts.receiptCount > 0 || counts.trainingSampleCount > 0 ? 'ARCHIVE' : 'DELETE';
+}
+
+export function storeDeletionNameMatches(value: unknown, storeName: string): boolean {
+  return String(value || '').trim() === storeName;
+}
+
 export function storeHasVisibleEvidence(
   store: StoreIdentity,
   evidence: Pick<StoreOcrEvidence, 'headerText'>,

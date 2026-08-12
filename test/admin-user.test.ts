@@ -45,6 +45,9 @@ test('operator routes are limited to review and read-only store and settings acc
   assert.equal(adminRouteAllowed('OPERATOR', 'GET', '/api/admin/stores/store-id/training'), true);
   assert.equal(adminRouteAllowed('OPERATOR', 'GET', '/api/admin/settings'), true);
   assert.equal(adminRouteAllowed('OPERATOR', 'POST', '/api/admin/stores'), false);
+  assert.equal(adminRouteAllowed('OPERATOR', 'GET', '/api/admin/stores/store-id/deletion-preview'), false);
+  assert.equal(adminRouteAllowed('OPERATOR', 'DELETE', '/api/admin/stores/store-id'), false);
+  assert.equal(adminRouteAllowed('OPERATOR', 'POST', '/api/admin/stores/store-id/restore'), false);
   assert.equal(adminRouteAllowed('OPERATOR', 'PATCH', '/api/admin/settings/home.title'), false);
   assert.equal(adminRouteAllowed('OPERATOR', 'PATCH', '/api/admin/settings/scan-flow'), false);
   assert.equal(adminRouteAllowed('OPERATOR', 'GET', '/api/admin/users'), false);

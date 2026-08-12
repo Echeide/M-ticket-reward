@@ -78,12 +78,16 @@
     <main id="stores-view" class="stores-layout admin-view">
       <section class="stores-heading">
         <div><p class="eyebrow">Catálogo OCR</p><h2>Comercios autorizados</h2><p>Solo los comercios activos pueden validar tickets y conceder puntos.</p></div>
-        <button class="primary-button" id="new-store" type="button">Añadir comercio</button>
+        <div class="stores-heading-actions">
+          <label class="archived-store-toggle"><input id="show-archived-stores" type="checkbox" /> Mostrar archivados</label>
+          <button class="primary-button" id="new-store" type="button">Añadir comercio</button>
+        </div>
       </section>
       <p class="read-only-notice" id="stores-read-only" hidden>Vista de consulta: el rol operador no puede modificar los comercios.</p>
       <section class="stores-summary" aria-label="Resumen de comercios">
         <div><strong id="active-store-count">0</strong><span>Activos</span></div>
         <div><strong id="inactive-store-count">0</strong><span>Inactivos</span></div>
+        <div><strong id="archived-store-count">0</strong><span>Archivados</span></div>
         <div><strong id="linked-receipt-count">0</strong><span>Tickets vinculados</span></div>
       </section>
       <section class="store-list-card">
@@ -170,6 +174,7 @@
           <button id="store-training-tab" data-store-panel="training" type="button">Entrenamiento <span id="training-tab-count">0</span></button>
         </nav>
         <section id="store-details-panel" class="store-dialog-panel active">
+          <p class="store-archived-notice" id="store-archived-notice" hidden>Este comercio está archivado. Su histórico se conserva y no puede modificarse hasta que se restaure.</p>
           <label>Nombre comercial<input name="name" maxlength="160" required placeholder="Ej. Librería Atlántica" /></label>
           <label>Logo del comercio
             <div class="store-logo-control">
@@ -192,6 +197,10 @@
           <label class="switch-row"><span><strong>Comercio activo</strong><small>Sus tickets pueden validarse y recibir puntos.</small></span><input name="active" type="checkbox" checked /></label>
           <p id="store-form-error" class="form-error" role="alert"></p>
           <div class="dialog-actions" id="store-details-actions"><button class="secondary-button" id="cancel-store" type="button">Cancelar</button><button class="primary-button" type="submit">Guardar comercio</button></div>
+          <div class="store-lifecycle-actions">
+            <button class="store-delete-link" id="delete-store" type="button" hidden>Eliminar comercio</button>
+            <button class="text-button" id="restore-store" type="button" hidden>Restaurar comercio</button>
+          </div>
         </section>
         <section id="store-training-panel" class="store-dialog-panel training-panel" hidden>
           <div class="training-add-options">
@@ -241,6 +250,18 @@
             <div class="dialog-actions"><button class="secondary-button" id="generate-ocr-profile" type="button">Generar desde ejemplos evaluados</button><button class="primary-button" id="save-ocr-profile" type="button">Guardar perfil</button></div>
           </section>
         </section>
+      </form>
+    </dialog>
+    <dialog id="store-delete-dialog" class="store-delete-dialog">
+      <form id="store-delete-form" class="store-delete-form">
+        <div class="dialog-heading"><div><p class="eyebrow">Confirmación de seguridad</p><h2 id="store-delete-title">Eliminar comercio</h2></div><button class="icon-button" id="close-store-delete" type="button" aria-label="Cerrar">×</button></div>
+        <p id="store-delete-consequence"></p>
+        <div class="store-delete-counts" id="store-delete-counts"></div>
+        <label>Escribe <strong id="store-delete-confirmation-name"></strong> para confirmar
+          <input id="store-delete-name" name="confirmationName" autocomplete="off" required />
+        </label>
+        <p id="store-delete-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button class="secondary-button" id="cancel-store-delete" type="button">Cancelar</button><button class="danger-button" id="confirm-store-delete" type="submit" disabled>Eliminar comercio</button></div>
       </form>
     </dialog>
     <dialog id="training-receipts-dialog" class="training-receipts-dialog">
@@ -324,6 +345,6 @@
         <div id="ticket-user-detail-body"></div>
       </div>
     </dialog>
-    <script type="module" src="/backoffice.js?v=store-participation-1"></script>
+    <script type="module" src="/backoffice.js?v=store-archiving-1"></script>
   </body>
 </html>

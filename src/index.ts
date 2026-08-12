@@ -24,7 +24,14 @@ import {
   rewardMaxAttempts,
   rewardRetryDelaySeconds,
 } from './domain/reward-delivery';
-import { findMatchingStore, normalizeStoreInput, storeHasVisibleEvidence } from './domain/store';
+import {
+  findMatchingStore,
+  normalizeStoreInput,
+  storeDeletionNameMatches,
+  storeHasVisibleEvidence,
+  storeRemovalMode,
+  type StoreDependencyCounts,
+} from './domain/store';
 import {
   storeParticipationView,
   type StoreParticipationLevel,
@@ -174,9 +181,12 @@ type StoreRow = {
   logo_height: number | null;
   logo_size: number | null;
   logo_updated_at: string | null;
+  archived_at: string | null;
+  archived_by: string | null;
   created_at: string;
   updated_at: string;
   receipt_count?: string;
+  training_sample_count?: string;
 };
 
 type TrainingSampleRow = {
@@ -2365,6 +2375,10 @@ function storeView(row: StoreRow) {
     logoWidth: Number(row.logo_width || 0),
     logoHeight: Number(row.logo_height || 0),
     receiptCount: Number(row.receipt_count || 0),
+    trainingSampleCount: Number(row.training_sample_count || 0),
+    archived: Boolean(row.archived_at),
+    archivedAt: row.archived_at,
+    archivedBy: row.archived_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -2417,6 +2431,7 @@ async function handleAdminStoreLogoUpload(
     return result.rows[0];
   });
   if (!current) return error('Comercio no encontrado', 404);
+  if (current.archived_at) return error('Restaura el comercio antes de modificarlo', 409);
 
   const form = await request.formData();
   const logo = form.get('logo');
@@ -2484,9 +2499,13 @@ async function handleAdminStores(request: Request, env: Env): Promise<Response> 
   if (request.method === 'GET') {
     const rows = await withDatabase(env, async (client) => {
       const result = await client.query<StoreRow>(
-        `SELECT s.*, COUNT(r.id)::text AS receipt_count
-           FROM stores s LEFT JOIN receipts r ON r.store_id = s.id
-          GROUP BY s.id ORDER BY s.active DESC, s.name ASC`,
+        `SELECT s.*,
+            (SELECT COUNT(DISTINCT r.id) FROM receipts r
+              WHERE r.store_id = s.id OR r.declared_store_id = s.id)::text AS receipt_count,
+            (SELECT COUNT(*) FROM store_training_samples t
+              WHERE t.store_id = s.id)::text AS training_sample_count
+           FROM stores s
+          ORDER BY (s.archived_at IS NOT NULL) ASC, s.active DESC, s.name ASC`,
       );
       return result.rows;
     });
@@ -2529,6 +2548,7 @@ async function handleAdminStoreUpdate(
     );
     const current = currentResult.rows[0];
     if (!current) return { kind: 'missing' as const };
+    if (current.archived_at) return { kind: 'archived' as const };
     const duplicate = await client.query(
       'SELECT id FROM stores WHERE code = $1 AND id <> $2 LIMIT 1',
       [input.code, storeId],
@@ -2561,8 +2581,132 @@ async function handleAdminStoreUpdate(
     return { kind: 'updated' as const, row: result.rows[0]! };
   }));
   if (updated.kind === 'missing') return error('Comercio no encontrado', 404);
+  if (updated.kind === 'archived') return error('Restaura el comercio antes de modificarlo', 409);
   if (updated.kind === 'duplicate') return error('Ya existe un comercio con ese código', 409);
   return json({ success: true, store: storeView(updated.row) });
+}
+
+async function storeDependencyCounts(client: DbClient, storeId: string): Promise<StoreDependencyCounts> {
+  const result = await client.query<{ receipt_count: number; training_sample_count: number }>(
+    `SELECT
+       (SELECT COUNT(DISTINCT id) FROM receipts
+         WHERE store_id = $1 OR declared_store_id = $1) AS receipt_count,
+       (SELECT COUNT(*) FROM store_training_samples WHERE store_id = $1) AS training_sample_count`,
+    [storeId],
+  );
+  return {
+    receiptCount: Number(result.rows[0]?.receipt_count || 0),
+    trainingSampleCount: Number(result.rows[0]?.training_sample_count || 0),
+  };
+}
+
+async function handleAdminStoreDeletionPreview(
+  request: Request,
+  env: Env,
+  storeId: string,
+): Promise<Response> {
+  const managerEmail = managerIdentity(request, env);
+  if (!managerEmail) return error('Acceso de gestor requerido', 401);
+  return withDatabase(env, async (client) => {
+    const result = await client.query<StoreRow>('SELECT * FROM stores WHERE id = $1 LIMIT 1', [storeId]);
+    const store = result.rows[0];
+    if (!store) return error('Comercio no encontrado', 404);
+    const counts = await storeDependencyCounts(client, storeId);
+    return json({
+      success: true,
+      store: { id: store.id, name: store.name, archived: Boolean(store.archived_at) },
+      counts,
+      mode: storeRemovalMode(counts),
+    });
+  });
+}
+
+async function handleAdminStoreDelete(
+  request: Request,
+  env: Env,
+  storeId: string,
+): Promise<Response> {
+  const managerEmail = managerIdentity(request, env);
+  if (!managerEmail) return error('Acceso de gestor requerido', 401);
+  const body = await readJson(request);
+  const result = await withDatabase(env, (client) => inTransaction(client, async () => {
+    const currentResult = await client.query<StoreRow>(
+      'SELECT * FROM stores WHERE id = $1 FOR UPDATE', [storeId],
+    );
+    const current = currentResult.rows[0];
+    if (!current) return { kind: 'missing' as const };
+    if (current.archived_at) return { kind: 'already-archived' as const };
+    if (!storeDeletionNameMatches(body.confirmationName, current.name)) {
+      return { kind: 'confirmation' as const };
+    }
+    const counts = await storeDependencyCounts(client, storeId);
+    if (storeRemovalMode(counts) === 'ARCHIVE') {
+      const updated = await client.query<StoreRow>(
+        `UPDATE stores SET active = FALSE, archived_at = COALESCE(archived_at, NOW()),
+            archived_by = COALESCE(archived_by, $2), updated_at = NOW()
+          WHERE id = $1 RETURNING *`,
+        [storeId, managerEmail],
+      );
+      if (!current.archived_at) {
+        await client.query(
+          `INSERT INTO store_audit_log (id, store_id, action, manager_email, changes)
+           VALUES ($1, $2, 'DEACTIVATED', $3, $4::jsonb)`,
+          [uuid(), storeId, managerEmail, JSON.stringify({ mode: 'ARCHIVED', counts })],
+        );
+      }
+      return { kind: 'archived' as const, row: updated.rows[0]!, counts };
+    }
+    await client.query('DELETE FROM store_audit_log WHERE store_id = $1', [storeId]);
+    await client.query('DELETE FROM stores WHERE id = $1', [storeId]);
+    return { kind: 'deleted' as const, logoKey: current.logo_key, counts };
+  }));
+  if (result.kind === 'missing') return error('Comercio no encontrado', 404);
+  if (result.kind === 'already-archived') return error('El comercio ya está archivado', 409);
+  if (result.kind === 'confirmation') return error('Escribe exactamente el nombre del comercio', 400);
+  if (result.kind === 'deleted' && result.logoKey) {
+    try {
+      await env.TICKETS.delete(result.logoKey);
+    } catch (caught) {
+      console.error('Could not remove deleted store logo', { storeId, logoKey: result.logoKey }, caught);
+    }
+  }
+  return json({
+    success: true,
+    mode: result.kind === 'deleted' ? 'DELETED' : 'ARCHIVED',
+    counts: result.counts,
+    ...(result.kind === 'archived' ? { store: storeView(result.row) } : {}),
+  });
+}
+
+async function handleAdminStoreRestore(
+  request: Request,
+  env: Env,
+  storeId: string,
+): Promise<Response> {
+  const managerEmail = managerIdentity(request, env);
+  if (!managerEmail) return error('Acceso de gestor requerido', 401);
+  const result = await withDatabase(env, (client) => inTransaction(client, async () => {
+    const currentResult = await client.query<StoreRow>(
+      'SELECT * FROM stores WHERE id = $1 FOR UPDATE', [storeId],
+    );
+    const current = currentResult.rows[0];
+    if (!current) return { kind: 'missing' as const };
+    if (!current.archived_at) return { kind: 'not-archived' as const };
+    const updated = await client.query<StoreRow>(
+      `UPDATE stores SET active = TRUE, archived_at = NULL, archived_by = NULL,
+          updated_at = NOW() WHERE id = $1 RETURNING *`,
+      [storeId],
+    );
+    await client.query(
+      `INSERT INTO store_audit_log (id, store_id, action, manager_email, changes)
+       VALUES ($1, $2, 'ACTIVATED', $3, $4::jsonb)`,
+      [uuid(), storeId, managerEmail, JSON.stringify({ mode: 'RESTORED' })],
+    );
+    return { kind: 'restored' as const, row: updated.rows[0]! };
+  }));
+  if (result.kind === 'missing') return error('Comercio no encontrado', 404);
+  if (result.kind === 'not-archived') return error('El comercio no está archivado', 409);
+  return json({ success: true, store: storeView(result.row) });
 }
 
 async function handleAdminStoreOcrProfile(
@@ -2580,6 +2724,7 @@ async function handleAdminStoreOcrProfile(
   if (request.method === 'GET') {
     return json({ success: true, profile: normalizeStoreOcrProfile(current.ocr_profile) });
   }
+  if (current.archived_at) return error('Restaura el comercio antes de modificarlo', 409);
 
   const profile = normalizeStoreOcrProfile(await readJson(request));
   if (profile.enabled && !(
@@ -2629,6 +2774,7 @@ async function handleAdminStoreOcrProfileGenerate(
     return { store: storeResult.rows[0], sources: sourceResult.rows };
   });
   if (!data.store) return error('Comercio no encontrado', 404);
+  if (data.store.archived_at) return error('Restaura el comercio antes de modificarlo', 409);
   const evaluated = data.sources.filter((source) => source.actual_payload);
   if (!evaluated.length) {
     return error('Evalúa al menos un ejemplo antes de generar el perfil', 409);
@@ -2862,6 +3008,7 @@ async function handleAdminTrainingSamples(request: Request, env: Env, storeId: s
     });
     return json({ success: true, store: storeView(store), samples: samples.map(trainingSampleView) });
   }
+  if (store.archived_at) return error('Restaura el comercio antes de modificarlo', 409);
 
   const form = await request.formData();
   const sourceReceiptId = String(form.get('sourceReceiptId') || '').trim();
@@ -2968,6 +3115,13 @@ async function handleAdminTrainingDelete(
   sampleId: string,
 ): Promise<Response> {
   if (!managerIdentity(request, env)) return error('Acceso de gestor requerido', 401);
+  const store = await withDatabase(env, async (client) => {
+    const result = await client.query<Pick<StoreRow, 'archived_at'>>(
+      'SELECT archived_at FROM stores WHERE id = $1 LIMIT 1', [storeId],
+    );
+    return result.rows[0];
+  });
+  if (store?.archived_at) return error('Restaura el comercio antes de modificarlo', 409);
   const sample = await loadTrainingSample(env, storeId, sampleId);
   if (!sample) return error('Ejemplo no encontrado', 404);
   await withDatabase(env, async (client) => {
@@ -3022,6 +3176,7 @@ async function handleAdminTrainingEvaluate(
     };
   });
   if (!data.sample || !data.store) return error('Ejemplo no encontrado', 404);
+  if (data.store.archived_at) return error('Restaura el comercio antes de modificarlo', 409);
   const object = await env.TICKETS.get(data.sample.image_key);
   if (!object) return error('Imagen no encontrada', 404);
   const evaluationId = uuid();
@@ -3611,6 +3766,16 @@ async function handleFetch(request: Request, env: Env, context: ExecutionContext
     if (url.pathname === '/api/admin/stores' && ['GET', 'POST'].includes(request.method)) {
       return await handleAdminStores(request, env);
     }
+    const storeDeletionPreviewMatch = url.pathname.match(
+      /^\/api\/admin\/stores\/([^/]+)\/deletion-preview$/,
+    );
+    if (request.method === 'GET' && storeDeletionPreviewMatch?.[1]) {
+      return await handleAdminStoreDeletionPreview(request, env, storeDeletionPreviewMatch[1]);
+    }
+    const storeRestoreMatch = url.pathname.match(/^\/api\/admin\/stores\/([^/]+)\/restore$/);
+    if (request.method === 'POST' && storeRestoreMatch?.[1]) {
+      return await handleAdminStoreRestore(request, env, storeRestoreMatch[1]);
+    }
     const adminStoreLogoMatch = url.pathname.match(/^\/api\/admin\/stores\/([^/]+)\/logo$/);
     if (request.method === 'GET' && adminStoreLogoMatch?.[1]) {
       return await handleStoreLogo(request, env, adminStoreLogoMatch[1], true);
@@ -3658,6 +3823,7 @@ async function handleFetch(request: Request, env: Env, context: ExecutionContext
     }
     const storeMatch = url.pathname.match(/^\/api\/admin\/stores\/([^/]+)$/);
     if (request.method === 'PATCH' && storeMatch?.[1]) return await handleAdminStoreUpdate(request, env, storeMatch[1]);
+    if (request.method === 'DELETE' && storeMatch?.[1]) return await handleAdminStoreDelete(request, env, storeMatch[1]);
     if (url.pathname === '/api/admin/reward-tiers' && ['GET', 'POST'].includes(request.method)) {
       return await handleAdminRewardTiers(request, env);
     }
