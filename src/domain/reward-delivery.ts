@@ -23,6 +23,17 @@ export function rewardFailureMinimumDelaySeconds(failure: string): number {
   return failure.trim().toLowerCase().includes('game session is not ready to receive results') ? 30 : 0;
 }
 
+export function canResumeRewardInNewSession(
+  receiptStatus: string,
+  outboxStatus: string,
+  lastError: string | null,
+): boolean {
+  if (receiptStatus === 'REWARD_PENDING' && ['PENDING', 'PROCESSING'].includes(outboxStatus)) return true;
+  if (receiptStatus !== 'REWARD_FAILED' || outboxStatus !== 'FAILED') return false;
+  const failure = String(lastError || '').trim().toLowerCase();
+  return failure.includes('game session is not ready to receive results') || failure === 'rtales_max_attempts';
+}
+
 export function databaseTimestampAfter(delaySeconds: number, now = Date.now()): string {
   return new Date(now + delaySeconds * 1000).toISOString().replace('T', ' ').slice(0, 19);
 }

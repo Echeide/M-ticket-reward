@@ -23,6 +23,7 @@ import {
   rewardIdempotencyKey,
 } from './domain/rewards';
 import {
+  canResumeRewardInNewSession,
   databaseTimestampAfter,
   isRetryableRewardFailure,
   rewardFailureMinimumDelaySeconds,
@@ -139,6 +140,7 @@ type ReceiptRow = {
   declared_total_cents: number | null;
   upload_request_id: string | null;
   session_slot: number;
+  reward_session_id: string | null;
   currency: string;
   ticket_fingerprint: string | null;
   ticket_identity_key: string | null;
@@ -452,7 +454,7 @@ function publicReceiptMessage(row: ReceiptRow): string {
   if (row.status === 'REVOKED') return 'El ticket fue anulado tras la revisión antifraude.';
   if (row.status === 'REVOKE_PENDING') return 'La anulación de los puntos está en proceso.';
   if (row.status === 'REWARD_PENDING') {
-    return `Estamos asignando ${row.points_awarded} puntos. Puedes cerrar esta pantalla y consultar el resultado más tarde.`;
+    return `El ticket está validado. Estamos esperando la confirmación del sistema para añadir ${row.points_awarded} puntos. No necesitas mantener esta pantalla abierta ni volver a enviar el ticket.`;
   }
   if (row.status === 'REWARD_FAILED') return 'No hemos podido completar la asignación de puntos.';
   return '';
@@ -501,6 +503,8 @@ async function authenticatedSession(
               language, space_code, installation_id
          FROM player_sessions
         WHERE access_token_hash = $1 AND expires_at > NOW()
+          AND id = (SELECT session_id FROM active_player_sessions
+                     WHERE external_user_id = player_sessions.external_user_id)
         LIMIT 1`,
       [tokenHash],
     );
@@ -551,9 +555,9 @@ async function handleExchange(request: Request, env: Env): Promise<Response> {
   const sessionId = uuid();
   const parentOrigin = allowedParentOrigin(body.parentOrigin, env);
   const encryptedPlayerToken = await encryptSecret(playerToken, env.DATA_ENCRYPTION_KEY);
-  await withDatabase(env, (client) => inTransaction(client, async () => {
+  const preparedSession = await withDatabase(env, (client) => inTransaction(client, async () => {
     const externalUser = await upsertExternalUser(client, identity, uuid());
-    await client.query(
+    const storedSession = await client.query<{ id: string }>(
       `INSERT INTO player_sessions
          (id, access_token_hash, external_user_id, user_ref, rtales_lookup_code,
           rtales_game_session_id, player_token_encrypted, parent_origin, display_name,
@@ -564,7 +568,8 @@ async function handleExchange(request: Request, env: Env): Promise<Response> {
          access_token_hash = $2, external_user_id = $3, user_ref = $4,
          rtales_lookup_code = $5, player_token_encrypted = $7, parent_origin = $8,
          display_name = $9, user_email = $10, language = $11, space_code = $12,
-         installation_id = $13, expires_at = NOW() + INTERVAL '24 hours'`,
+         installation_id = $13, expires_at = NOW() + INTERVAL '24 hours'
+       RETURNING id`,
       [
         sessionId,
         await sha256Hex(sessionToken),
@@ -581,12 +586,83 @@ async function handleExchange(request: Request, env: Env): Promise<Response> {
         identity.installationId,
       ],
     );
+    const activeSessionId = storedSession.rows[0]?.id || sessionId;
+    await client.query(
+      `INSERT INTO active_player_sessions (external_user_id, session_id, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT(external_user_id) DO UPDATE SET session_id = $2, updated_at = NOW()`,
+      [externalUser.id, activeSessionId],
+    );
+
+    const resumable = await client.query<{
+      receipt_id: string;
+      receipt_status: string;
+      reward_session_id: string | null;
+      outbox_id: string;
+      outbox_status: string;
+      last_error: string | null;
+    }>(
+      `SELECT r.id AS receipt_id, r.status AS receipt_status,
+              r.reward_session_id, ro.id AS outbox_id,
+              ro.status AS outbox_status, ro.last_error
+         FROM reward_outbox ro JOIN receipts r ON r.id = ro.receipt_id
+        WHERE r.external_user_id = $1 AND ro.operation = 'GRANT'
+          AND r.status IN ('REWARD_PENDING', 'REWARD_FAILED')
+          AND ro.status IN ('PENDING', 'PROCESSING', 'FAILED')
+        ORDER BY r.created_at ASC, ro.created_at ASC
+        LIMIT 20`,
+      [externalUser.id],
+    );
+    const candidate = resumable.rows.find((row) =>
+      row.reward_session_id !== activeSessionId &&
+      canResumeRewardInNewSession(row.receipt_status, row.outbox_status, row.last_error));
+    if (!candidate) return { activeSessionId, outboxId: '', receiptId: '' };
+
+    const claimed = await client.query<{ id: string }>(
+      `UPDATE receipts SET reward_session_id = $2, status = 'REWARD_PENDING',
+          validation_reasons = '[]'::jsonb, review_status = 'CLEARED',
+          reviewed_at = COALESCE(reviewed_at, NOW()), reviewed_by = COALESCE(reviewed_by, 'SYSTEM'),
+          updated_at = NOW()
+        WHERE id = $1
+          AND $2 = (SELECT session_id FROM active_player_sessions WHERE external_user_id = $3)
+          AND status IN ('REWARD_PENDING', 'REWARD_FAILED')
+        RETURNING id`,
+      [candidate.receipt_id, activeSessionId, externalUser.id],
+    );
+    if (!claimed.rowCount) return { activeSessionId, outboxId: '', receiptId: '' };
+    if (candidate.outbox_status !== 'PROCESSING') {
+      await client.query(
+        `UPDATE reward_outbox SET status = 'PENDING', attempt_count = 0,
+            next_attempt_at = NOW(), locked_until = NULL, last_error = NULL,
+            updated_at = NOW()
+          WHERE id = $1 AND status IN ('PENDING', 'FAILED')`,
+        [candidate.outbox_id],
+      );
+    }
+    return {
+      activeSessionId,
+      outboxId: candidate.outbox_status === 'PROCESSING' ? '' : candidate.outbox_id,
+      receiptId: candidate.receipt_id,
+    };
   }));
+  if (preparedSession.outboxId) {
+    await env.REWARD_JOBS.send(
+      { kind: 'DELIVER_REWARD', outboxId: preparedSession.outboxId },
+      { delaySeconds: 3 },
+    ).catch((caught) => {
+      // The outbox row is already durable and the scheduled recovery will enqueue it.
+      console.error('Could not resume pending reward in the new player session', {
+        receiptId: preparedSession.receiptId,
+        outboxId: preparedSession.outboxId,
+      }, caught);
+    });
+  }
   return json({
     success: true,
     sessionToken,
     player: publicExternalPlayer(identity),
     parentOrigin,
+    pendingRewardReceiptId: preparedSession.receiptId || undefined,
   }, 201);
 }
 
@@ -773,25 +849,35 @@ async function dailyStoreLimitReached(
   return Number(result.rows[0]?.total || 0) >= limit;
 }
 
+type SessionReceipt = Pick<ReceiptRow, 'id' | 'public_id' | 'status'> & {
+  uses_reward_session: number;
+};
+
 async function loadSessionReceipt(
   client: DbClient,
   sessionId: string,
-): Promise<Pick<ReceiptRow, 'id' | 'public_id' | 'status'> | null> {
-  const result = await client.query<Pick<ReceiptRow, 'id' | 'public_id' | 'status'>>(
-    `SELECT id, public_id, status FROM receipts
-      WHERE session_id = $1 ORDER BY created_at ASC LIMIT 1`,
+): Promise<SessionReceipt | null> {
+  const result = await client.query<SessionReceipt>(
+    `SELECT id, public_id, status,
+            CASE WHEN reward_session_id = $1 THEN 1 ELSE 0 END AS uses_reward_session
+       FROM receipts
+      WHERE session_id = $1 OR reward_session_id = $1
+      ORDER BY created_at ASC LIMIT 1`,
     [sessionId],
   );
   return result.rows[0] || null;
 }
 
 function sessionReceiptLimitResponse(
-  receipt: Pick<ReceiptRow, 'id' | 'public_id' | 'status'>,
+  receipt: SessionReceipt,
 ): Response {
+  const resumingReward = Number(receipt.uses_reward_session) === 1;
   return json({
     success: false,
     code: 'SESSION_RECEIPT_LIMIT',
-    error: 'Ya has registrado un ticket en esta sesión. Para enviar otro, vuelve al sistema y abre de nuevo el módulo.',
+    error: resumingReward
+      ? 'Esta sesión se está utilizando para completar los puntos de un ticket pendiente. No necesitas volver a enviarlo.'
+      : 'Ya has registrado un ticket en esta sesión. Para enviar otro, vuelve al sistema y abre de nuevo el módulo.',
     receiptId: receipt.id,
     publicId: receipt.public_id,
     status: receipt.status,
@@ -1072,7 +1158,7 @@ async function handleCurrentSessionReceipt(request: Request, env: Env): Promise<
     if (!session) return error('Sesión no válida', 401);
     const result = await client.query<ReceiptRow>(
       `SELECT * FROM receipts
-        WHERE session_id = $1
+        WHERE session_id = $1 OR reward_session_id = $1
         ORDER BY created_at DESC LIMIT 1`,
       [session.id],
     );
@@ -1646,7 +1732,7 @@ async function processOutbox(env: Env, outboxId: string): Promise<number | null>
       const receipt = await client.query<ReceiptRow & SessionRow>(
         `SELECT r.*, s.rtales_game_session_id, s.player_token_encrypted,
                 s.parent_origin, s.display_name
-           FROM receipts r JOIN player_sessions s ON s.id = r.session_id
+           FROM receipts r JOIN player_sessions s ON s.id = COALESCE(r.reward_session_id, r.session_id)
           WHERE r.id = $1`,
         [row.receipt_id],
       );

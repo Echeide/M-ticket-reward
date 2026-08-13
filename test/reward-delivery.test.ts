@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  canResumeRewardInNewSession,
   databaseTimestampAfter,
   isRetryableRewardFailure,
   rewardFailureMinimumDelaySeconds,
@@ -37,4 +38,13 @@ test('reward failure classification keeps permanent client errors terminal', () 
   assert.equal(isRetryableRewardFailure(429, 'Rate limited'), true);
   assert.equal(isRetryableRewardFailure(503, 'Unavailable'), true);
   assert.equal(rewardFailureMinimumDelaySeconds('Unavailable'), 0);
+});
+
+test('pending session-related rewards can continue in a newly opened player session', () => {
+  assert.equal(canResumeRewardInNewSession('REWARD_PENDING', 'PENDING', 'Game session is not ready to receive results'), true);
+  assert.equal(canResumeRewardInNewSession('REWARD_PENDING', 'PROCESSING', null), true);
+  assert.equal(canResumeRewardInNewSession('REWARD_FAILED', 'FAILED', 'Game session is not ready to receive results'), true);
+  assert.equal(canResumeRewardInNewSession('REWARD_FAILED', 'FAILED', 'RTALES_MAX_ATTEMPTS'), true);
+  assert.equal(canResumeRewardInNewSession('REWARD_FAILED', 'FAILED', 'Invalid points payload'), false);
+  assert.equal(canResumeRewardInNewSession('REWARDED', 'DELIVERED', null), false);
 });

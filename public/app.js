@@ -160,7 +160,7 @@ const RECEIPT_STATUSES = {
   NOT_A_RECEIPT: { label: 'No es un ticket', tone: 'rejected', message: 'La imagen no parece un ticket de compra.' },
   DUPLICATE: { label: 'Duplicado', tone: 'rejected', message: 'Este ticket ya se había enviado.' },
   AUTO_REJECTED: { label: 'Ticket no autorizado', tone: 'rejected', message: 'Este ticket no cumple las condiciones de la campaña.' },
-  REWARD_PENDING: { label: 'Asignando puntos', tone: 'pending', message: 'El ticket es válido y estamos asignando los puntos.' },
+  REWARD_PENDING: { label: 'Puntos en proceso', tone: 'pending', message: 'El ticket está validado. Estamos esperando la confirmación del sistema para añadir tus puntos. No necesitas mantener esta pantalla abierta ni volver a enviar el ticket.' },
   REWARDED: { label: 'Aprobado', tone: 'approved', message: 'Los puntos se han añadido correctamente.' },
   REWARD_FAILED: { label: 'Puntos pendientes', tone: 'attention', message: 'El ticket está validado, pero todavía no hemos podido añadir los puntos.' },
   REVOKE_PENDING: { label: 'Anulación en proceso', tone: 'attention', message: 'Estamos retirando los puntos tras la revisión del ticket.' },
@@ -350,6 +350,10 @@ async function bootstrap() {
     });
     state.sessionToken = payload.sessionToken;
     state.parentOrigin = payload.parentOrigin || state.parentOrigin;
+    if (payload.pendingRewardReceiptId) {
+      state.receiptId = payload.pendingRewardReceiptId;
+      sessionStorage.setItem('ticket-receipt-id', state.receiptId);
+    }
     sessionStorage.setItem('ticket-session', state.sessionToken);
     if (state.parentOrigin) sessionStorage.setItem('ticket-parent-origin', state.parentOrigin);
     history.replaceState({}, '', location.pathname);
@@ -466,7 +470,8 @@ async function resumeReceipt(receipt) {
   if (['AUTO_REJECTED', 'REWARD_FAILED', 'REVOKE_PENDING', 'REVOKED'].includes(receipt.status)) {
     return showTicketDetail(receipt);
   }
-  if (['OCR_QUEUED', 'OCR_PROCESSING', 'REWARD_PENDING'].includes(receipt.status)) return openHistory();
+  if (receipt.status === 'REWARD_PENDING') return showTicketDetail(receipt);
+  if (['OCR_QUEUED', 'OCR_PROCESSING'].includes(receipt.status)) return openHistory();
   return openHistory();
 }
 
@@ -789,6 +794,7 @@ function renderHistory(receipts) {
 }
 
 function showTicketDetail(receipt) {
+  const generation = ++state.pollGeneration;
   state.receipt = receipt;
   const meta = statusMeta(receipt.status, receipt.verificationRequired);
   document.querySelector('#detail-title').textContent = receipt.publicId;
@@ -817,28 +823,38 @@ function showTicketDetail(receipt) {
     action.hidden = false;
     action.onclick = () => resumeReceipt(receipt).catch(showError);
   } else if (receipt.retryableReward) {
-    action.textContent = 'Reintentar añadir puntos';
+    action.textContent = 'Volver al sistema para completar los puntos';
     action.hidden = false;
-    action.onclick = async () => {
-      action.disabled = true;
-      action.textContent = 'Registrando solicitud…';
-      state.receiptId = receipt.id;
-      sessionStorage.setItem('ticket-receipt-id', receipt.id);
-      try {
-        await api(`/api/receipts/${receipt.id}/confirm`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: '{}',
-        });
-        await openHistory();
-      } catch (caught) {
-        action.disabled = false;
-        action.textContent = 'Reintentar añadir puntos';
-        showError(caught);
-      }
-    };
+    action.onclick = closeGame;
   }
   show('ticket-detail');
+  if (receipt.status === 'REWARD_PENDING') {
+    monitorPendingRewardDetail(generation, receipt.id).catch((caught) => {
+      console.warn('No se pudo actualizar automáticamente la entrega de puntos', caught);
+    });
+  }
+}
+
+async function monitorPendingRewardDetail(generation, receiptId) {
+  while (
+    generation === state.pollGeneration &&
+    screens.get('ticket-detail')?.classList.contains('active')
+  ) {
+    await wait(document.hidden ? 10_000 : 2_000);
+    if (
+      generation !== state.pollGeneration ||
+      !screens.get('ticket-detail')?.classList.contains('active')
+    ) return;
+    let receipt;
+    try {
+      receipt = (await api(`/api/receipts/${receiptId}`)).receipt;
+    } catch (caught) {
+      console.warn('No se pudo consultar la entrega de puntos; se reintentará', caught);
+      continue;
+    }
+    if (receipt.status === 'REWARD_PENDING') continue;
+    return resumeReceipt(receipt);
+  }
 }
 
 async function loadTicketDetailImage(receiptId) {
