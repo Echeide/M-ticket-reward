@@ -8,6 +8,7 @@ import {
   canConfirmReceiptFraud,
   canReprocessReceipt,
   compareReceiptDeclaration,
+  isRewardDeliveryIssue,
   isValidIsoDate,
   isValidPurchaseDateTime,
   normalizeReceiptDeclaration,
@@ -173,6 +174,9 @@ type ReceiptRow = {
   revoked_at: string | null;
   deletion_requested_at: string | null;
   deletion_requested_by: string | null;
+  reward_outbox_status?: string | null;
+  reward_outbox_last_error?: string | null;
+  reward_outbox_attempt_count?: number | null;
 };
 
 type StoreRow = {
@@ -392,7 +396,11 @@ function receiptView(row: ReceiptRow, includeManagerFields = false) {
       reviewedBy: row.reviewed_by,
     },
     ...(includeManagerFields ? {
-      canConfirmFraud: canConfirmReceiptFraud(row.status, Boolean(row.rtales_result_id)),
+      canConfirmFraud: canConfirmReceiptFraud(
+        row.status,
+        Boolean(row.rtales_result_id),
+        row.validation_reasons,
+      ),
       declared: {
         storeId: row.declared_store_id || '',
         ticketNumber: row.declared_ticket_number || '',
@@ -412,6 +420,18 @@ function receiptView(row: ReceiptRow, includeManagerFields = false) {
       pointsAwarded: row.points_awarded,
       resultId: row.rtales_result_id,
       reversalId: row.rtales_reversal_id,
+      ...(includeManagerFields ? {
+        delivery: {
+          status: row.reward_outbox_status || '',
+          lastError: row.reward_outbox_last_error || '',
+          attemptCount: Number(row.reward_outbox_attempt_count || 0),
+          resumableInNewSession: canResumeRewardInNewSession(
+            row.status,
+            row.reward_outbox_status || '',
+            row.reward_outbox_last_error || null,
+          ),
+        },
+      } : {}),
     },
     createdAt: row.created_at,
     rewardedAt: row.rewarded_at,
@@ -1714,9 +1734,10 @@ async function markOutboxTerminalFailure(env: Env, outboxId: string, failure: st
     if (outbox.operation === 'GRANT') {
       await client.query(
         `UPDATE receipts SET status = 'REWARD_FAILED',
-           validation_reasons = $2::jsonb, review_status = 'PENDING',
+           validation_reasons = $2::jsonb, review_status = 'CLEARED',
            reward_session_id = NULL,
-           reviewed_at = NULL, reviewed_by = NULL, updated_at = NOW()
+           reviewed_at = COALESCE(reviewed_at, NOW()),
+           reviewed_by = COALESCE(reviewed_by, 'SYSTEM'), updated_at = NOW()
          WHERE id = $1 AND status = 'REWARD_PENDING'`,
         [outbox.receipt_id, JSON.stringify(['RTALES_DELIVERY_FAILED'])],
       );
@@ -1973,7 +1994,13 @@ async function handleAdminReceipt(request: Request, env: Env, receiptId: string)
               COALESCE(u.email, s.user_email) AS user_email,
               COALESCE(u.rtales_lookup_code, r.rtales_lookup_code_snapshot, s.rtales_lookup_code) AS user_lookup_code,
               COALESCE(u.space_code, s.space_code) AS user_space_code,
-              COALESCE(u.installation_id, s.installation_id) AS user_installation_id
+              COALESCE(u.installation_id, s.installation_id) AS user_installation_id,
+              (SELECT ro.status FROM reward_outbox ro WHERE ro.receipt_id = r.id AND ro.operation = 'GRANT'
+                ORDER BY ro.created_at DESC LIMIT 1) AS reward_outbox_status,
+              (SELECT ro.last_error FROM reward_outbox ro WHERE ro.receipt_id = r.id AND ro.operation = 'GRANT'
+                ORDER BY ro.created_at DESC LIMIT 1) AS reward_outbox_last_error,
+              (SELECT ro.attempt_count FROM reward_outbox ro WHERE ro.receipt_id = r.id AND ro.operation = 'GRANT'
+                ORDER BY ro.created_at DESC LIMIT 1) AS reward_outbox_attempt_count
          FROM receipts r JOIN player_sessions s ON s.id = r.session_id
          LEFT JOIN external_users u ON u.id = COALESCE(r.external_user_id, s.external_user_id)
         WHERE r.id = $1 LIMIT 1`,
@@ -2373,7 +2400,11 @@ async function handleAdminReview(
     const receipt = result.rows[0];
     if (!receipt) return error('Ticket no encontrado', 404);
     if (action === 'CONFIRM_FRAUD') {
-      const eligible = canConfirmReceiptFraud(receipt.status, Boolean(receipt.rtales_result_id));
+      const eligible = canConfirmReceiptFraud(
+        receipt.status,
+        Boolean(receipt.rtales_result_id),
+        receipt.validation_reasons,
+      );
       if (!eligible) return error('Este ticket no admite marcarse como fraude sin revocación', 409);
       if (!reason) return error('Indica el motivo del fraude', 400);
       await client.query(
@@ -2399,10 +2430,11 @@ async function handleAdminReview(
       if (receipt.status !== 'AUTO_REJECTED' && !verificationRequired) {
         return error('Este ticket no admite confirmar el rechazo', 409);
       }
+      if (!reason) return error('Indica el motivo del rechazo', 400);
       await client.query(
         `INSERT INTO receipt_reviews (id, receipt_id, action, manager_email, reason)
          VALUES ($1, $2, 'REJECTION_CONFIRMED', $3, $4)`,
-        [uuid(), receiptId, managerEmail, reason || null],
+        [uuid(), receiptId, managerEmail, reason],
       );
       await client.query(
         `UPDATE receipts SET status = 'AUTO_REJECTED', review_status = 'CLEARED',
@@ -2511,6 +2543,9 @@ async function handleAdminReview(
       if (receipt.review_status === 'FRAUD' || receipt.status === 'REVOKED') {
         return error('Un ticket marcado como fraude no puede cerrarse como correcto', 409);
       }
+      if (isRewardDeliveryIssue(receipt.status, receipt.validation_reasons)) {
+        return error('La entrega de puntos no requiere una decisión antifraude', 409);
+      }
       await client.query(
         `INSERT INTO receipt_reviews (id, receipt_id, action, manager_email, reason)
          VALUES ($1, $2, 'REVIEWED_NO_FRAUD', $3, $4)`,
@@ -2529,6 +2564,9 @@ async function handleAdminReview(
       }
       if (receipt.review_status === 'FRAUD' || ['REVOKE_PENDING', 'REVOKED'].includes(receipt.status)) {
         return error('Un ticket marcado como fraude no puede volver a pendientes', 409);
+      }
+      if (isRewardDeliveryIssue(receipt.status, receipt.validation_reasons)) {
+        return error('La entrega de puntos no pertenece a la revisión antifraude', 409);
       }
       await client.query(
         `INSERT INTO receipt_reviews (id, receipt_id, action, manager_email, reason)
@@ -4213,8 +4251,9 @@ async function releaseStuckRewardSessions(env: Env): Promise<void> {
     for (const row of timedOut.rows) {
       await client.query(
         `UPDATE receipts SET status = 'REWARD_FAILED', reward_session_id = NULL,
-            validation_reasons = $2::jsonb, review_status = 'PENDING',
-            reviewed_at = NULL, reviewed_by = NULL, updated_at = NOW()
+            validation_reasons = $2::jsonb, review_status = 'CLEARED',
+            reviewed_at = COALESCE(reviewed_at, NOW()),
+            reviewed_by = COALESCE(reviewed_by, 'SYSTEM'), updated_at = NOW()
           WHERE id = $1 AND status = 'REWARD_PENDING'`,
         [row.receipt_id, JSON.stringify(['RTALES_DELIVERY_TIMEOUT'])],
       );

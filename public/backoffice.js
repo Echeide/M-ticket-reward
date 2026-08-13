@@ -73,14 +73,20 @@ const reasonLabels = {
   FUTURE_DATE: 'La fecha está fuera del periodo permitido.',
   TICKET_TOO_OLD: 'La fecha del ticket supera el periodo permitido.',
   DAILY_STORE_LIMIT: 'El usuario alcanzó el límite diario para este establecimiento.',
-  RTALES_DELIVERY_FAILED: 'No se ha podido completar la entrega de puntos en Rtales.',
-  RTALES_DELIVERY_TIMEOUT: 'La entrega de puntos superó el tiempo máximo y se liberó al usuario. Revisa el caso antes de permitir otro intento.',
+  RTALES_DELIVERY_FAILED: 'La asignación no se ha completado. El ticket sigue validado y se reintentará con una sesión válida de Rtales.',
+  RTALES_DELIVERY_TIMEOUT: 'La asignación superó el tiempo máximo. El ticket sigue validado y se reintentará con una sesión válida de Rtales.',
   OCR_REPROCESS_REQUESTED: 'La nueva comprobación está en curso.',
 };
 
 function receiptStatusLabel(receipt) {
   if (receipt.verificationRequired) return 'Lectura pendiente de revisión';
+  if (isRewardDeliveryIssue(receipt)) return 'Entrega de puntos pendiente';
   return statusLabels[receipt.status] || receipt.status;
+}
+
+function receiptReviewLabel(receipt) {
+  if (isRewardDeliveryIssue(receipt)) return 'Ticket validado';
+  return reviewLabels[receipt.review.status] || receipt.review.status;
 }
 
 function isOperator() {
@@ -204,7 +210,7 @@ async function load(page = state.pagination.page) {
     <button class="receipt-row" data-id="${receipt.id}">
       <span><strong>${escapeHtml(receipt.publicId)}</strong><small>${escapeHtml(receipt.user?.lookupCode || '')}${receipt.user?.lookupCode ? ' · ' : ''}${escapeHtml(receipt.user?.displayName || receipt.fields.storeName || 'Sin usuario')}</small></span>
       <span><strong>${formatMoney(receipt.fields.totalCents)}</strong><small>${receipt.reward.pointsAwarded} puntos</small></span>
-      <span class="status-chip ${escapeHtml(receipt.status.toLowerCase())}">${escapeHtml(receiptStatusLabel(receipt))} · ${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</span>
+      <span class="status-chip ${escapeHtml(receipt.status.toLowerCase())}">${escapeHtml(receiptStatusLabel(receipt))} · ${escapeHtml(receiptReviewLabel(receipt))}</span>
     </button>`).join('') || renderEmptyReceiptList(params);
   document.querySelectorAll('.receipt-row').forEach((button) => button.addEventListener('click', () => select(button.dataset.id)));
   highlightSelectedRow();
@@ -1386,6 +1392,11 @@ function canReprocess(receipt) {
       ['OCR_PROCESSING_FAILED', 'OCR_VERIFICATION_REQUIRED'].includes(reason));
 }
 
+function isRewardDeliveryIssue(receipt) {
+  return receipt.status === 'REWARD_FAILED' && Array.isArray(receipt.reasons) &&
+    receipt.reasons.some((reason) => ['RTALES_DELIVERY_FAILED', 'RTALES_DELIVERY_TIMEOUT'].includes(reason));
+}
+
 function showNotice(message) {
   const notice = document.querySelector('#admin-notice');
   notice.textContent = message;
@@ -1404,8 +1415,7 @@ function highlightSelectedRow() {
 
 async function select(id, suppliedReceipt = null) {
   if (!state.stores.length) await loadFilterStores();
-  let selected = suppliedReceipt || state.rows.find((row) => row.id === id);
-  if (!selected) selected = (await request(`/api/admin/receipts/${encodeURIComponent(id)}`)).receipt;
+  const selected = suppliedReceipt || (await request(`/api/admin/receipts/${encodeURIComponent(id)}`)).receipt;
   state.selected = selected;
   const receipt = state.selected;
   if (!receipt) return;
@@ -1415,11 +1425,49 @@ async function select(id, suppliedReceipt = null) {
   const canApproveManually = (receipt.status === 'AUTO_REJECTED' || receipt.verificationRequired) && receipt.review.status !== 'FRAUD';
   const canConfirmFraud = receipt.review.status !== 'FRAUD' && receipt.canConfirmFraud === true;
   const reasons = Array.isArray(receipt.reasons) ? receipt.reasons : [];
+  const deliveryIssue = isRewardDeliveryIssue(receipt);
   const declared = receipt.declared || {};
   const declaredStore = state.stores.find((store) => store.id === declared.storeId);
   const hasDeclaration = Boolean(declared.ticketNumber || declared.totalCents || declared.storeId);
   const activeStoreOptions = state.stores.filter((store) => store.active).map((store) =>
     `<option value="${escapeHtml(store.id)}" ${store.id === receipt.fields.storeId ? 'selected' : ''}>${escapeHtml(store.name)}</option>`).join('');
+  const deliveryCanResume = receipt.reward.delivery?.resumableInNewSession === true;
+  const deliveryGuidance = deliveryCanResume
+    ? `La asignación de <b>${receipt.reward.pointsAwarded} puntos</b> se reintentará automáticamente cuando el usuario abra de nuevo la utilidad desde Rtales.`
+    : `La asignación de <b>${receipt.reward.pointsAwarded} puntos</b> necesita atención técnica. No debe resolverse tomando una decisión sobre fraude.`;
+  const staffResolution = deliveryIssue
+    ? `<section class="staff-resolution delivery-resolution">
+        <strong>Entrega de puntos</strong>
+        <h3>El ticket ya está validado</h3>
+        <p>No requiere ninguna decisión antifraude. ${deliveryGuidance}</p>
+        ${receipt.reward.delivery?.lastError ? `<small>Detalle técnico: ${escapeHtml(receipt.reward.delivery.lastError)} · ${receipt.reward.delivery.attemptCount} intento(s)</small>` : ''}
+      </section>`
+    : canApproveManually
+      ? `<section class="staff-resolution decision-resolution">
+          <strong>Decisión del staff</strong>
+          <h3>¿Qué decisión tomamos sobre este ticket?</h3>
+          <p>Validar corregirá los datos y calculará los puntos; rechazar cerrará el ticket sin sanción; confirmar fraude aplicará un strike al usuario.</p>
+          <div class="manual-correction"><strong>Datos válidos del ticket</strong><label>Comercio<select id="manual-store"><option value="">Selecciona un comercio</option>${activeStoreOptions}</select></label><label>Número de ticket <small>o indica la hora si no existe</small><input id="manual-ticket-number" value="${escapeHtml(receipt.fields.ticketNumber)}" /></label><label>Fecha<input id="manual-purchase-date" type="date" value="${escapeHtml(receipt.fields.purchaseDate)}" /></label><label>Hora de compra<input id="manual-purchase-time" type="time" value="${escapeHtml((receipt.fields.purchaseDateTime || '').slice(11, 16))}" /></label><label>Importe (€)<input id="manual-total" type="number" min="0.01" step="0.01" value="${(receipt.fields.totalCents / 100).toFixed(2)}" /></label></div>
+          <label class="review-note">Motivo de la decisión<textarea id="review-reason" rows="3" placeholder="Obligatorio para dejar trazabilidad"></textarea></label>
+          <div class="review-actions decision-actions">
+            <button class="primary-button" id="manual-approve">Validar y asignar puntos</button>
+            <button class="secondary-button" id="confirm-rejection">Rechazar sin sanción</button>
+            ${canConfirmFraud ? '<button class="danger-button" id="confirm-fraud">Confirmar fraude y aplicar strike</button>' : ''}
+          </div>
+        </section>`
+      : canRevoke
+        ? `<section class="staff-resolution decision-resolution">
+            <strong>Revisión posterior</strong>
+            <h3>Este ticket ya recibió puntos</h3>
+            <p>Si confirmas fraude se retirarán los puntos concedidos y se aplicará un strike al usuario.</p>
+            <label class="review-note">Motivo de la decisión<textarea id="review-reason" rows="3" placeholder="Obligatorio para retirar puntos y aplicar el strike"></textarea></label>
+            <div class="review-actions"><button class="danger-button" id="revoke">Retirar puntos y aplicar strike</button></div>
+          </section>`
+        : receipt.review.status === 'FRAUD'
+          ? '<section class="staff-resolution fraud-resolution"><strong>Decisión del ticket</strong><h3>Fraude confirmado</h3><p>El ticket está rechazado y la infracción ya está registrada.</p></section>'
+          : receipt.review.status === 'CLEARED'
+            ? '<section class="staff-resolution resolved-resolution"><strong>Decisión del ticket</strong><h3>Revisión resuelta</h3><p>Este caso ya no requiere una decisión del staff.</p></section>'
+            : '<section class="staff-resolution pending-resolution"><strong>Estado del ticket</strong><h3>Proceso todavía en curso</h3><p>Este ticket aún no admite una decisión manual.</p></section>';
   const panel = document.querySelector('#review-panel');
   panel.className = 'review-panel';
   panel.innerHTML = `
@@ -1444,22 +1492,9 @@ async function select(id, suppliedReceipt = null) {
       <h2>${escapeHtml(receipt.fields.storeName || 'Sin tienda')}</h2>
       <dl><div><dt>Usuario</dt><dd>${escapeHtml(receipt.user.displayName || receipt.user.subject)}</dd></div><div class="lookup-code-field"><dt>Código de búsqueda</dt><dd>${escapeHtml(receipt.user.lookupCode || 'Histórico sin código')}</dd></div><div><dt>Número</dt><dd>${escapeHtml(receipt.fields.ticketNumber || (receipt.fields.purchaseDateTime ? 'Sin número; validado por hora' : '—'))}</dd></div><div><dt>Fecha y hora</dt><dd>${escapeHtml(formatSpanishDateTime(receipt.fields.purchaseDateTime || receipt.fields.purchaseDate))}</dd></div><div><dt>Importe</dt><dd>${formatMoney(receipt.fields.totalCents)}</dd></div><div><dt>Estado</dt><dd>${escapeHtml(receiptStatusLabel(receipt))}</dd></div></dl>
       ${hasDeclaration ? `<section class="declared-ticket-data"><strong>Datos indicados antes de fotografiar</strong><dl><div><dt>Comercio</dt><dd>${escapeHtml(declaredStore?.name || (declared.storeId ? 'Comercio ya no disponible' : 'No solicitado'))}</dd></div><div><dt>Número</dt><dd>${escapeHtml(declared.ticketNumber || '—')}</dd></div><div><dt>Total</dt><dd>${formatMoney(declared.totalCents || 0)}</dd></div></dl></section>` : ''}
-      ${reasons.length ? `<div class="review-reasons"><strong>Comprobación automática</strong><ul>${reasons.map((reason) => `<li>${escapeHtml(reasonLabels[reason] || reason)}</li>`).join('')}</ul></div>` : ''}
-      ${canApproveManually ? `<div class="manual-correction"><strong>Corrección manual</strong><label>Comercio<select id="manual-store"><option value="">Selecciona un comercio</option>${activeStoreOptions}</select></label><label>Número de ticket <small>o indica la hora si no existe</small><input id="manual-ticket-number" value="${escapeHtml(receipt.fields.ticketNumber)}" /></label><label>Fecha<input id="manual-purchase-date" type="date" value="${escapeHtml(receipt.fields.purchaseDate)}" /></label><label>Hora de compra<input id="manual-purchase-time" type="time" value="${escapeHtml((receipt.fields.purchaseDateTime || '').slice(11, 16))}" /></label><label>Importe (€)<input id="manual-total" type="number" min="0.01" step="0.01" value="${(receipt.fields.totalCents / 100).toFixed(2)}" /></label></div>` : ''}
-      <label>Nota de revisión<textarea id="review-reason" rows="3" placeholder="${canApproveManually ? 'Obligatoria para validar manualmente' : `Opcional al marcar como revisado${canRevoke ? '; obligatoria para retirar puntos' : ''}`}"></textarea></label>
-      <div class="review-actions">
-        ${receipt.review.status === 'PENDING' && !canApproveManually
-          ? `<button class="primary-button" id="clear-review">${reasons.includes('RTALES_DELIVERY_TIMEOUT') || reasons.includes('RTALES_DELIVERY_FAILED') ? 'Permitir nuevo intento de puntos' : 'Revisado'}</button>`
-          : receipt.review.status === 'CLEARED' && !canApproveManually
-            ? `<span class="review-complete">Este ticket ya está resuelto.</span><button class="secondary-button reopen-review-button" id="reopen-review" type="button" aria-label="Volver a dejar pendiente" title="Volver a dejar pendiente"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5"></path><path d="M4 12h9a7 7 0 0 1 7 7"></path></svg></button>`
-            : receipt.review.status === 'FRAUD'
-              ? '<span class="review-complete">Este ticket está marcado como fraude.</span>'
-              : ''}
-        ${canRevoke ? '<button class="danger-button" id="revoke">Fraude: retirar puntos</button>' : ''}
-        ${canConfirmFraud ? '<button class="danger-button" id="confirm-fraud">Marcar como fraude</button>' : ''}
-        ${canApproveManually ? '<button class="secondary-button" id="confirm-rejection">Confirmar rechazo</button><button class="primary-button" id="manual-approve">Corregir y conceder puntos</button>' : ''}
-      </div>
-      <dl class="ticket-secondary-data"><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Espacio</dt><dd>${escapeHtml(receipt.user.spaceCode || '—')}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Revisión</dt><dd>${escapeHtml(reviewLabels[receipt.review.status] || receipt.review.status)}</dd></div><div><dt>OCR</dt><dd>${escapeHtml([receipt.ocrProcessing?.provider, receipt.ocrProcessing?.model].filter(Boolean).join(' · ') || '—')}</dd></div><div><dt>Proceso OCR</dt><dd>${receipt.ocrProcessing?.durationMs == null ? 'Sin resultado' : `${receipt.ocrProcessing.durationMs} ms · ${receipt.ocrProcessing.attemptCount} llamada(s)`} · ${receipt.ocrProcessing?.jobAttemptCount || 0} ejecución(es)</dd></div>${receipt.ocrProcessing?.lastError ? `<div><dt>Último error OCR</dt><dd>${escapeHtml(receipt.ocrProcessing.lastError)}</dd></div>` : ''}<div><dt>Creado</dt><dd>${escapeHtml(new Date(receipt.createdAt).toLocaleString('es-ES'))}</dd></div></dl>
+      ${reasons.length && !deliveryIssue ? `<div class="review-reasons"><strong>Comprobación automática</strong><ul>${reasons.map((reason) => `<li>${escapeHtml(reasonLabels[reason] || reason)}</li>`).join('')}</ul></div>` : ''}
+      ${staffResolution}
+      <dl class="ticket-secondary-data"><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Espacio</dt><dd>${escapeHtml(receipt.user.spaceCode || '—')}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Decisión</dt><dd>${escapeHtml(receiptReviewLabel(receipt))}</dd></div><div><dt>OCR</dt><dd>${escapeHtml([receipt.ocrProcessing?.provider, receipt.ocrProcessing?.model].filter(Boolean).join(' · ') || '—')}</dd></div><div><dt>Proceso OCR</dt><dd>${receipt.ocrProcessing?.durationMs == null ? 'Sin resultado' : `${receipt.ocrProcessing.durationMs} ms · ${receipt.ocrProcessing.attemptCount} llamada(s)`} · ${receipt.ocrProcessing?.jobAttemptCount || 0} ejecución(es)</dd></div>${receipt.ocrProcessing?.lastError ? `<div><dt>Último error OCR</dt><dd>${escapeHtml(receipt.ocrProcessing.lastError)}</dd></div>` : ''}<div><dt>Creado</dt><dd>${escapeHtml(new Date(receipt.createdAt).toLocaleString('es-ES'))}</dd></div></dl>
     </div>`;
   const image = await fetch(`/api/admin/receipts/${id}/image`, { headers: headers() });
   if (image.ok) {
@@ -1477,8 +1512,6 @@ async function select(id, suppliedReceipt = null) {
     }
     else URL.revokeObjectURL(imageUrl);
   }
-  document.querySelector('#clear-review')?.addEventListener('click', () => review('CLEAR'));
-  document.querySelector('#reopen-review')?.addEventListener('click', () => review('REOPEN'));
   document.querySelector('#revoke')?.addEventListener('click', () => review('REVOKE'));
   document.querySelector('#confirm-rejection')?.addEventListener('click', () => review('CONFIRM_REJECTION'));
   document.querySelector('#confirm-fraud')?.addEventListener('click', () => review('CONFIRM_FRAUD'));
@@ -1542,14 +1575,15 @@ async function reprocessSelected() {
 
 async function review(action) {
   if (state.reviewing || !state.selected) return;
-  const reason = document.querySelector('#review-reason').value.trim();
+  const reason = document.querySelector('#review-reason')?.value.trim() || '';
   if (action === 'MANUAL_APPROVE' && !reason) return alert('Indica el motivo de la validación manual.');
-  if (action === 'MANUAL_APPROVE' && !confirm('Se guardarán las correcciones y se concederán los puntos. ¿Continuar?')) return;
-  if (action === 'CONFIRM_REJECTION' && !confirm('El ticket permanecerá rechazado y no se concederán puntos. ¿Continuar?')) return;
+  if (action === 'MANUAL_APPROVE' && !confirm('Se guardarán los datos válidos, se recalcularán los puntos y se iniciará su asignación. ¿Continuar?')) return;
+  if (action === 'CONFIRM_REJECTION' && !reason) return alert('Indica el motivo del rechazo.');
+  if (action === 'CONFIRM_REJECTION' && !confirm('El ticket se rechazará sin conceder puntos y sin aplicar ningún strike. ¿Continuar?')) return;
   if (action === 'CONFIRM_FRAUD' && !reason) return alert('Indica el motivo del fraude.');
-  if (action === 'CONFIRM_FRAUD' && !confirm('Se registrará una infracción por fraude para este usuario. ¿Continuar?')) return;
+  if (action === 'CONFIRM_FRAUD' && !confirm('El ticket se rechazará y se aplicará un strike por fraude al usuario. ¿Continuar?')) return;
   if (action === 'REVOKE' && !reason) return alert('Indica el motivo de la revocación.');
-  if (action === 'REVOKE' && !confirm('Se retirarán los puntos concedidos. ¿Continuar?')) return;
+  if (action === 'REVOKE' && !confirm('Se retirarán los puntos concedidos y se aplicará un strike por fraude al usuario. ¿Continuar?')) return;
   state.reviewing = true;
   const buttons = [...document.querySelectorAll('.review-actions button')];
   buttons.forEach((button) => { button.disabled = true; });
@@ -1576,16 +1610,16 @@ async function review(action) {
     panel.className = 'review-panel empty';
     panel.innerHTML = '<p>Selecciona un ticket para revisarlo.</p>';
     showNotice(action === 'MANUAL_APPROVE'
-      ? 'Ticket validado manualmente; se están asignando los puntos.'
+      ? 'Ticket validado; se están asignando los puntos.'
       : action === 'CONFIRM_REJECTION'
-        ? 'Rechazo confirmado; no se concederán puntos.'
+        ? 'Ticket rechazado sin sanción; no se concederán puntos.'
       : action === 'CONFIRM_FRAUD'
-        ? 'Fraude confirmado e infracción registrada.'
+        ? 'Fraude confirmado; ticket rechazado y strike registrado.'
       : action === 'CLEAR'
         ? 'Ticket marcado como revisado.'
         : action === 'REOPEN'
           ? 'Ticket devuelto a pendientes.'
-          : 'Fraude registrado; se están retirando los puntos.');
+          : 'Fraude confirmado; se están retirando los puntos y el strike está registrado.');
   } catch (error) {
     buttons.forEach((button) => { button.disabled = false; });
     alert(error instanceof Error ? error.message : 'No se pudo completar la revisión');
@@ -1615,10 +1649,6 @@ document.addEventListener('keydown', (event) => {
     return;
   }
 
-  if ((event.key === 'Enter' || event.key === ' ') && state.selected?.review.status === 'PENDING') {
-    event.preventDefault();
-    review('CLEAR');
-  }
 });
 
 function updateFilterCount() {

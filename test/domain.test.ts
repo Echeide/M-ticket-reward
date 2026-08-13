@@ -5,6 +5,7 @@ import {
   canConfirmReceiptFraud,
   canReprocessReceipt,
   compareReceiptDeclaration,
+  isRewardDeliveryIssue,
   receiptStatusAfterOcr,
   normalizeReceiptDeclaration,
   normalizeUploadRequestId,
@@ -223,12 +224,17 @@ test('technical OCR failures and verification mismatches require staff review', 
   assert.equal(requiresManualReceiptReview('AUTO_REJECTED', ['OCR_PROCESSING_FAILED']), false);
 });
 
-test('staff fraud confirmation excludes duplicates because they are resolved automatically', () => {
+test('staff fraud confirmation excludes automatic duplicates and reward delivery incidents', () => {
   assert.equal(canConfirmReceiptFraud('DUPLICATE', false), false);
   assert.equal(canConfirmReceiptFraud('AUTO_REJECTED', false), true);
   assert.equal(canConfirmReceiptFraud('REWARD_FAILED', false), true);
+  assert.equal(canConfirmReceiptFraud('REWARD_FAILED', false, ['RTALES_DELIVERY_FAILED']), false);
+  assert.equal(canConfirmReceiptFraud('REWARD_FAILED', false, ['RTALES_DELIVERY_TIMEOUT']), false);
   assert.equal(canConfirmReceiptFraud('REWARD_FAILED', true), false);
   assert.equal(canConfirmReceiptFraud('REWARDED', true), false);
+  assert.equal(isRewardDeliveryIssue('REWARD_FAILED', ['RTALES_DELIVERY_FAILED']), true);
+  assert.equal(isRewardDeliveryIssue('REWARD_FAILED', ['OCR_PROCESSING_FAILED']), false);
+  assert.equal(isRewardDeliveryIssue('REWARDED', ['RTALES_DELIVERY_FAILED']), false);
 });
 
 test('reward tiers select the highest eligible purchase threshold', () => {

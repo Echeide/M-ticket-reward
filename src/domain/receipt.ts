@@ -141,7 +141,17 @@ export function receiptReviewFeedback(reasons: string[] = []): string {
   return '';
 }
 
-export function canConfirmReceiptFraud(status: string, hasRewardResult: boolean): boolean {
+export function isRewardDeliveryIssue(status: string, reasons: string[] = []): boolean {
+  return status === 'REWARD_FAILED' && reasons.some((reason) =>
+    ['RTALES_DELIVERY_FAILED', 'RTALES_DELIVERY_TIMEOUT'].includes(reason));
+}
+
+export function canConfirmReceiptFraud(
+  status: string,
+  hasRewardResult: boolean,
+  reasons: string[] = [],
+): boolean {
+  if (isRewardDeliveryIssue(status, reasons)) return false;
   return status === 'AUTO_REJECTED' || (status === 'REWARD_FAILED' && !hasRewardResult);
 }
 
