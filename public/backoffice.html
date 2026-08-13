@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Revisión antifraude de tickets</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=antifraud-review-filter-1" />
   </head>
   <body class="backoffice-body">
     <header class="admin-header">
@@ -21,8 +21,9 @@
     <div id="admin-notice" class="admin-notice" role="status" aria-live="polite"></div>
     <main id="receipts-view" class="admin-layout admin-view active">
       <section class="filters-bar" aria-label="Búsqueda y filtros de tickets">
-        <form id="filters" class="filters-inline">
+        <form id="filters" class="filters-inline receipts-filters-inline">
           <label class="filter-search"><span class="visually-hidden">Usuario o ticket</span><input name="user" placeholder="Buscar por usuario, correo, referencia o número de ticket" /></label>
+          <label class="filter-review"><span class="visually-hidden">Resultado antifraude</span><select id="review-filter" name="review" aria-label="Resultado antifraude"><option value="PENDING" selected>Pendientes de revisión</option><option value="CLEARED">Resueltos</option><option value="FRAUD">Marcados como fraude</option><option value="">Todos los resultados</option></select></label>
           <button class="secondary-button button-with-icon" id="open-filters" type="button">
             <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M7 12h10M10 17h4"></path></svg>
             <span>Filtros</span><span class="filter-count" id="filter-count" hidden>0</span>
@@ -317,7 +318,6 @@
             <option value="REVOKED">Anulado</option>
             <option value="DUPLICATE">Duplicado</option>
           </select></label>
-          <label>Resultado antifraude<select name="review" form="filters"><option value="">Todos los resultados</option><option value="PENDING">Pendiente de revisión</option><option value="CLEARED">Resueltos</option><option value="FRAUD">Marcados como fraude</option></select></label>
           <label>Compra desde<input name="from" type="date" form="filters" /></label>
           <label>Compra hasta<input name="to" type="date" form="filters" /></label>
           <label class="filter-toggle"><input name="attention" value="1" type="checkbox" form="filters" /><span>Mostrar solo tickets con incidencias</span></label>
@@ -345,6 +345,6 @@
         <div id="ticket-user-detail-body"></div>
       </div>
     </dialog>
-    <script type="module" src="/backoffice.js?v=duplicate-auto-strike-1"></script>
+    <script type="module" src="/backoffice.js?v=antifraud-review-filter-1"></script>
   </body>
 </html>

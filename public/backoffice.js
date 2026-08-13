@@ -363,6 +363,7 @@ async function openOffenseTicket(receiptId, receiptPublicId) {
   document.querySelectorAll('.admin-view').forEach((item) => item.classList.toggle('active', item.id === 'receipts-view'));
   const filters = document.querySelector('#filters');
   filters.reset();
+  filters.elements.review.value = '';
   document.querySelector('[name="attention"]').checked = false;
   filters.elements.user.value = receiptPublicId || '';
   updateFilterCount();
@@ -1623,6 +1624,7 @@ document.addEventListener('keydown', (event) => {
 function updateFilterCount() {
   const params = filterParams();
   params.delete('user');
+  params.delete('review');
   const count = [...params].length;
   const badge = document.querySelector('#filter-count');
   badge.textContent = count;
@@ -1635,6 +1637,7 @@ document.querySelector('#filters').addEventListener('submit', (event) => {
   const search = filters.elements.user.value.trim();
   if (/^TKT-[A-Z0-9_-]+$/i.test(search)) {
     filters.reset();
+    filters.elements.review.value = '';
     filters.elements.user.value = search.toUpperCase();
     document.querySelector('[name="attention"]').checked = false;
   }
@@ -1644,8 +1647,16 @@ document.querySelector('#filters').addEventListener('submit', (event) => {
 });
 document.querySelector('#open-filters').addEventListener('click', () => document.querySelector('#filters-dialog').showModal());
 document.querySelector('#close-filters-dialog').addEventListener('click', () => document.querySelector('#filters-dialog').close());
+document.querySelector('#review-filter').addEventListener('change', () => {
+  load(1).catch((error) => alert(error.message));
+});
 document.querySelector('#clear-filters').addEventListener('click', () => {
-  document.querySelector('#filters').reset();
+  const filters = document.querySelector('#filters');
+  const search = filters.elements.user.value;
+  const reviewResult = filters.elements.review.value;
+  filters.reset();
+  filters.elements.user.value = search;
+  filters.elements.review.value = reviewResult;
   document.querySelector('[name="attention"]').checked = false;
   updateFilterCount();
   document.querySelector('#filters-dialog').close();
@@ -1802,7 +1813,6 @@ document.querySelector('#assisted-scan-enabled').addEventListener('change', (eve
 });
 document.querySelector('#validation-period-form').addEventListener('submit', saveValidationPeriod);
 document.querySelector('#admin-user-form').addEventListener('submit', saveAdminUser);
-document.querySelector('[name="review"]').value = 'PENDING';
 updateFilterCount();
 async function initializeBackoffice() {
   await loadAdminSession();
