@@ -73,6 +73,8 @@ const reasonLabels = {
   FUTURE_DATE: 'La fecha está fuera del periodo permitido.',
   TICKET_TOO_OLD: 'La fecha del ticket supera el periodo permitido.',
   DAILY_STORE_LIMIT: 'El usuario alcanzó el límite diario para este establecimiento.',
+  RTALES_DELIVERY_FAILED: 'No se ha podido completar la entrega de puntos en Rtales.',
+  RTALES_DELIVERY_TIMEOUT: 'La entrega de puntos superó el tiempo máximo y se liberó al usuario. Revisa el caso antes de permitir otro intento.',
   OCR_REPROCESS_REQUESTED: 'La nueva comprobación está en curso.',
 };
 
@@ -1446,7 +1448,7 @@ async function select(id, suppliedReceipt = null) {
       <label>Nota de revisión<textarea id="review-reason" rows="3" placeholder="${canApproveManually ? 'Obligatoria para validar manualmente' : `Opcional al marcar como revisado${canRevoke ? '; obligatoria para retirar puntos' : ''}`}"></textarea></label>
       <div class="review-actions">
         ${receipt.review.status === 'PENDING' && !canApproveManually
-          ? '<button class="primary-button" id="clear-review">Revisado</button>'
+          ? `<button class="primary-button" id="clear-review">${reasons.includes('RTALES_DELIVERY_TIMEOUT') || reasons.includes('RTALES_DELIVERY_FAILED') ? 'Permitir nuevo intento de puntos' : 'Revisado'}</button>`
           : receipt.review.status === 'CLEARED' && !canApproveManually
             ? `<span class="review-complete">Este ticket ya está resuelto.</span><button class="secondary-button reopen-review-button" id="reopen-review" type="button" aria-label="Volver a dejar pendiente" title="Volver a dejar pendiente"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5"></path><path d="M4 12h9a7 7 0 0 1 7 7"></path></svg></button>`
             : receipt.review.status === 'FRAUD'

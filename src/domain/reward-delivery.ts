@@ -31,7 +31,8 @@ export function canResumeRewardInNewSession(
   if (receiptStatus === 'REWARD_PENDING' && ['PENDING', 'PROCESSING'].includes(outboxStatus)) return true;
   if (receiptStatus !== 'REWARD_FAILED' || outboxStatus !== 'FAILED') return false;
   const failure = String(lastError || '').trim().toLowerCase();
-  return failure.includes('game session is not ready to receive results') || failure === 'rtales_max_attempts';
+  return failure.includes('game session is not ready to receive results') ||
+    ['rtales_max_attempts', 'rtales_delivery_timeout'].includes(failure);
 }
 
 export function databaseTimestampAfter(delaySeconds: number, now = Date.now()): string {

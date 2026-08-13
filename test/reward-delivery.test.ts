@@ -43,6 +43,7 @@ test('reward failure classification keeps permanent client errors terminal', () 
 test('pending session-related rewards can continue in a newly opened player session', () => {
   assert.equal(canResumeRewardInNewSession('REWARD_PENDING', 'PENDING', 'Game session is not ready to receive results'), true);
   assert.equal(canResumeRewardInNewSession('REWARD_PENDING', 'PROCESSING', null), true);
+  assert.equal(canResumeRewardInNewSession('REWARD_FAILED', 'FAILED', 'RTALES_DELIVERY_TIMEOUT'), true);
   assert.equal(canResumeRewardInNewSession('REWARD_FAILED', 'FAILED', 'Game session is not ready to receive results'), true);
   assert.equal(canResumeRewardInNewSession('REWARD_FAILED', 'FAILED', 'RTALES_MAX_ATTEMPTS'), true);
   assert.equal(canResumeRewardInNewSession('REWARD_FAILED', 'FAILED', 'Invalid points payload'), false);

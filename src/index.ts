@@ -442,11 +442,18 @@ const PUBLIC_REASON_MESSAGES: Record<string, string> = {
   FUTURE_DATE: 'La fecha está fuera del periodo permitido.',
   TICKET_TOO_OLD: 'La fecha está fuera del periodo permitido.',
   DAILY_STORE_LIMIT: 'Has alcanzado el límite diario de tickets para este establecimiento.',
-  RTALES_DELIVERY_FAILED: 'No hemos podido añadir los puntos. El ticket sigue registrado y puedes reintentar la asignación.',
+  RTALES_DELIVERY_FAILED: 'No hemos podido añadir los puntos. El ticket sigue registrado y nuestro equipo revisará la asignación.',
+  RTALES_DELIVERY_TIMEOUT: 'La asignación de puntos está tardando más de lo habitual. El ticket sigue registrado y nuestro equipo lo revisará. Puedes volver a Rtales y abrir de nuevo la utilidad para enviar otro ticket.',
 };
 
 function publicReceiptMessage(row: ReceiptRow): string {
   const reasons = Array.isArray(row.validation_reasons) ? row.validation_reasons : [];
+  if (
+    row.status === 'REWARD_FAILED' && row.review_status === 'CLEARED' &&
+    reasons.some((reason) => ['RTALES_DELIVERY_FAILED', 'RTALES_DELIVERY_TIMEOUT'].includes(reason))
+  ) {
+    return 'El ticket está validado y puede volver a intentar la asignación. Vuelve a Rtales y abre de nuevo la utilidad para completar los puntos.';
+  }
   const reviewFeedback = receiptReviewFeedback(reasons);
   if (reviewFeedback) return reviewFeedback;
   const reason = reasons.find((value) => PUBLIC_REASON_MESSAGES[value]);
@@ -454,7 +461,7 @@ function publicReceiptMessage(row: ReceiptRow): string {
   if (row.status === 'REVOKED') return 'El ticket fue anulado tras la revisión antifraude.';
   if (row.status === 'REVOKE_PENDING') return 'La anulación de los puntos está en proceso.';
   if (row.status === 'REWARD_PENDING') {
-    return `El ticket está validado. Estamos esperando la confirmación del sistema para añadir ${row.points_awarded} puntos. No necesitas mantener esta pantalla abierta ni volver a enviar el ticket.`;
+    return `Se está procesando tu último ticket para añadir ${row.points_awarded} puntos. No puedes enviar otro hasta que finalice el proceso. No necesitas mantener esta pantalla abierta.`;
   }
   if (row.status === 'REWARD_FAILED') return 'No hemos podido completar la asignación de puntos.';
   return '';
@@ -464,7 +471,9 @@ function publicReceiptView(row: ReceiptRow) {
   const verificationRequired = row.review_status === 'PENDING' &&
     requiresManualReceiptReview(row.status, row.validation_reasons);
   const retryableReward = row.status === 'REWARD_FAILED' &&
-    row.validation_reasons.includes('RTALES_DELIVERY_FAILED');
+    row.review_status === 'CLEARED' &&
+    row.validation_reasons.some((reason) =>
+      ['RTALES_DELIVERY_FAILED', 'RTALES_DELIVERY_TIMEOUT'].includes(reason));
   return {
     id: row.id,
     publicId: row.public_id,
@@ -608,6 +617,7 @@ async function handleExchange(request: Request, env: Env): Promise<Response> {
          FROM reward_outbox ro JOIN receipts r ON r.id = ro.receipt_id
         WHERE r.external_user_id = $1 AND ro.operation = 'GRANT'
           AND r.status IN ('REWARD_PENDING', 'REWARD_FAILED')
+          AND r.review_status = 'CLEARED'
           AND ro.status IN ('PENDING', 'PROCESSING', 'FAILED')
         ORDER BY r.created_at ASC, ro.created_at ASC
         LIMIT 20`,
@@ -677,9 +687,19 @@ async function activeUserBan(client: DbClient, externalUserId: string | null): P
 }
 
 async function handlePublicSession(request: Request, env: Env): Promise<Response> {
-  const session = await authenticatedSession(request, env);
-  if (!session) return error('Sesión no válida', 401);
-  const ban = await withDatabase(env, (client) => activeUserBan(client, session.external_user_id));
+  const context = await withDatabase(env, async (client) => {
+    const session = await authenticatedSession(request, env, client);
+    if (!session) return null;
+    const [ban, receipt] = await Promise.all([
+      activeUserBan(client, session.external_user_id),
+      loadSessionReceipt(client, session.id),
+    ]);
+    return { ban, receipt };
+  });
+  if (!context) return error('Sesión no válida', 401);
+  const { ban, receipt } = context;
+  const processing = receipt && ['OCR_QUEUED', 'OCR_PROCESSING', 'READY_FOR_CONFIRMATION',
+    'REWARD_PENDING', 'REVOKE_PENDING'].includes(receipt.status);
   return json({
     success: true,
     access: ban
@@ -688,7 +708,18 @@ async function handlePublicSession(request: Request, env: Env): Promise<Response
           code: 'USER_BANNED',
           message: 'Tu acceso al envío de tickets está suspendido. Contacta con la organización si consideras que se trata de un error.',
         }
-      : { canUpload: true },
+      : receipt
+        ? {
+            canUpload: false,
+            code: processing ? 'TICKET_PROCESSING' : 'SESSION_RECEIPT_LIMIT',
+            message: processing
+              ? 'Se está procesando tu último ticket. No puedes enviar otro hasta que finalice el proceso.'
+              : 'Este acceso ya se ha utilizado para enviar un ticket. Para enviar otro, vuelve a Rtales y abre de nuevo la utilidad.',
+            receiptId: receipt.id,
+            publicId: receipt.public_id,
+            status: receipt.status,
+          }
+        : { canUpload: true },
   });
 }
 
@@ -1474,7 +1505,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
     );
     if (identityDuplicate) {
       completedStatus = 'DUPLICATE';
-      await client.query(
+      const updated = await client.query(
         `UPDATE receipts SET status = 'DUPLICATE', store_id = $2, store_name = $3,
            ticket_number = $4, purchase_date = $5, total_cents = $6, currency = $7,
            ticket_fingerprint = NULL, ticket_identity_key = NULL,
@@ -1483,13 +1514,14 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
            ocr_duration_ms = $13, ocr_completed_at = NOW(), ocr_last_error = NULL,
            validation_reasons = $14::jsonb, review_status = 'CLEARED',
            reviewed_at = NOW(), reviewed_by = 'SYSTEM', updated_at = NOW()
-         WHERE id = $1`,
+         WHERE id = $1 AND status = 'OCR_PROCESSING'`,
         [receiptId, selectedStore?.id || null, fields.storeName || null,
           fields.ticketNumber || null, fields.purchaseDate || null, fields.totalCents || null,
           fields.currency, JSON.stringify(ocr), ocr.confidence, ocrResult.provider,
           ocrResult.model, ocrResult.attemptCount, ocrResult.durationMs,
           JSON.stringify(['DUPLICATE', 'DUPLICATE_TICKET_IDENTITY'])],
       );
+      if (!updated.rowCount) completedStatus = '';
       return;
     }
     if (ocrResult.verificationIssues.length > 0 || declarationIssues.length > 0) {
@@ -1499,7 +1531,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
         ...declarationIssues,
       ];
       completedStatus = 'REWARD_FAILED';
-      await client.query(
+      const updated = await client.query(
         `UPDATE receipts SET status = 'REWARD_FAILED', store_id = $2, store_name = $3,
            ticket_number = $4, purchase_date = $5, total_cents = $6, currency = $7,
            ticket_fingerprint = NULL, ticket_identity_key = NULL,
@@ -1508,13 +1540,14 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
            ocr_duration_ms = $13, ocr_completed_at = NOW(), ocr_last_error = NULL, risk_score = $15,
            validation_reasons = $14::jsonb, review_status = 'PENDING',
            reviewed_at = NULL, reviewed_by = NULL, updated_at = NOW()
-         WHERE id = $1`,
+         WHERE id = $1 AND status = 'OCR_PROCESSING'`,
         [receiptId, selectedStore?.id || null, fields.storeName || null,
           fields.ticketNumber || null, fields.purchaseDate || null, fields.totalCents || null,
           fields.currency, JSON.stringify(ocr), ocr.confidence, ocrResult.provider,
           ocrResult.model, ocrResult.attemptCount, ocrResult.durationMs, JSON.stringify(reasons),
           Math.min(100, declarationIssues.length * 25)],
       );
+      if (!updated.rowCount) completedStatus = '';
       return;
     }
     const duplicate = fingerprint ? await client.query(
@@ -1561,7 +1594,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
     const persistedIdentityKey = (IDENTITY_DUPLICATE_STATUSES as readonly string[]).includes(status)
       ? ocrIdentityKey || declaredIdentityKey
       : null;
-    await client.query(
+    const updated = await client.query(
       `UPDATE receipts SET status = $2, store_id = $3, store_name = $4,
          ticket_number = $5, purchase_date = $6, total_cents = $7, currency = $8,
          ticket_fingerprint = $9, ticket_identity_key = $10,
@@ -1572,7 +1605,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
          points_awarded = $19,
          review_status = 'CLEARED', reviewed_at = NOW(), reviewed_by = 'SYSTEM',
          updated_at = NOW()
-       WHERE id = $1`,
+       WHERE id = $1 AND status = 'OCR_PROCESSING'`,
       [receiptId, status, selectedStore?.id || null, fields.storeName || null,
         fields.ticketNumber || null, fields.purchaseDate || null, fields.totalCents || null,
         fields.currency, status === 'DUPLICATE' ? null : fingerprint,
@@ -1580,6 +1613,11 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
         JSON.stringify(validation.reasons), ocrResult.provider, ocrResult.model,
         ocrResult.attemptCount, ocrResult.durationMs, points],
     );
+    if (!updated.rowCount) {
+      completedStatus = '';
+      rewardOutboxId = '';
+      return;
+    }
     if (rewardOutboxId) {
       await client.query(
         `INSERT INTO reward_outbox
@@ -1676,8 +1714,9 @@ async function markOutboxTerminalFailure(env: Env, outboxId: string, failure: st
     if (outbox.operation === 'GRANT') {
       await client.query(
         `UPDATE receipts SET status = 'REWARD_FAILED',
-           validation_reasons = $2::jsonb, review_status = 'CLEARED',
-           reviewed_at = NOW(), reviewed_by = 'SYSTEM', updated_at = NOW()
+           validation_reasons = $2::jsonb, review_status = 'PENDING',
+           reward_session_id = NULL,
+           reviewed_at = NULL, reviewed_by = NULL, updated_at = NOW()
          WHERE id = $1 AND status = 'REWARD_PENDING'`,
         [outbox.receipt_id, JSON.stringify(['RTALES_DELIVERY_FAILED'])],
       );
@@ -4118,21 +4157,69 @@ async function requeueDueOutbox(env: Env): Promise<void> {
 }
 
 async function requeueStuckOcr(env: Env): Promise<void> {
+  const maxAttempts = ocrMaxAttempts(env.OCR_MAX_ATTEMPTS);
   const receipts = await withDatabase(env, async (client) => {
+    await client.query(
+      `UPDATE receipts SET status = 'REWARD_FAILED',
+          validation_reasons = $2::jsonb, ticket_identity_key = NULL,
+          review_status = 'PENDING', reviewed_at = NULL, reviewed_by = NULL,
+          ocr_last_error = COALESCE(ocr_last_error, 'OCR_PROCESSING_TIMEOUT'),
+          ocr_completed_at = NOW(), updated_at = NOW()
+        WHERE id IN (
+          SELECT id FROM receipts
+           WHERE status IN ('OCR_QUEUED', 'OCR_PROCESSING')
+             AND ocr_job_attempt_count >= $1
+             AND updated_at < datetime('now', '-2 minutes')
+           ORDER BY updated_at ASC LIMIT 50
+        )`,
+      [maxAttempts, JSON.stringify(['OCR_PROCESSING_FAILED'])],
+    );
     const result = await client.query<{ id: string }>(
       `UPDATE receipts SET status = 'OCR_QUEUED', updated_at = NOW()
         WHERE id IN (
           SELECT id FROM receipts
-           WHERE (status = 'OCR_PROCESSING' AND updated_at < datetime('now', '-2 minutes'))
-              OR (status = 'OCR_QUEUED' AND updated_at < datetime('now', '-1 minute'))
+           WHERE ((status = 'OCR_PROCESSING' AND updated_at < datetime('now', '-2 minutes'))
+              OR (status = 'OCR_QUEUED' AND updated_at < datetime('now', '-1 minute')))
+             AND ocr_job_attempt_count < $1
            ORDER BY updated_at ASC
            LIMIT 50
         )
         RETURNING id`,
+      [maxAttempts],
     );
     return result.rows;
   });
   await Promise.all(receipts.map(({ id }) => env.OCR_JOBS.send({ kind: 'OCR_RECEIPT', receiptId: id })));
+}
+
+async function releaseStuckRewardSessions(env: Env): Promise<void> {
+  await withDatabase(env, async (client) => inTransaction(client, async () => {
+    const timedOut = await client.query<{ receipt_id: string }>(
+      `UPDATE reward_outbox SET status = 'FAILED',
+          last_error = 'RTALES_DELIVERY_TIMEOUT', locked_until = NULL, updated_at = NOW()
+        WHERE id IN (
+          SELECT ro.id FROM reward_outbox ro
+          JOIN receipts r ON r.id = ro.receipt_id
+          WHERE ro.operation = 'GRANT'
+            AND r.status = 'REWARD_PENDING'
+            AND r.reward_session_id IS NOT NULL
+            AND r.updated_at < datetime('now', '-10 minutes')
+            AND (ro.status = 'PENDING' OR
+                 (ro.status = 'PROCESSING' AND (ro.locked_until IS NULL OR ro.locked_until < NOW())))
+          ORDER BY r.updated_at ASC LIMIT 50
+        )
+        RETURNING receipt_id`,
+    );
+    for (const row of timedOut.rows) {
+      await client.query(
+        `UPDATE receipts SET status = 'REWARD_FAILED', reward_session_id = NULL,
+            validation_reasons = $2::jsonb, review_status = 'PENDING',
+            reviewed_at = NULL, reviewed_by = NULL, updated_at = NOW()
+          WHERE id = $1 AND status = 'REWARD_PENDING'`,
+        [row.receipt_id, JSON.stringify(['RTALES_DELIVERY_TIMEOUT'])],
+      );
+    }
+  }));
 }
 
 async function resolveDuplicateOffenses(env: Env): Promise<void> {
@@ -4209,6 +4296,7 @@ export default {
     context.waitUntil(Promise.all([
       requeueDueOutbox(env),
       requeueStuckOcr(env),
+      releaseStuckRewardSessions(env),
       resolveDuplicateOffenses(env),
       continueBanCleanups(env),
     ]));

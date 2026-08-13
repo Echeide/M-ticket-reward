@@ -10,6 +10,7 @@ const state = {
   appSettings: {},
   pendingDeclaration: null,
   canUpload: true,
+  uploadBlock: null,
   pollGeneration: 0,
 };
 const notifiedRewardReceipts = new Set();
@@ -102,8 +103,36 @@ function prepareScanDetailsForm() {
   return form;
 }
 
-function openScanFlow() {
-  if (!state.canUpload) return showUserBan();
+function applySessionAccess(access = {}) {
+  state.canUpload = access.canUpload !== false;
+  state.uploadBlock = state.canUpload ? null : access;
+  const scanButton = document.querySelector('#open-scan-flow');
+  scanButton.disabled = !state.canUpload;
+  scanButton.title = state.canUpload ? '' : (access.message || 'Espera a que finalice el proceso actual.');
+  const blockMessage = document.querySelector('#scan-block-message');
+  blockMessage.textContent = state.canUpload ? '' : scanButton.title;
+  blockMessage.hidden = state.canUpload;
+}
+
+async function refreshSessionAccess() {
+  const payload = await api('/api/session');
+  applySessionAccess(payload.access || {});
+  return payload.access || {};
+}
+
+async function showUploadBlock(access = state.uploadBlock) {
+  if (access?.code === 'USER_BANNED') return showUserBan(access.message);
+  if (access?.receiptId) {
+    state.receiptId = access.receiptId;
+    sessionStorage.setItem('ticket-receipt-id', access.receiptId);
+    return resumeReceipt((await api(`/api/receipts/${access.receiptId}`)).receipt);
+  }
+  throw new Error(access?.message || 'Espera a que finalice el proceso actual.');
+}
+
+async function openScanFlow() {
+  const access = await refreshSessionAccess();
+  if (!state.canUpload) return showUploadBlock(access);
   const input = document.querySelector('#ticket-input');
   input.value = '';
   if (!assistedScanEnabled()) {
@@ -160,7 +189,7 @@ const RECEIPT_STATUSES = {
   NOT_A_RECEIPT: { label: 'No es un ticket', tone: 'rejected', message: 'La imagen no parece un ticket de compra.' },
   DUPLICATE: { label: 'Duplicado', tone: 'rejected', message: 'Este ticket ya se había enviado.' },
   AUTO_REJECTED: { label: 'Ticket no autorizado', tone: 'rejected', message: 'Este ticket no cumple las condiciones de la campaña.' },
-  REWARD_PENDING: { label: 'Puntos en proceso', tone: 'pending', message: 'El ticket está validado. Estamos esperando la confirmación del sistema para añadir tus puntos. No necesitas mantener esta pantalla abierta ni volver a enviar el ticket.' },
+  REWARD_PENDING: { label: 'Puntos en proceso', tone: 'pending', message: 'Se está procesando tu último ticket. No puedes enviar otro hasta que finalice el proceso. No necesitas mantener esta pantalla abierta.' },
   REWARDED: { label: 'Aprobado', tone: 'approved', message: 'Los puntos se han añadido correctamente.' },
   REWARD_FAILED: { label: 'Puntos pendientes', tone: 'attention', message: 'El ticket está validado, pero todavía no hemos podido añadir los puntos.' },
   REVOKE_PENDING: { label: 'Anulación en proceso', tone: 'attention', message: 'Estamos retirando los puntos tras la revisión del ticket.' },
@@ -364,13 +393,17 @@ async function bootstrap() {
     api('/api/stores'),
     api('/api/home-settings').catch(() => ({ settings: {} })),
   ]);
-  state.canUpload = sessionStatus.access?.canUpload !== false;
+  applySessionAccess(sessionStatus.access || {});
   state.stores = stores.stores;
   applyHomeSettings(configuredTexts.settings || {});
   renderStoreCarousel(state.stores);
-  if (!state.canUpload) {
-    showUserBan(sessionStatus.access?.message);
+  if (sessionStatus.access?.code === 'USER_BANNED') {
+    showUserBan(sessionStatus.access.message);
     return;
+  }
+  if (sessionStatus.access?.receiptId) {
+    state.receiptId = sessionStatus.access.receiptId;
+    sessionStorage.setItem('ticket-receipt-id', state.receiptId);
   }
   const pendingUploadRequestId = sessionStorage.getItem(UPLOAD_REQUEST_STORAGE_KEY);
   if (!state.receiptId && pendingUploadRequestId) {
@@ -826,6 +859,10 @@ function showTicketDetail(receipt) {
     action.textContent = 'Volver al sistema para completar los puntos';
     action.hidden = false;
     action.onclick = closeGame;
+  } else if (state.canUpload) {
+    action.textContent = 'Escanear otro ticket';
+    action.hidden = false;
+    action.onclick = () => openScanFlow().catch(showError);
   }
   show('ticket-detail');
   if (receipt.status === 'REWARD_PENDING') {
@@ -853,6 +890,7 @@ async function monitorPendingRewardDetail(generation, receiptId) {
       continue;
     }
     if (receipt.status === 'REWARD_PENDING') continue;
+    await refreshSessionAccess().catch(() => undefined);
     return resumeReceipt(receipt);
   }
 }
@@ -911,7 +949,7 @@ document.querySelectorAll('[data-ticket-input]').forEach((input) => {
     if (file) upload(file).catch(showError);
   });
 });
-document.querySelector('#open-scan-flow').addEventListener('click', openScanFlow);
+document.querySelector('#open-scan-flow').addEventListener('click', () => openScanFlow().catch(showError));
 document.querySelector('#scan-store').addEventListener('change', updateScanTicketNumberHint);
 document.querySelector('#scan-details-form').addEventListener('submit', continueToCamera);
 document.querySelector('#close-scan-details').addEventListener('click', () => closeScanFlow(true));
