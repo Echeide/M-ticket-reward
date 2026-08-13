@@ -859,10 +859,6 @@ function showTicketDetail(receipt) {
     action.textContent = 'Volver al sistema para completar los puntos';
     action.hidden = false;
     action.onclick = closeGame;
-  } else if (state.canUpload) {
-    action.textContent = 'Escanear otro ticket';
-    action.hidden = false;
-    action.onclick = () => openScanFlow().catch(showError);
   }
   show('ticket-detail');
   if (receipt.status === 'REWARD_PENDING') {

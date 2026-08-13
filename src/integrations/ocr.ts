@@ -737,7 +737,9 @@ export async function readReceipt(
   const storeReference = authorizedStoreReference(authorizedStores);
   const startedAt = Date.now();
   const preflight = await classifyReceiptImage(env, bytes, contentType);
-  if (preflight?.decision === 'NO_TICKET') {
+  // User-declared merchant, document and amount are not proof, but they are a
+  // strong enough signal to require the full OCR before rejecting the image.
+  if (preflight?.decision === 'NO_TICKET' && !hints) {
     return {
       receipt: normalizeOcr({
         isReceipt: false,
@@ -770,7 +772,7 @@ export async function readReceipt(
 
     // A confident negative classification must not trigger the expensive header and totals passes.
     // Uncertain negatives still get the focused verification to avoid rejecting a poorly photographed receipt.
-    if (!receipt.isReceipt && receipt.confidence >= 0.8) {
+    if (!receipt.isReceipt && receipt.confidence >= 0.8 && !hints) {
       return {
         receipt,
         provider: response.provider,
