@@ -146,12 +146,16 @@ export function isRewardDeliveryIssue(status: string, reasons: string[] = []): b
     ['RTALES_DELIVERY_FAILED', 'RTALES_DELIVERY_TIMEOUT'].includes(reason));
 }
 
+export function isValidWithoutReward(status: string, reasons: string[] = []): boolean {
+  return status === 'AUTO_REJECTED' && reasons.includes('DAILY_STORE_LIMIT');
+}
+
 export function canConfirmReceiptFraud(
   status: string,
   hasRewardResult: boolean,
   reasons: string[] = [],
 ): boolean {
-  if (isRewardDeliveryIssue(status, reasons)) return false;
+  if (isRewardDeliveryIssue(status, reasons) || isValidWithoutReward(status, reasons)) return false;
   return status === 'AUTO_REJECTED' || (status === 'REWARD_FAILED' && !hasRewardResult);
 }
 

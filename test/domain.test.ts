@@ -6,6 +6,7 @@ import {
   canReprocessReceipt,
   compareReceiptDeclaration,
   isRewardDeliveryIssue,
+  isValidWithoutReward,
   receiptStatusAfterOcr,
   normalizeReceiptDeclaration,
   normalizeUploadRequestId,
@@ -230,11 +231,15 @@ test('staff fraud confirmation excludes automatic duplicates and reward delivery
   assert.equal(canConfirmReceiptFraud('REWARD_FAILED', false), true);
   assert.equal(canConfirmReceiptFraud('REWARD_FAILED', false, ['RTALES_DELIVERY_FAILED']), false);
   assert.equal(canConfirmReceiptFraud('REWARD_FAILED', false, ['RTALES_DELIVERY_TIMEOUT']), false);
+  assert.equal(canConfirmReceiptFraud('AUTO_REJECTED', false, ['DAILY_STORE_LIMIT']), false);
   assert.equal(canConfirmReceiptFraud('REWARD_FAILED', true), false);
   assert.equal(canConfirmReceiptFraud('REWARDED', true), false);
   assert.equal(isRewardDeliveryIssue('REWARD_FAILED', ['RTALES_DELIVERY_FAILED']), true);
   assert.equal(isRewardDeliveryIssue('REWARD_FAILED', ['OCR_PROCESSING_FAILED']), false);
   assert.equal(isRewardDeliveryIssue('REWARDED', ['RTALES_DELIVERY_FAILED']), false);
+  assert.equal(isValidWithoutReward('AUTO_REJECTED', ['DAILY_STORE_LIMIT']), true);
+  assert.equal(isValidWithoutReward('AUTO_REJECTED', ['INVALID_TOTAL']), false);
+  assert.equal(isValidWithoutReward('REWARDED', ['DAILY_STORE_LIMIT']), false);
 });
 
 test('reward tiers select the highest eligible purchase threshold', () => {

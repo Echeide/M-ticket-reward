@@ -606,6 +606,10 @@ async function confirmReceipt() {
     });
     if (payload.status === 'DUPLICATE') return show('duplicate');
     if (payload.status === 'AUTO_REJECTED') {
+      if (payload.reasons?.includes('DAILY_STORE_LIMIT')) {
+        const receiptPayload = await api(`/api/receipts/${state.receiptId}`);
+        return showTicketDetail(receiptPayload.receipt);
+      }
       document.querySelector('#ocr-validation-title').textContent = 'No podemos validar este ticket';
       document.querySelector('#ocr-validation-message').textContent = 'La validación automática ha rechazado el ticket. Vuelve a escanearlo con una imagen más clara.';
       document.querySelector('#confirm-ocr').hidden = true;
@@ -643,7 +647,14 @@ function finish(receipt) {
   notifyRewardCompleted(receipt);
 }
 
-function statusMeta(status, verificationRequired = false) {
+function statusMeta(status, verificationRequired = false, validWithoutReward = false) {
+  if (validWithoutReward) {
+    return {
+      label: 'Ticket válido · Sin puntos',
+      tone: 'approved',
+      message: 'El ticket es válido, pero has alcanzado el límite diario para este establecimiento. Se ha registrado correctamente, aunque esta compra no genera puntos.',
+    };
+  }
   if (verificationRequired) {
     return {
       label: 'Pendiente de revisión',
@@ -734,7 +745,9 @@ function announceHistoryChanges(previousReceipts, nextReceipts) {
   ));
   if (!changes.length) return;
   document.querySelector('#history-live-status').textContent = changes
-    .map((receipt) => `${receipt.publicId}: ${statusMeta(receipt.status, receipt.verificationRequired).label}`)
+    .map((receipt) => `${receipt.publicId}: ${statusMeta(
+      receipt.status, receipt.verificationRequired, receipt.validWithoutReward,
+    ).label}`)
     .join('. ');
 }
 
@@ -775,6 +788,7 @@ async function monitorHistory(generation, initialReceipts) {
 function receiptStatusIcon(receipt) {
   if (receipt.retryableReward) return { name: 'refresh', tone: 'processing' };
   if (ASYNC_RECEIPT_STATUSES.has(receipt.status)) return { name: 'refresh', tone: 'processing' };
+  if (receipt.validWithoutReward) return { name: 'check', tone: 'approved' };
   if (SUCCESS_RECEIPT_STATUSES.has(receipt.status)) return { name: 'check', tone: 'approved' };
   if (FAILED_RECEIPT_STATUSES.has(receipt.status)) return { name: 'close', tone: 'rejected' };
   return { name: 'ticket', tone: '' };
@@ -791,7 +805,9 @@ function renderHistory(receipts) {
     return;
   }
   for (const receipt of receipts) {
-    const meta = statusMeta(receipt.status, receipt.verificationRequired);
+    const meta = statusMeta(
+      receipt.status, receipt.verificationRequired, receipt.validWithoutReward,
+    );
     const statusIcon = receiptStatusIcon(receipt);
     const button = document.createElement('button');
     button.className = 'ticket-card';
@@ -829,7 +845,9 @@ function renderHistory(receipts) {
 function showTicketDetail(receipt) {
   const generation = ++state.pollGeneration;
   state.receipt = receipt;
-  const meta = statusMeta(receipt.status, receipt.verificationRequired);
+  const meta = statusMeta(
+    receipt.status, receipt.verificationRequired, receipt.validWithoutReward,
+  );
   document.querySelector('#detail-title').textContent = receipt.publicId;
   const status = document.querySelector('#detail-status');
   status.className = `ticket-status ${meta.tone}`;
@@ -842,7 +860,9 @@ function showTicketDetail(receipt) {
     (isPurchaseDateTimeForDate(receipt.fields.purchaseDateTime, receipt.fields.purchaseDate) ? 'No impreso; validado por hora' : 'Pendiente');
   document.querySelector('#detail-date').textContent = formatPurchaseDate(receipt.fields);
   document.querySelector('#detail-total').textContent = formatMoney(receipt.fields.totalCents, receipt.fields.currency);
-  document.querySelector('#detail-points').textContent = receipt.status === 'REVOKED'
+  document.querySelector('#detail-points').textContent = receipt.validWithoutReward
+    ? '0 · Límite diario alcanzado'
+    : receipt.status === 'REVOKED'
     ? `${receipt.reward.pointsAwarded} retirados`
     : receipt.reward.pointsAwarded > 0 ? String(receipt.reward.pointsAwarded) : '—';
   document.querySelector('#detail-created').textContent = formatTimestamp(receipt.createdAt);

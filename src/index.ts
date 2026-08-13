@@ -9,6 +9,7 @@ import {
   canReprocessReceipt,
   compareReceiptDeclaration,
   isRewardDeliveryIssue,
+  isValidWithoutReward,
   isValidIsoDate,
   isValidPurchaseDateTime,
   normalizeReceiptDeclaration,
@@ -461,7 +462,7 @@ const PUBLIC_REASON_MESSAGES: Record<string, string> = {
   INVALID_DATE: 'No se pudo reconocer una fecha válida.',
   FUTURE_DATE: 'La fecha está fuera del periodo permitido.',
   TICKET_TOO_OLD: 'La fecha está fuera del periodo permitido.',
-  DAILY_STORE_LIMIT: 'Has alcanzado el límite diario de tickets para este establecimiento.',
+  DAILY_STORE_LIMIT: 'El ticket es válido, pero has alcanzado el límite diario para este establecimiento. Se ha registrado correctamente, aunque esta compra no genera puntos.',
   RTALES_DELIVERY_FAILED: 'No hemos podido añadir los puntos. El ticket sigue registrado y nuestro equipo revisará la asignación.',
   RTALES_DELIVERY_TIMEOUT: 'La asignación de puntos está tardando más de lo habitual. El ticket sigue registrado y nuestro equipo lo revisará. Puedes volver a Rtales y abrir de nuevo la utilidad para enviar otro ticket.',
 };
@@ -490,6 +491,7 @@ function publicReceiptMessage(row: ReceiptRow): string {
 function publicReceiptView(row: ReceiptRow) {
   const verificationRequired = row.review_status === 'PENDING' &&
     requiresManualReceiptReview(row.status, row.validation_reasons);
+  const validWithoutReward = isValidWithoutReward(row.status, row.validation_reasons);
   const retryableReward = row.status === 'REWARD_FAILED' &&
     row.review_status === 'CLEARED' &&
     row.validation_reasons.some((reason) =>
@@ -509,6 +511,7 @@ function publicReceiptView(row: ReceiptRow) {
     },
     reward: { pointsAwarded: row.points_awarded },
     verificationRequired,
+    validWithoutReward,
     retryableReward,
     message: publicReceiptMessage(row),
     createdAt: row.created_at,
