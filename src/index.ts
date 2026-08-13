@@ -12,6 +12,7 @@ import {
   isValidPurchaseDateTime,
   normalizeReceiptDeclaration,
   normalizeUploadRequestId,
+  receiptReviewFeedback,
   receiptStatusAfterOcr,
   requiresManualReceiptReview,
   validateReceiptAutomatically,
@@ -444,6 +445,8 @@ const PUBLIC_REASON_MESSAGES: Record<string, string> = {
 
 function publicReceiptMessage(row: ReceiptRow): string {
   const reasons = Array.isArray(row.validation_reasons) ? row.validation_reasons : [];
+  const reviewFeedback = receiptReviewFeedback(reasons);
+  if (reviewFeedback) return reviewFeedback;
   const reason = reasons.find((value) => PUBLIC_REASON_MESSAGES[value]);
   if (reason) return PUBLIC_REASON_MESSAGES[reason]!;
   if (row.status === 'REVOKED') return 'El ticket fue anulado tras la revisión antifraude.';

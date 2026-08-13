@@ -116,6 +116,31 @@ export function requiresManualReceiptReview(status: string, reasons: string[] = 
     ['OCR_PROCESSING_FAILED', 'OCR_VERIFICATION_REQUIRED'].includes(reason));
 }
 
+export function receiptReviewFeedback(reasons: string[] = []): string {
+  const declaredMismatches = reasons.filter((reason) => [
+    'DECLARED_STORE_MISMATCH',
+    'DECLARED_STORE_UNVERIFIED',
+    'DECLARED_TICKET_NUMBER_MISMATCH',
+    'DECLARED_TOTAL_MISMATCH',
+  ].includes(reason));
+  if (declaredMismatches.length > 1) {
+    return 'Algunos de los datos que indicaste no coinciden con los que hemos podido leer en la fotografía. Tu ticket está registrado y nuestro equipo lo revisará en breve. No necesitas volver a enviarlo.';
+  }
+  if (declaredMismatches.includes('DECLARED_TOTAL_MISMATCH')) {
+    return 'El importe que indicaste no coincide con el que hemos podido leer en la fotografía. Tu ticket está registrado y nuestro equipo lo revisará en breve. No necesitas volver a enviarlo.';
+  }
+  if (declaredMismatches.includes('DECLARED_TICKET_NUMBER_MISMATCH')) {
+    return 'El número de ticket que indicaste no coincide con el que hemos podido leer en la fotografía. Tu ticket está registrado y nuestro equipo lo revisará en breve. No necesitas volver a enviarlo.';
+  }
+  if (declaredMismatches.includes('DECLARED_STORE_MISMATCH')) {
+    return 'El establecimiento que indicaste no coincide con el que hemos podido reconocer en la fotografía. Tu ticket está registrado y nuestro equipo lo revisará en breve. No necesitas volver a enviarlo.';
+  }
+  if (declaredMismatches.includes('DECLARED_STORE_UNVERIFIED')) {
+    return 'No hemos podido confirmar en la fotografía el establecimiento que indicaste. Tu ticket está registrado y nuestro equipo lo revisará en breve. No necesitas volver a enviarlo.';
+  }
+  return '';
+}
+
 export function canConfirmReceiptFraud(status: string, hasRewardResult: boolean): boolean {
   return status === 'AUTO_REJECTED' || (status === 'REWARD_FAILED' && !hasRewardResult);
 }

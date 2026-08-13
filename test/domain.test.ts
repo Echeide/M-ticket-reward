@@ -8,6 +8,7 @@ import {
   receiptStatusAfterOcr,
   normalizeReceiptDeclaration,
   normalizeUploadRequestId,
+  receiptReviewFeedback,
   requiresManualReceiptReview,
   validateReceiptAutomatically,
   isValidIsoDate,
@@ -69,6 +70,18 @@ test('receipt declarations are normalized and compared independently from OCR ev
     'DECLARED_TICKET_NUMBER_MISMATCH',
     'DECLARED_TOTAL_MISMATCH',
   ]);
+});
+
+test('receipt review feedback explains declared data mismatches without requesting another upload', () => {
+  assert.equal(
+    receiptReviewFeedback(['OCR_VERIFICATION_REQUIRED', 'DECLARED_TOTAL_MISMATCH']),
+    'El importe que indicaste no coincide con el que hemos podido leer en la fotografía. Tu ticket está registrado y nuestro equipo lo revisará en breve. No necesitas volver a enviarlo.',
+  );
+  assert.match(
+    receiptReviewFeedback(['DECLARED_TICKET_NUMBER_MISMATCH', 'DECLARED_TOTAL_MISMATCH']),
+    /Algunos de los datos que indicaste no coinciden/,
+  );
+  assert.equal(receiptReviewFeedback(['OCR_PROCESSING_FAILED']), '');
 });
 
 test('assisted scan declarations require safe document, amount and optionally a store', () => {
