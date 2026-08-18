@@ -123,7 +123,7 @@
         <div class="settings-section-heading"><p class="eyebrow">Participación</p><h3>Límites de participación</h3><p>Introduce 0 para desactivar cualquiera de los límites.</p></div>
         <form id="participation-limits-form" class="limits-form">
           <label>Tickets diarios por usuario y establecimiento<input id="daily-store-ticket-limit" type="number" min="0" max="100" required /><small>Solo cuentan tickets válidos que puedan conceder puntos.</small></label>
-          <label>Subidas totales por usuario durante la campaña<input id="total-upload-limit" type="number" min="0" max="10000" required /><small>Incluye duplicados e imágenes rechazadas que hayan llegado a registrarse.</small></label>
+          <label>Puntos máximos por usuario durante la campaña<input id="total-points-limit" type="number" min="0" max="10000000" required /><small>Cuenta los puntos concedidos o pendientes de entrega dentro del periodo configurado.</small></label>
           <label>Puntos de infracción para banear<input id="ban-score-threshold" type="number" min="0" max="100" required /><small>El cambio se aplicará cuando se registre una nueva infracción.</small></label>
           <aside class="ban-points-explanation"><strong>Cómo se calculan los puntos</strong><span>Imagen que no es un ticket: <b>+1 punto</b></span><span>Fraude confirmado: <b>+2 puntos</b></span><small>Los puntos se acumulan hasta que el usuario es desbaneado.</small></aside>
           <p id="participation-limits-error" class="form-error" role="alert"></p>
@@ -345,6 +345,6 @@
         <div id="ticket-user-detail-body"></div>
       </div>
     </dialog>
-    <script type="module" src="/backoffice.js?v=staff-review-operations-1"></script>
+    <script type="module" src="/backoffice.js?v=user-points-limit-1"></script>
   </body>
 </html>

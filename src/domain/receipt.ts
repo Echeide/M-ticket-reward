@@ -147,7 +147,8 @@ export function isRewardDeliveryIssue(status: string, reasons: string[] = []): b
 }
 
 export function isValidWithoutReward(status: string, reasons: string[] = []): boolean {
-  return status === 'AUTO_REJECTED' && reasons.includes('DAILY_STORE_LIMIT');
+  return status === 'AUTO_REJECTED' && reasons.some((reason) =>
+    ['DAILY_STORE_LIMIT', 'USER_POINTS_LIMIT'].includes(reason));
 }
 
 export function canConfirmReceiptFraud(
@@ -160,6 +161,7 @@ export function canConfirmReceiptFraud(
 }
 
 export function canReprocessReceipt(status: string, reasons: string[] = []): boolean {
+  if (isValidWithoutReward(status, reasons)) return false;
   if (['AUTO_REJECTED', 'NOT_A_RECEIPT', 'READY_FOR_CONFIRMATION'].includes(status)) return true;
   return requiresManualReceiptReview(status, reasons);
 }

@@ -463,12 +463,17 @@ const PUBLIC_REASON_MESSAGES: Record<string, string> = {
   FUTURE_DATE: 'La fecha está fuera del periodo permitido.',
   TICKET_TOO_OLD: 'La fecha está fuera del periodo permitido.',
   DAILY_STORE_LIMIT: 'El ticket es válido, pero has alcanzado el límite diario para este establecimiento. Se ha registrado correctamente, aunque esta compra no genera puntos.',
+  USER_POINTS_LIMIT: 'El ticket es válido, pero ya has alcanzado el máximo de puntos de esta campaña. Se ha registrado correctamente, aunque esta compra no genera puntos.',
+  USER_POINTS_CAPPED: 'El ticket es válido y su recompensa se ha ajustado para no superar el máximo de puntos de la campaña.',
   RTALES_DELIVERY_FAILED: 'No hemos podido añadir los puntos. El ticket sigue registrado y nuestro equipo revisará la asignación.',
   RTALES_DELIVERY_TIMEOUT: 'La asignación de puntos está tardando más de lo habitual. El ticket sigue registrado y nuestro equipo lo revisará. Puedes volver a Rtales y abrir de nuevo la utilidad para enviar otro ticket.',
 };
 
 function publicReceiptMessage(row: ReceiptRow): string {
   const reasons = Array.isArray(row.validation_reasons) ? row.validation_reasons : [];
+  if (reasons.includes('USER_POINTS_CAPPED')) {
+    return `El ticket es válido. Como estabas cerca del máximo de la campaña, se han concedido ${row.points_awarded} puntos hasta completar tu límite.`;
+  }
   if (
     row.status === 'REWARD_FAILED' && row.review_status === 'CLEARED' &&
     reasons.some((reason) => ['RTALES_DELIVERY_FAILED', 'RTALES_DELIVERY_TIMEOUT'].includes(reason))
@@ -492,6 +497,7 @@ function publicReceiptView(row: ReceiptRow) {
   const verificationRequired = row.review_status === 'PENDING' &&
     requiresManualReceiptReview(row.status, row.validation_reasons);
   const validWithoutReward = isValidWithoutReward(row.status, row.validation_reasons);
+  const rewardCapped = row.validation_reasons.includes('USER_POINTS_CAPPED');
   const retryableReward = row.status === 'REWARD_FAILED' &&
     row.review_status === 'CLEARED' &&
     row.validation_reasons.some((reason) =>
@@ -512,6 +518,7 @@ function publicReceiptView(row: ReceiptRow) {
     reward: { pointsAwarded: row.points_awarded },
     verificationRequired,
     validWithoutReward,
+    rewardCapped,
     retryableReward,
     message: publicReceiptMessage(row),
     createdAt: row.created_at,
@@ -717,10 +724,13 @@ async function handlePublicSession(request: Request, env: Env): Promise<Response
       activeUserBan(client, session.external_user_id),
       loadSessionReceipt(client, session.id),
     ]);
-    return { ban, receipt };
+    const pointsLimit = !ban && !receipt
+      ? await userRewardPointLimitState(client, session.external_user_id, await loadAppSettings(client))
+      : null;
+    return { ban, receipt, pointsLimit };
   });
   if (!context) return error('Sesión no válida', 401);
-  const { ban, receipt } = context;
+  const { ban, receipt, pointsLimit } = context;
   const processing = receipt && ['OCR_QUEUED', 'OCR_PROCESSING', 'READY_FOR_CONFIRMATION',
     'REWARD_PENDING', 'REVOKE_PENDING'].includes(receipt.status);
   return json({
@@ -742,6 +752,12 @@ async function handlePublicSession(request: Request, env: Env): Promise<Response
             publicId: receipt.public_id,
             status: receipt.status,
           }
+        : pointsLimit?.reached
+          ? {
+              canUpload: false,
+              code: 'USER_POINTS_LIMIT',
+              message: `Has alcanzado el máximo de ${pointsLimit.limit} puntos de esta campaña. Podrás volver a participar cuando comience un nuevo periodo.`,
+            }
         : { canUpload: true },
   });
 }
@@ -839,37 +855,81 @@ function uploadCampaign(settings: Record<string, string>) {
   };
 }
 
-async function reserveUserUpload(client: DbClient, externalUserId: string | null): Promise<boolean> {
-  if (!externalUserId) return true;
-  const settings = await loadAppSettings(client);
-  const limit = numericAppSetting(settings, 'limits.totalUploadsPerUser');
-  if (limit === 0) return true;
-  const campaign = uploadCampaign(settings);
-  const reserved = await client.query<{ upload_count: number }>(
-    `INSERT INTO user_upload_counters (external_user_id, campaign_key, upload_count, updated_at)
-     SELECT $1, $2, COUNT(*) + 1, NOW() FROM receipts
-       WHERE external_user_id = $1
-         AND ($3 = '' OR created_at >= $3)
-         AND ($4 = '' OR created_at <= $4)
-       HAVING COUNT(*) < $5
-     ON CONFLICT(external_user_id, campaign_key) DO UPDATE SET
-       upload_count = user_upload_counters.upload_count + 1, updated_at = NOW()
-       WHERE user_upload_counters.upload_count < $5
-     RETURNING upload_count`,
-    [externalUserId, campaign.key, campaign.startAt, campaign.endAt, limit],
-  );
-  return Boolean(reserved.rowCount);
-}
+const REWARD_POINT_LIMIT_STATUSES = [
+  'REWARD_PENDING',
+  'REWARDED',
+  'REWARD_FAILED',
+  'REVOKE_PENDING',
+] as const;
 
-async function releaseUserUpload(client: DbClient, externalUserId: string | null): Promise<void> {
-  if (!externalUserId) return;
-  const settings = await loadAppSettings(client);
+async function synchronizeUserRewardPointClaims(
+  client: DbClient,
+  externalUserId: string,
+  settings: Record<string, string>,
+): Promise<void> {
   const campaign = uploadCampaign(settings);
   await client.query(
-    `UPDATE user_upload_counters SET upload_count = CASE WHEN upload_count > 0 THEN upload_count - 1 ELSE 0 END,
-       updated_at = NOW() WHERE external_user_id = $1 AND campaign_key = $2`,
+    `INSERT INTO user_reward_point_claims
+       (receipt_id, external_user_id, campaign_key, points)
+     SELECT id, external_user_id, $2, points_awarded FROM receipts
+       WHERE external_user_id = $1 AND points_awarded > 0
+         AND status = ANY($3::text[])
+         AND ($4 = '' OR created_at >= $4)
+         AND ($5 = '' OR created_at <= $5)
+     ON CONFLICT(receipt_id) DO NOTHING`,
+    [externalUserId, campaign.key, [...REWARD_POINT_LIMIT_STATUSES], campaign.startAt, campaign.endAt],
+  );
+}
+
+async function userRewardPointLimitState(
+  client: DbClient,
+  externalUserId: string | null,
+  settings: Record<string, string>,
+): Promise<{ limit: number; used: number; reached: boolean }> {
+  const limit = numericAppSetting(settings, 'limits.totalPointsPerUser');
+  if (!externalUserId || limit === 0) return { limit, used: 0, reached: false };
+  await synchronizeUserRewardPointClaims(client, externalUserId, settings);
+  const campaign = uploadCampaign(settings);
+  const result = await client.query<{ total: number }>(
+    `SELECT COALESCE(SUM(points), 0) AS total FROM user_reward_point_claims
+       WHERE external_user_id = $1 AND campaign_key = $2`,
     [externalUserId, campaign.key],
   );
+  const used = Number(result.rows[0]?.total || 0);
+  return { limit, used, reached: used >= limit };
+}
+
+async function claimUserRewardPoints(
+  client: DbClient,
+  externalUserId: string | null,
+  receiptId: string,
+  requestedPoints: number,
+  settings: Record<string, string>,
+): Promise<number> {
+  const limit = numericAppSetting(settings, 'limits.totalPointsPerUser');
+  if (!externalUserId || limit === 0 || requestedPoints <= 0) return requestedPoints;
+  await synchronizeUserRewardPointClaims(client, externalUserId, settings);
+  const campaign = uploadCampaign(settings);
+  const claimed = await client.query<{ points: number }>(
+    `WITH used AS (
+       SELECT COALESCE(SUM(points), 0) AS total FROM user_reward_point_claims
+        WHERE external_user_id = $2 AND campaign_key = $3
+     )
+     INSERT INTO user_reward_point_claims
+       (receipt_id, external_user_id, campaign_key, points)
+     SELECT $1, $2, $3,
+       CASE WHEN $4 < $5 - used.total THEN $4 ELSE $5 - used.total END
+       FROM used WHERE used.total < $5
+     ON CONFLICT(receipt_id) DO NOTHING
+     RETURNING points`,
+    [receiptId, externalUserId, campaign.key, requestedPoints, limit],
+  );
+  if (claimed.rows[0]) return Number(claimed.rows[0].points || 0);
+  const existing = await client.query<{ points: number }>(
+    'SELECT points FROM user_reward_point_claims WHERE receipt_id = $1 LIMIT 1',
+    [receiptId],
+  );
+  return Number(existing.rows[0]?.points || 0);
 }
 
 async function dailyStoreLimitReached(
@@ -983,6 +1043,17 @@ async function handleUpload(
   if (image.size <= 0 || image.size > maximumBytes) return error('La imagen supera el tamaño permitido', 413);
 
   const uploadSettings = await withDatabase(env, loadAppSettings);
+  const pointsLimit = await withDatabase(
+    env,
+    (client) => userRewardPointLimitState(client, session.external_user_id, uploadSettings),
+  );
+  if (pointsLimit.reached) {
+    return error(
+      `Has alcanzado el máximo de ${pointsLimit.limit} puntos de esta campaña.`,
+      429,
+      'USER_POINTS_LIMIT',
+    );
+  }
   let declaration: ReceiptDeclaration | null = null;
   if (booleanAppSetting(uploadSettings, 'scan.assisted.enabled')) {
     try {
@@ -1021,11 +1092,6 @@ async function handleUpload(
   const declaredIdentityKey = declaration?.storeId
     ? buildTicketIdentityKey(declaration.storeId, declaration.ticketNumber)
     : null;
-
-  const uploadReserved = await withDatabase(env, (client) => reserveUserUpload(client, session.external_user_id));
-  if (!uploadReserved) {
-    return error('Has alcanzado el límite de subidas permitido durante esta campaña.', 429, 'USER_UPLOAD_LIMIT');
-  }
 
   let duplicate = false;
   try {
@@ -1098,7 +1164,6 @@ async function handleUpload(
     });
   } catch (uploadError) {
     await env.TICKETS.delete(objectKey).catch(() => undefined);
-    await withDatabase(env, (client) => releaseUserUpload(client, session.external_user_id)).catch(() => undefined);
     if (isSessionReceiptConflict(uploadError)) {
       const existing = await withDatabase(env, (client) => loadSessionReceipt(client, session.id));
       if (existing) return sessionReceiptLimitResponse(existing);
@@ -1365,7 +1430,7 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
       const tiers = await client.query<{ id: string; minimum_cents: number; points: number; active: boolean }>(
         'SELECT id, minimum_cents, points, active FROM reward_tiers WHERE active = TRUE',
       );
-      const points = resolveRewardPoints(
+      const requestedPoints = resolveRewardPoints(
         fields.totalCents,
         tiers.rows.map((tier) => ({
           id: tier.id,
@@ -1375,17 +1440,44 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
         })),
         selectedStore!.participation_level,
       );
+      const points = await claimUserRewardPoints(
+        client, session.external_user_id, receiptId, requestedPoints, appSettings,
+      );
+      if (points === 0 && requestedPoints > 0) {
+        validation.reasons.push('USER_POINTS_LIMIT');
+        await client.query(
+          `UPDATE receipts SET status = 'AUTO_REJECTED', session_id = $2,
+             store_id = $3, store_name = $4, ticket_number = $5, purchase_date = $6,
+             total_cents = $7, currency = $8, ticket_fingerprint = $9,
+             ticket_identity_key = NULL, risk_score = $10,
+             validation_reasons = $11::jsonb, points_awarded = 0,
+             review_status = 'CLEARED', reviewed_at = NOW(), reviewed_by = 'SYSTEM',
+             updated_at = NOW() WHERE id = $1`,
+          [receiptId, session.id, selectedStore!.id, selectedStore!.name, fields.ticketNumber,
+            fields.purchaseDate, fields.totalCents, fields.currency, fingerprint,
+            validation.riskScore, JSON.stringify(validation.reasons)],
+        );
+        return {
+          response: json({
+            success: true,
+            status: 'AUTO_REJECTED',
+            reasons: validation.reasons,
+            points: 0,
+          }),
+        };
+      }
+      const rewardReasons = points < requestedPoints ? ['USER_POINTS_CAPPED'] : [];
       outboxId = uuid();
       await client.query(
         `UPDATE receipts SET status = 'REWARD_PENDING', session_id = $2,
            store_id = $3, store_name = $4, ticket_number = $5, purchase_date = $6,
            total_cents = $7, currency = $8, ticket_fingerprint = $9,
            ticket_identity_key = $10, risk_score = $11,
-           validation_reasons = '[]'::jsonb, points_awarded = $12, updated_at = NOW()
+           validation_reasons = $13::jsonb, points_awarded = $12, updated_at = NOW()
          WHERE id = $1`,
         [receiptId, session.id, selectedStore!.id, selectedStore!.name, fields.ticketNumber,
           fields.purchaseDate, fields.totalCents, fields.currency, fingerprint,
-          identityKey, validation.riskScore, points],
+          identityKey, validation.riskScore, points, JSON.stringify(rewardReasons)],
       );
       await client.query(
         `INSERT INTO reward_outbox
@@ -1393,7 +1485,9 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
          VALUES ($1, $2, 'GRANT', $3, $4::jsonb)`,
         [outboxId, receiptId, rewardIdempotencyKey(receiptId), JSON.stringify({ points })],
       );
-      return { response: json({ success: true, status: 'REWARD_PENDING', points }, 202) };
+      return {
+        response: json({ success: true, status: 'REWARD_PENDING', points, reasons: rewardReasons }, 202),
+      };
     }),
   );
   if (outboxId) await env.REWARD_JOBS.send({ kind: 'DELIVER_REWARD', outboxId });
@@ -1602,7 +1696,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
       const tiers = await client.query<{ id: string; minimum_cents: number; points: number; active: boolean }>(
         'SELECT id, minimum_cents, points, active FROM reward_tiers WHERE active = TRUE',
       );
-      points = resolveRewardPoints(
+      const requestedPoints = resolveRewardPoints(
         fields.totalCents,
         tiers.rows.map((tier) => ({
           id: tier.id,
@@ -1612,7 +1706,18 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
         })),
         selectedStore!.participation_level,
       );
-      rewardOutboxId = uuid();
+      points = await claimUserRewardPoints(
+        client, receipt.external_user_id, receiptId, requestedPoints, appSettings,
+      );
+      if (points === 0 && requestedPoints > 0) {
+        validation.approved = false;
+        validation.reasons.push('USER_POINTS_LIMIT');
+        status = 'AUTO_REJECTED';
+        completedStatus = status;
+      } else {
+        if (points < requestedPoints) validation.reasons.push('USER_POINTS_CAPPED');
+        rewardOutboxId = uuid();
+      }
     }
     const persistedIdentityKey = (IDENTITY_DUPLICATE_STATUSES as readonly string[]).includes(status)
       ? ocrIdentityKey || declaredIdentityKey
@@ -1863,6 +1968,10 @@ async function processOutbox(env: Env, outboxId: string): Promise<number | null>
         `UPDATE receipts SET status = 'REVOKED', rtales_reversal_id = $2,
            revoked_at = NOW(), updated_at = NOW() WHERE id = $1`,
         [receipt.id, String(resultPayload?.id || '')],
+      );
+      await client.query(
+        'DELETE FROM user_reward_point_claims WHERE receipt_id = $1',
+        [receipt.id],
       );
     }
   }));
@@ -2451,6 +2560,9 @@ async function handleAdminReview(
       return json({ success: true, status: 'AUTO_REJECTED' });
     }
     if (action === 'MANUAL_APPROVE') {
+      if (isValidWithoutReward(receipt.status, receipt.validation_reasons)) {
+        return error('El ticket ya está validado sin puntos por un límite de participación', 409);
+      }
       const verificationRequired = receipt.review_status === 'PENDING' &&
         requiresManualReceiptReview(receipt.status, receipt.validation_reasons);
       if (receipt.status !== 'AUTO_REJECTED' && !verificationRequired) {
@@ -2505,10 +2617,18 @@ async function handleAdminReview(
       const tiers = await client.query<{ id: string; minimum_cents: number; points: number; active: boolean }>(
         'SELECT id, minimum_cents, points, active FROM reward_tiers WHERE active = TRUE',
       );
-      const points = resolveRewardPoints(totalCents, tiers.rows.map((tier) => ({
+      const requestedPoints = resolveRewardPoints(totalCents, tiers.rows.map((tier) => ({
         id: tier.id, minimumCents: tier.minimum_cents, points: tier.points, active: tier.active,
       })), store.participation_level);
-      outboxId = uuid();
+      const points = await claimUserRewardPoints(
+        client, receipt.external_user_id, receiptId, requestedPoints, appSettings,
+      );
+      const pointsLimitReached = points === 0 && requestedPoints > 0;
+      const rewardStatus = pointsLimitReached ? 'AUTO_REJECTED' : 'REWARD_PENDING';
+      const rewardReasons = pointsLimitReached
+        ? ['USER_POINTS_LIMIT']
+        : points < requestedPoints ? ['USER_POINTS_CAPPED'] : [];
+      if (!pointsLimitReached) outboxId = uuid();
       await client.query(
         `INSERT INTO receipt_reviews (id, receipt_id, action, manager_email, reason, changes)
          VALUES ($1, $2, 'MANUALLY_APPROVED', $3, $4, $5::jsonb)`,
@@ -2521,23 +2641,26 @@ async function handleAdminReview(
         })],
       );
       await client.query(
-        `UPDATE receipts SET status = 'REWARD_PENDING', store_id = $2, store_name = $3,
-           ticket_number = $4, purchase_date = $5, total_cents = $6, currency = $7,
-           ticket_fingerprint = $8, ticket_identity_key = $9,
-           ocr_payload = $10::jsonb, validation_reasons = '[]'::jsonb,
-           points_awarded = $11, review_status = 'CLEARED', reviewed_at = NOW(),
-           reviewed_by = $12, updated_at = NOW() WHERE id = $1`,
-        [receiptId, store.id, store.name, ticketNumber, purchaseDate, totalCents,
-          currency, fingerprint, identityKey, JSON.stringify(correctedOcr), points, managerEmail],
+        `UPDATE receipts SET status = $2, store_id = $3, store_name = $4,
+           ticket_number = $5, purchase_date = $6, total_cents = $7, currency = $8,
+           ticket_fingerprint = $9, ticket_identity_key = $10,
+           ocr_payload = $11::jsonb, validation_reasons = $12::jsonb,
+           points_awarded = $13, review_status = 'CLEARED', reviewed_at = NOW(),
+           reviewed_by = $14, updated_at = NOW() WHERE id = $1`,
+        [receiptId, rewardStatus, store.id, store.name, ticketNumber, purchaseDate, totalCents,
+          currency, fingerprint, identityKey, JSON.stringify(correctedOcr),
+          JSON.stringify(rewardReasons), points, managerEmail],
       );
-      await client.query(
-        `INSERT INTO reward_outbox (id, receipt_id, operation, idempotency_key, payload)
-         VALUES ($1, $2, 'GRANT', $3, $4::jsonb)`,
-        [outboxId, receiptId, rewardIdempotencyKey(receiptId), JSON.stringify({
-          points, manualApproval: true, managerEmail, reason,
-        })],
-      );
-      return json({ success: true, status: 'REWARD_PENDING', points }, 202);
+      if (outboxId) {
+        await client.query(
+          `INSERT INTO reward_outbox (id, receipt_id, operation, idempotency_key, payload)
+           VALUES ($1, $2, 'GRANT', $3, $4::jsonb)`,
+          [outboxId, receiptId, rewardIdempotencyKey(receiptId), JSON.stringify({
+            points, manualApproval: true, managerEmail, reason,
+          })],
+        );
+      }
+      return json({ success: true, status: rewardStatus, points, reasons: rewardReasons }, outboxId ? 202 : 200);
     }
     if (action === 'CLEAR') {
       if (receipt.review_status === 'CLEARED') {
@@ -3905,7 +4028,7 @@ async function handleAdminParticipationLimits(request: Request, env: Env): Promi
   const body = await readJson(request);
   const updates = [
     ['limits.dailyTicketsPerUserStore', normalizeAppSettingValue('limits.dailyTicketsPerUserStore', body.dailyTicketsPerUserStore)],
-    ['limits.totalUploadsPerUser', normalizeAppSettingValue('limits.totalUploadsPerUser', body.totalUploadsPerUser)],
+    ['limits.totalPointsPerUser', normalizeAppSettingValue('limits.totalPointsPerUser', body.totalPointsPerUser)],
     ['limits.banScoreThreshold', normalizeAppSettingValue('limits.banScoreThreshold', body.banScoreThreshold)],
   ] as const;
   await withDatabase(env, (client) => inTransaction(client, async () => {

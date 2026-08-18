@@ -454,7 +454,7 @@ async function optimizeTicketFile(file) {
 }
 
 async function upload(file) {
-  if (!state.canUpload) return showUserBan();
+  if (!state.canUpload) return showUploadBlock();
   show('processing');
   const optimizedFile = await optimizeTicketFile(file).catch(() => file);
   const form = new FormData();
@@ -606,7 +606,7 @@ async function confirmReceipt() {
     });
     if (payload.status === 'DUPLICATE') return show('duplicate');
     if (payload.status === 'AUTO_REJECTED') {
-      if (payload.reasons?.includes('DAILY_STORE_LIMIT')) {
+      if (payload.reasons?.some((reason) => ['DAILY_STORE_LIMIT', 'USER_POINTS_LIMIT'].includes(reason))) {
         const receiptPayload = await api(`/api/receipts/${state.receiptId}`);
         return showTicketDetail(receiptPayload.receipt);
       }
@@ -643,6 +643,9 @@ function finish(receipt) {
   sessionStorage.removeItem('ticket-receipt-id');
   document.querySelector('#points-awarded').textContent = receipt.reward.pointsAwarded;
   document.querySelector('#receipt-reference').textContent = receipt.publicId;
+  document.querySelector('#final-message').textContent = receipt.rewardCapped
+    ? receipt.message
+    : 'La validación ha sido automática. Nuestro equipo puede revisar posteriormente el ticket y revocar los puntos si detecta fraude.';
   show('final');
   notifyRewardCompleted(receipt);
 }

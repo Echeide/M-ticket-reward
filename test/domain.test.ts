@@ -209,6 +209,7 @@ test('OCR reprocessing is limited to receipts that cannot duplicate rewards', ()
   assert.equal(canReprocessReceipt('REWARD_FAILED', ['OCR_PROCESSING_FAILED']), true);
   assert.equal(canReprocessReceipt('REWARD_FAILED', ['OCR_VERIFICATION_REQUIRED']), true);
   assert.equal(canReprocessReceipt('REWARD_FAILED', ['RTALES_DELIVERY_FAILED']), false);
+  assert.equal(canReprocessReceipt('AUTO_REJECTED', ['USER_POINTS_LIMIT']), false);
   assert.equal(canReprocessReceipt('REWARDED'), false);
   assert.equal(canReprocessReceipt('REWARD_PENDING'), false);
   assert.equal(canReprocessReceipt('DUPLICATE'), false);
@@ -232,12 +233,14 @@ test('staff fraud confirmation excludes automatic duplicates and reward delivery
   assert.equal(canConfirmReceiptFraud('REWARD_FAILED', false, ['RTALES_DELIVERY_FAILED']), false);
   assert.equal(canConfirmReceiptFraud('REWARD_FAILED', false, ['RTALES_DELIVERY_TIMEOUT']), false);
   assert.equal(canConfirmReceiptFraud('AUTO_REJECTED', false, ['DAILY_STORE_LIMIT']), false);
+  assert.equal(canConfirmReceiptFraud('AUTO_REJECTED', false, ['USER_POINTS_LIMIT']), false);
   assert.equal(canConfirmReceiptFraud('REWARD_FAILED', true), false);
   assert.equal(canConfirmReceiptFraud('REWARDED', true), false);
   assert.equal(isRewardDeliveryIssue('REWARD_FAILED', ['RTALES_DELIVERY_FAILED']), true);
   assert.equal(isRewardDeliveryIssue('REWARD_FAILED', ['OCR_PROCESSING_FAILED']), false);
   assert.equal(isRewardDeliveryIssue('REWARDED', ['RTALES_DELIVERY_FAILED']), false);
   assert.equal(isValidWithoutReward('AUTO_REJECTED', ['DAILY_STORE_LIMIT']), true);
+  assert.equal(isValidWithoutReward('AUTO_REJECTED', ['USER_POINTS_LIMIT']), true);
   assert.equal(isValidWithoutReward('AUTO_REJECTED', ['INVALID_TOTAL']), false);
   assert.equal(isValidWithoutReward('REWARDED', ['DAILY_STORE_LIMIT']), false);
 });
@@ -408,7 +411,7 @@ test('application settings validate keys, normalize line endings and enforce lim
   assert.equal(normalizeAppSettingValue('validation.startAt', '2026-08-01T09:30'), '2026-08-01T09:30');
   assert.equal(normalizeAppSettingValue('validation.endAt', ''), '');
   assert.equal(normalizeAppSettingValue('limits.dailyTicketsPerUserStore', '03'), '3');
-  assert.equal(normalizeAppSettingValue('limits.totalUploadsPerUser', '0'), '0');
+  assert.equal(normalizeAppSettingValue('limits.totalPointsPerUser', '2500'), '2500');
   assert.equal(normalizeAppSettingValue('scan.assisted.enabled', 'false'), 'false');
   assert.throws(() => normalizeAppSettingValue('scan.assisted.enabled', '1'), /APP_SETTING_BOOLEAN_INVALID/);
   assert.throws(() => normalizeAppSettingValue('limits.banScoreThreshold', '-1'), /APP_SETTING_INTEGER_INVALID/);

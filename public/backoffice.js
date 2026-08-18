@@ -73,18 +73,22 @@ const reasonLabels = {
   FUTURE_DATE: 'La fecha está fuera del periodo permitido.',
   TICKET_TOO_OLD: 'La fecha del ticket supera el periodo permitido.',
   DAILY_STORE_LIMIT: 'El usuario alcanzó el límite diario para este establecimiento.',
+  USER_POINTS_LIMIT: 'El usuario alcanzó el máximo de puntos de la campaña. El ticket es válido, pero no genera puntos.',
+  USER_POINTS_CAPPED: 'La recompensa se ajustó para no superar el máximo de puntos de la campaña.',
   RTALES_DELIVERY_FAILED: 'La asignación no se ha completado. El ticket sigue validado y se reintentará con una sesión válida de Rtales.',
   RTALES_DELIVERY_TIMEOUT: 'La asignación superó el tiempo máximo. El ticket sigue validado y se reintentará con una sesión válida de Rtales.',
   OCR_REPROCESS_REQUESTED: 'La nueva comprobación está en curso.',
 };
 
 function receiptStatusLabel(receipt) {
+  if (isValidWithoutReward(receipt)) return 'Ticket válido sin puntos';
   if (receipt.verificationRequired) return 'Lectura pendiente de revisión';
   if (isRewardDeliveryIssue(receipt)) return 'Entrega de puntos pendiente';
   return statusLabels[receipt.status] || receipt.status;
 }
 
 function receiptReviewLabel(receipt) {
+  if (isValidWithoutReward(receipt)) return 'Validado sin puntos';
   if (isRewardDeliveryIssue(receipt)) return 'Ticket validado';
   return reviewLabels[receipt.review.status] || receipt.review.status;
 }
@@ -462,7 +466,7 @@ async function loadSettings() {
   document.querySelector('#validation-start-at').value = state.settings.find((item) => item.key === 'validation.startAt')?.value || '';
   document.querySelector('#validation-end-at').value = state.settings.find((item) => item.key === 'validation.endAt')?.value || '';
   document.querySelector('#daily-store-ticket-limit').value = state.settings.find((item) => item.key === 'limits.dailyTicketsPerUserStore')?.value || '3';
-  document.querySelector('#total-upload-limit').value = state.settings.find((item) => item.key === 'limits.totalUploadsPerUser')?.value || '30';
+  document.querySelector('#total-points-limit').value = state.settings.find((item) => item.key === 'limits.totalPointsPerUser')?.value || '0';
   document.querySelector('#ban-score-threshold').value = state.settings.find((item) => item.key === 'limits.banScoreThreshold')?.value || '6';
   document.querySelector('#assisted-scan-enabled').checked = state.settings.find((item) => item.key === 'scan.assisted.enabled')?.value !== 'false';
   document.querySelector('#assisted-scan-require-store').checked = state.settings.find((item) => item.key === 'scan.assisted.requireStore')?.value !== 'false';
@@ -520,7 +524,7 @@ async function saveParticipationLimits(event) {
     await request('/api/admin/settings/participation-limits', {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
         dailyTicketsPerUserStore: document.querySelector('#daily-store-ticket-limit').value,
-        totalUploadsPerUser: document.querySelector('#total-upload-limit').value,
+        totalPointsPerUser: document.querySelector('#total-points-limit').value,
         banScoreThreshold: document.querySelector('#ban-score-threshold').value,
       }),
     });
@@ -1386,10 +1390,16 @@ function escapeHtml(value) {
 }
 
 function canReprocess(receipt) {
+  if (isValidWithoutReward(receipt)) return false;
   if (['AUTO_REJECTED', 'NOT_A_RECEIPT', 'READY_FOR_CONFIRMATION'].includes(receipt.status)) return true;
   return receipt.status === 'REWARD_FAILED' &&
     Array.isArray(receipt.reasons) && receipt.reasons.some((reason) =>
       ['OCR_PROCESSING_FAILED', 'OCR_VERIFICATION_REQUIRED'].includes(reason));
+}
+
+function isValidWithoutReward(receipt) {
+  return receipt.status === 'AUTO_REJECTED' && Array.isArray(receipt.reasons) &&
+    receipt.reasons.some((reason) => ['DAILY_STORE_LIMIT', 'USER_POINTS_LIMIT'].includes(reason));
 }
 
 function isRewardDeliveryIssue(receipt) {
@@ -1422,7 +1432,8 @@ async function select(id, suppliedReceipt = null) {
   highlightSelectedRow();
   const reprocessable = canReprocess(receipt);
   const canRevoke = receipt.status === 'REWARDED' && Boolean(receipt.reward.resultId);
-  const canApproveManually = (receipt.status === 'AUTO_REJECTED' || receipt.verificationRequired) && receipt.review.status !== 'FRAUD';
+  const canApproveManually = !isValidWithoutReward(receipt) &&
+    (receipt.status === 'AUTO_REJECTED' || receipt.verificationRequired) && receipt.review.status !== 'FRAUD';
   const canConfirmFraud = receipt.review.status !== 'FRAUD' && receipt.canConfirmFraud === true;
   const reasons = Array.isArray(receipt.reasons) ? receipt.reasons : [];
   const deliveryIssue = isRewardDeliveryIssue(receipt);
