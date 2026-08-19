@@ -75,6 +75,17 @@ export const APP_SETTING_DEFINITIONS: readonly AppSettingDefinition[] = [
     maximum: 10_000_000,
   },
   {
+    key: 'limits.dailyPointsPerUser',
+    group: 'Límites de participación',
+    label: 'Puntos máximos por usuario y día',
+    help: 'Máximo de puntos que puede obtener un usuario en un día natural de Canarias. Usa 0 para desactivarlo.',
+    format: 'integer',
+    defaultValue: '0',
+    maxLength: 8,
+    minimum: 0,
+    maximum: 10_000_000,
+  },
+  {
     key: 'limits.banScoreThreshold',
     group: 'Límites de participación',
     label: 'Puntos de infracción para banear',

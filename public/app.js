@@ -606,7 +606,9 @@ async function confirmReceipt() {
     });
     if (payload.status === 'DUPLICATE') return show('duplicate');
     if (payload.status === 'AUTO_REJECTED') {
-      if (payload.reasons?.some((reason) => ['DAILY_STORE_LIMIT', 'USER_POINTS_LIMIT'].includes(reason))) {
+      if (payload.reasons?.some((reason) => [
+        'DAILY_STORE_LIMIT', 'USER_POINTS_LIMIT', 'USER_DAILY_POINTS_LIMIT',
+      ].includes(reason))) {
         const receiptPayload = await api(`/api/receipts/${state.receiptId}`);
         return showTicketDetail(receiptPayload.receipt);
       }

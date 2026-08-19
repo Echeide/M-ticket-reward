@@ -465,12 +465,17 @@ const PUBLIC_REASON_MESSAGES: Record<string, string> = {
   DAILY_STORE_LIMIT: 'El ticket es válido, pero has alcanzado el límite diario para este establecimiento. Se ha registrado correctamente, aunque esta compra no genera puntos.',
   USER_POINTS_LIMIT: 'El ticket es válido, pero ya has alcanzado el máximo de puntos de esta campaña. Se ha registrado correctamente, aunque esta compra no genera puntos.',
   USER_POINTS_CAPPED: 'El ticket es válido y su recompensa se ha ajustado para no superar el máximo de puntos de la campaña.',
+  USER_DAILY_POINTS_LIMIT: 'El ticket es válido, pero ya has alcanzado el máximo de puntos de hoy. Se ha registrado correctamente, aunque no genera puntos. Podrás volver a participar mañana.',
+  USER_DAILY_POINTS_CAPPED: 'El ticket es válido y su recompensa se ha ajustado para no superar el máximo diario de puntos.',
   RTALES_DELIVERY_FAILED: 'No hemos podido añadir los puntos. El ticket sigue registrado y nuestro equipo revisará la asignación.',
   RTALES_DELIVERY_TIMEOUT: 'La asignación de puntos está tardando más de lo habitual. El ticket sigue registrado y nuestro equipo lo revisará. Puedes volver a Rtales y abrir de nuevo la utilidad para enviar otro ticket.',
 };
 
 function publicReceiptMessage(row: ReceiptRow): string {
   const reasons = Array.isArray(row.validation_reasons) ? row.validation_reasons : [];
+  if (reasons.includes('USER_DAILY_POINTS_CAPPED')) {
+    return `El ticket es válido. Como estabas cerca del máximo diario, se han concedido ${row.points_awarded} puntos hasta completar el límite de hoy.`;
+  }
   if (reasons.includes('USER_POINTS_CAPPED')) {
     return `El ticket es válido. Como estabas cerca del máximo de la campaña, se han concedido ${row.points_awarded} puntos hasta completar tu límite.`;
   }
@@ -497,7 +502,8 @@ function publicReceiptView(row: ReceiptRow) {
   const verificationRequired = row.review_status === 'PENDING' &&
     requiresManualReceiptReview(row.status, row.validation_reasons);
   const validWithoutReward = isValidWithoutReward(row.status, row.validation_reasons);
-  const rewardCapped = row.validation_reasons.includes('USER_POINTS_CAPPED');
+  const rewardCapped = row.validation_reasons.some((reason) =>
+    ['USER_POINTS_CAPPED', 'USER_DAILY_POINTS_CAPPED'].includes(reason));
   const retryableReward = row.status === 'REWARD_FAILED' &&
     row.review_status === 'CLEARED' &&
     row.validation_reasons.some((reason) =>
@@ -755,8 +761,10 @@ async function handlePublicSession(request: Request, env: Env): Promise<Response
         : pointsLimit?.reached
           ? {
               canUpload: false,
-              code: 'USER_POINTS_LIMIT',
-              message: `Has alcanzado el máximo de ${pointsLimit.limit} puntos de esta campaña. Podrás volver a participar cuando comience un nuevo periodo.`,
+              code: pointsLimit.dailyReached ? 'USER_DAILY_POINTS_LIMIT' : 'USER_POINTS_LIMIT',
+              message: pointsLimit.dailyReached
+                ? `Has alcanzado el máximo de ${pointsLimit.dailyLimit} puntos de hoy. Podrás volver a participar mañana.`
+                : `Has alcanzado el máximo de ${pointsLimit.campaignLimit} puntos de esta campaña. Podrás volver a participar cuando comience un nuevo periodo.`,
             }
         : { canUpload: true },
   });
@@ -881,66 +889,7 @@ async function synchronizeUserRewardPointClaims(
   );
 }
 
-async function userRewardPointLimitState(
-  client: DbClient,
-  externalUserId: string | null,
-  settings: Record<string, string>,
-): Promise<{ limit: number; used: number; reached: boolean }> {
-  const limit = numericAppSetting(settings, 'limits.totalPointsPerUser');
-  if (!externalUserId || limit === 0) return { limit, used: 0, reached: false };
-  await synchronizeUserRewardPointClaims(client, externalUserId, settings);
-  const campaign = uploadCampaign(settings);
-  const result = await client.query<{ total: number }>(
-    `SELECT COALESCE(SUM(points), 0) AS total FROM user_reward_point_claims
-       WHERE external_user_id = $1 AND campaign_key = $2`,
-    [externalUserId, campaign.key],
-  );
-  const used = Number(result.rows[0]?.total || 0);
-  return { limit, used, reached: used >= limit };
-}
-
-async function claimUserRewardPoints(
-  client: DbClient,
-  externalUserId: string | null,
-  receiptId: string,
-  requestedPoints: number,
-  settings: Record<string, string>,
-): Promise<number> {
-  const limit = numericAppSetting(settings, 'limits.totalPointsPerUser');
-  if (!externalUserId || limit === 0 || requestedPoints <= 0) return requestedPoints;
-  await synchronizeUserRewardPointClaims(client, externalUserId, settings);
-  const campaign = uploadCampaign(settings);
-  const claimed = await client.query<{ points: number }>(
-    `WITH used AS (
-       SELECT COALESCE(SUM(points), 0) AS total FROM user_reward_point_claims
-        WHERE external_user_id = $2 AND campaign_key = $3
-     )
-     INSERT INTO user_reward_point_claims
-       (receipt_id, external_user_id, campaign_key, points)
-     SELECT $1, $2, $3,
-       CASE WHEN $4 < $5 - used.total THEN $4 ELSE $5 - used.total END
-       FROM used WHERE used.total < $5
-     ON CONFLICT(receipt_id) DO NOTHING
-     RETURNING points`,
-    [receiptId, externalUserId, campaign.key, requestedPoints, limit],
-  );
-  if (claimed.rows[0]) return Number(claimed.rows[0].points || 0);
-  const existing = await client.query<{ points: number }>(
-    'SELECT points FROM user_reward_point_claims WHERE receipt_id = $1 LIMIT 1',
-    [receiptId],
-  );
-  return Number(existing.rows[0]?.points || 0);
-}
-
-async function dailyStoreLimitReached(
-  client: DbClient,
-  externalUserId: string | null,
-  storeId: string,
-  settings: Record<string, string>,
-  excludeReceiptId: string,
-): Promise<boolean> {
-  const limit = numericAppSetting(settings, 'limits.dailyTicketsPerUserStore');
-  if (!externalUserId || !storeId || limit === 0) return false;
+function currentCanaryDayWindow() {
   const dateParts = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Atlantic/Canary', year: 'numeric', month: '2-digit', day: '2-digit',
   }).formatToParts(new Date());
@@ -952,13 +901,131 @@ async function dailyStoreLimitReached(
   const today = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   const tomorrowDate = new Date(Date.UTC(year, month - 1, day + 1));
   const tomorrow = `${tomorrowDate.getUTCFullYear()}-${String(tomorrowDate.getUTCMonth() + 1).padStart(2, '0')}-${String(tomorrowDate.getUTCDate()).padStart(2, '0')}`;
-  const startAt = databaseTimestamp(canaryDateTimeToTimestamp(`${today}T00:00`));
-  const endAt = databaseTimestamp(canaryDateTimeToTimestamp(`${tomorrow}T00:00`));
+  return {
+    key: today,
+    startAt: databaseTimestamp(canaryDateTimeToTimestamp(`${today}T00:00`)),
+    endAt: databaseTimestamp(canaryDateTimeToTimestamp(`${tomorrow}T00:00`)),
+  };
+}
+
+type UserRewardPointLimitState = {
+  campaignLimit: number;
+  campaignUsed: number;
+  campaignReached: boolean;
+  dailyLimit: number;
+  dailyUsed: number;
+  dailyReached: boolean;
+  reached: boolean;
+};
+
+async function userRewardPointLimitState(
+  client: DbClient,
+  externalUserId: string | null,
+  settings: Record<string, string>,
+): Promise<UserRewardPointLimitState> {
+  const campaignLimit = numericAppSetting(settings, 'limits.totalPointsPerUser');
+  const dailyLimit = numericAppSetting(settings, 'limits.dailyPointsPerUser');
+  if (!externalUserId || (campaignLimit === 0 && dailyLimit === 0)) {
+    return {
+      campaignLimit, campaignUsed: 0, campaignReached: false,
+      dailyLimit, dailyUsed: 0, dailyReached: false, reached: false,
+    };
+  }
+  await synchronizeUserRewardPointClaims(client, externalUserId, settings);
+  const campaign = uploadCampaign(settings);
+  const day = currentCanaryDayWindow();
+  const result = await client.query<{ campaign_total: number; daily_total: number }>(
+    `SELECT COALESCE(SUM(CASE WHEN c.campaign_key = $2 THEN c.points ELSE 0 END), 0) AS campaign_total,
+       COALESCE(SUM(CASE WHEN r.created_at >= $3 AND r.created_at < $4
+         THEN c.points ELSE 0 END), 0) AS daily_total
+       FROM user_reward_point_claims c JOIN receipts r ON r.id = c.receipt_id
+       WHERE c.external_user_id = $1`,
+    [externalUserId, campaign.key, day.startAt, day.endAt],
+  );
+  const campaignUsed = Number(result.rows[0]?.campaign_total || 0);
+  const dailyUsed = Number(result.rows[0]?.daily_total || 0);
+  const campaignReached = campaignLimit > 0 && campaignUsed >= campaignLimit;
+  const dailyReached = dailyLimit > 0 && dailyUsed >= dailyLimit;
+  return {
+    campaignLimit, campaignUsed, campaignReached,
+    dailyLimit, dailyUsed, dailyReached,
+    reached: campaignReached || dailyReached,
+  };
+}
+
+async function claimUserRewardPoints(
+  client: DbClient,
+  externalUserId: string | null,
+  receiptId: string,
+  requestedPoints: number,
+  settings: Record<string, string>,
+): Promise<{ points: number; reason: string }> {
+  const campaignLimit = numericAppSetting(settings, 'limits.totalPointsPerUser');
+  const dailyLimit = numericAppSetting(settings, 'limits.dailyPointsPerUser');
+  if (!externalUserId || (campaignLimit === 0 && dailyLimit === 0) || requestedPoints <= 0) {
+    return { points: requestedPoints, reason: '' };
+  }
+  await synchronizeUserRewardPointClaims(client, externalUserId, settings);
+  const campaign = uploadCampaign(settings);
+  const day = currentCanaryDayWindow();
+  const claimed = await client.query<{ points: number }>(
+    `WITH used AS (
+       SELECT COALESCE(SUM(CASE WHEN c.campaign_key = $3 THEN c.points ELSE 0 END), 0) AS campaign_total,
+         COALESCE(SUM(CASE WHEN r.created_at >= $7 AND r.created_at < $8
+           THEN c.points ELSE 0 END), 0) AS daily_total
+         FROM user_reward_point_claims c JOIN receipts r ON r.id = c.receipt_id
+         WHERE c.external_user_id = $2
+     ), available AS (
+       SELECT CASE WHEN $5 = 0 THEN $4 ELSE $5 - campaign_total END AS campaign_remaining,
+         CASE WHEN $6 = 0 THEN $4 ELSE $6 - daily_total END AS daily_remaining
+         FROM used
+     )
+     INSERT INTO user_reward_point_claims
+       (receipt_id, external_user_id, campaign_key, points)
+     SELECT $1, $2, $3,
+       CASE WHEN $4 <= campaign_remaining AND $4 <= daily_remaining THEN $4
+         WHEN campaign_remaining <= daily_remaining THEN campaign_remaining
+         ELSE daily_remaining END
+       FROM available WHERE campaign_remaining > 0 AND daily_remaining > 0
+     ON CONFLICT(receipt_id) DO NOTHING
+     RETURNING points`,
+    [receiptId, externalUserId, campaign.key, requestedPoints, campaignLimit, dailyLimit,
+      day.startAt, day.endAt],
+  );
+  let points = Number(claimed.rows[0]?.points || 0);
+  if (!claimed.rows[0]) {
+    const existing = await client.query<{ points: number }>(
+      'SELECT points FROM user_reward_point_claims WHERE receipt_id = $1 LIMIT 1',
+      [receiptId],
+    );
+    points = Number(existing.rows[0]?.points || 0);
+  }
+  if (points >= requestedPoints) return { points, reason: '' };
+  const state = await userRewardPointLimitState(client, externalUserId, settings);
+  const daily = state.dailyReached;
+  return {
+    points,
+    reason: daily
+      ? points > 0 ? 'USER_DAILY_POINTS_CAPPED' : 'USER_DAILY_POINTS_LIMIT'
+      : points > 0 ? 'USER_POINTS_CAPPED' : 'USER_POINTS_LIMIT',
+  };
+}
+
+async function dailyStoreLimitReached(
+  client: DbClient,
+  externalUserId: string | null,
+  storeId: string,
+  settings: Record<string, string>,
+  excludeReceiptId: string,
+): Promise<boolean> {
+  const limit = numericAppSetting(settings, 'limits.dailyTicketsPerUserStore');
+  if (!externalUserId || !storeId || limit === 0) return false;
+  const day = currentCanaryDayWindow();
   const result = await client.query<{ total: number }>(
     `SELECT COUNT(*) AS total FROM receipts
       WHERE external_user_id = $1 AND store_id = $2 AND created_at >= $3 AND created_at < $4 AND id <> $5
         AND (status IN ('REWARD_PENDING', 'REWARDED', 'REVOKE_PENDING') OR rtales_result_id IS NOT NULL)`,
-    [externalUserId, storeId, startAt, endAt, excludeReceiptId],
+    [externalUserId, storeId, day.startAt, day.endAt, excludeReceiptId],
   );
   return Number(result.rows[0]?.total || 0) >= limit;
 }
@@ -1048,10 +1115,13 @@ async function handleUpload(
     (client) => userRewardPointLimitState(client, session.external_user_id, uploadSettings),
   );
   if (pointsLimit.reached) {
+    const daily = pointsLimit.dailyReached;
     return error(
-      `Has alcanzado el máximo de ${pointsLimit.limit} puntos de esta campaña.`,
+      daily
+        ? `Has alcanzado el máximo de ${pointsLimit.dailyLimit} puntos de hoy.`
+        : `Has alcanzado el máximo de ${pointsLimit.campaignLimit} puntos de esta campaña.`,
       429,
-      'USER_POINTS_LIMIT',
+      daily ? 'USER_DAILY_POINTS_LIMIT' : 'USER_POINTS_LIMIT',
     );
   }
   let declaration: ReceiptDeclaration | null = null;
@@ -1440,11 +1510,12 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
         })),
         selectedStore!.participation_level,
       );
-      const points = await claimUserRewardPoints(
+      const rewardClaim = await claimUserRewardPoints(
         client, session.external_user_id, receiptId, requestedPoints, appSettings,
       );
+      const points = rewardClaim.points;
       if (points === 0 && requestedPoints > 0) {
-        validation.reasons.push('USER_POINTS_LIMIT');
+        validation.reasons.push(rewardClaim.reason || 'USER_POINTS_LIMIT');
         await client.query(
           `UPDATE receipts SET status = 'AUTO_REJECTED', session_id = $2,
              store_id = $3, store_name = $4, ticket_number = $5, purchase_date = $6,
@@ -1466,7 +1537,7 @@ async function handleConfirm(request: Request, env: Env, receiptId: string): Pro
           }),
         };
       }
-      const rewardReasons = points < requestedPoints ? ['USER_POINTS_CAPPED'] : [];
+      const rewardReasons = rewardClaim.reason ? [rewardClaim.reason] : [];
       outboxId = uuid();
       await client.query(
         `UPDATE receipts SET status = 'REWARD_PENDING', session_id = $2,
@@ -1706,16 +1777,17 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
         })),
         selectedStore!.participation_level,
       );
-      points = await claimUserRewardPoints(
+      const rewardClaim = await claimUserRewardPoints(
         client, receipt.external_user_id, receiptId, requestedPoints, appSettings,
       );
+      points = rewardClaim.points;
       if (points === 0 && requestedPoints > 0) {
         validation.approved = false;
-        validation.reasons.push('USER_POINTS_LIMIT');
+        validation.reasons.push(rewardClaim.reason || 'USER_POINTS_LIMIT');
         status = 'AUTO_REJECTED';
         completedStatus = status;
       } else {
-        if (points < requestedPoints) validation.reasons.push('USER_POINTS_CAPPED');
+        if (rewardClaim.reason) validation.reasons.push(rewardClaim.reason);
         rewardOutboxId = uuid();
       }
     }
@@ -2620,14 +2692,15 @@ async function handleAdminReview(
       const requestedPoints = resolveRewardPoints(totalCents, tiers.rows.map((tier) => ({
         id: tier.id, minimumCents: tier.minimum_cents, points: tier.points, active: tier.active,
       })), store.participation_level);
-      const points = await claimUserRewardPoints(
+      const rewardClaim = await claimUserRewardPoints(
         client, receipt.external_user_id, receiptId, requestedPoints, appSettings,
       );
+      const points = rewardClaim.points;
       const pointsLimitReached = points === 0 && requestedPoints > 0;
       const rewardStatus = pointsLimitReached ? 'AUTO_REJECTED' : 'REWARD_PENDING';
       const rewardReasons = pointsLimitReached
-        ? ['USER_POINTS_LIMIT']
-        : points < requestedPoints ? ['USER_POINTS_CAPPED'] : [];
+        ? [rewardClaim.reason || 'USER_POINTS_LIMIT']
+        : rewardClaim.reason ? [rewardClaim.reason] : [];
       if (!pointsLimitReached) outboxId = uuid();
       await client.query(
         `INSERT INTO receipt_reviews (id, receipt_id, action, manager_email, reason, changes)
@@ -4028,6 +4101,7 @@ async function handleAdminParticipationLimits(request: Request, env: Env): Promi
   const body = await readJson(request);
   const updates = [
     ['limits.dailyTicketsPerUserStore', normalizeAppSettingValue('limits.dailyTicketsPerUserStore', body.dailyTicketsPerUserStore)],
+    ['limits.dailyPointsPerUser', normalizeAppSettingValue('limits.dailyPointsPerUser', body.dailyPointsPerUser)],
     ['limits.totalPointsPerUser', normalizeAppSettingValue('limits.totalPointsPerUser', body.totalPointsPerUser)],
     ['limits.banScoreThreshold', normalizeAppSettingValue('limits.banScoreThreshold', body.banScoreThreshold)],
   ] as const;

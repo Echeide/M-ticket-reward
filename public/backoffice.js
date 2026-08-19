@@ -75,6 +75,8 @@ const reasonLabels = {
   DAILY_STORE_LIMIT: 'El usuario alcanzó el límite diario para este establecimiento.',
   USER_POINTS_LIMIT: 'El usuario alcanzó el máximo de puntos de la campaña. El ticket es válido, pero no genera puntos.',
   USER_POINTS_CAPPED: 'La recompensa se ajustó para no superar el máximo de puntos de la campaña.',
+  USER_DAILY_POINTS_LIMIT: 'El usuario alcanzó el máximo de puntos del día. El ticket es válido, pero no genera puntos.',
+  USER_DAILY_POINTS_CAPPED: 'La recompensa se ajustó para no superar el máximo diario de puntos.',
   RTALES_DELIVERY_FAILED: 'La asignación no se ha completado. El ticket sigue validado y se reintentará con una sesión válida de Rtales.',
   RTALES_DELIVERY_TIMEOUT: 'La asignación superó el tiempo máximo. El ticket sigue validado y se reintentará con una sesión válida de Rtales.',
   OCR_REPROCESS_REQUESTED: 'La nueva comprobación está en curso.',
@@ -466,6 +468,7 @@ async function loadSettings() {
   document.querySelector('#validation-start-at').value = state.settings.find((item) => item.key === 'validation.startAt')?.value || '';
   document.querySelector('#validation-end-at').value = state.settings.find((item) => item.key === 'validation.endAt')?.value || '';
   document.querySelector('#daily-store-ticket-limit').value = state.settings.find((item) => item.key === 'limits.dailyTicketsPerUserStore')?.value || '3';
+  document.querySelector('#daily-points-limit').value = state.settings.find((item) => item.key === 'limits.dailyPointsPerUser')?.value || '0';
   document.querySelector('#total-points-limit').value = state.settings.find((item) => item.key === 'limits.totalPointsPerUser')?.value || '0';
   document.querySelector('#ban-score-threshold').value = state.settings.find((item) => item.key === 'limits.banScoreThreshold')?.value || '6';
   document.querySelector('#assisted-scan-enabled').checked = state.settings.find((item) => item.key === 'scan.assisted.enabled')?.value !== 'false';
@@ -524,6 +527,7 @@ async function saveParticipationLimits(event) {
     await request('/api/admin/settings/participation-limits', {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
         dailyTicketsPerUserStore: document.querySelector('#daily-store-ticket-limit').value,
+        dailyPointsPerUser: document.querySelector('#daily-points-limit').value,
         totalPointsPerUser: document.querySelector('#total-points-limit').value,
         banScoreThreshold: document.querySelector('#ban-score-threshold').value,
       }),
@@ -1399,7 +1403,9 @@ function canReprocess(receipt) {
 
 function isValidWithoutReward(receipt) {
   return receipt.status === 'AUTO_REJECTED' && Array.isArray(receipt.reasons) &&
-    receipt.reasons.some((reason) => ['DAILY_STORE_LIMIT', 'USER_POINTS_LIMIT'].includes(reason));
+    receipt.reasons.some((reason) => [
+      'DAILY_STORE_LIMIT', 'USER_POINTS_LIMIT', 'USER_DAILY_POINTS_LIMIT',
+    ].includes(reason));
 }
 
 function isRewardDeliveryIssue(receipt) {
