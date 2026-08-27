@@ -7,7 +7,14 @@ export type CollectionDailyWinnerConfig = {
   enabled: boolean;
   metric: 'POINTS' | 'PURCHASES';
   minimumPurchases: number;
+  maxAwards: number;
   cardId: string;
+};
+
+export type CollectionDailyRankingRow = {
+  external_user_id: string;
+  points: number;
+  purchases: number;
 };
 
 export type StoreCollectionConfig = {
@@ -29,7 +36,13 @@ const EMPTY_CONFIG: StoreCollectionConfig = {
   milestones: [],
   maxCardsTotal: 0,
   maxCardsPerUser: 0,
-  dailyWinner: { enabled: false, metric: 'POINTS', minimumPurchases: 1, cardId: '' },
+  dailyWinner: {
+    enabled: false,
+    metric: 'POINTS',
+    minimumPurchases: 1,
+    maxAwards: 1,
+    cardId: '',
+  },
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -72,9 +85,26 @@ export function normalizeStoreCollectionConfig(value: unknown): StoreCollectionC
       enabled: daily.enabled === true,
       metric,
       minimumPurchases: Math.max(1, boundedInteger(daily.minimumPurchases, 1, 1_000)),
+      maxAwards: Math.max(1, boundedInteger(daily.maxAwards, 1, 1_000)),
       cardId: String(daily.cardId || '').trim().slice(0, 100),
     },
   };
+}
+
+export function cappedDailyCollectionWinners(
+  ranking: CollectionDailyRankingRow[],
+  metric: CollectionDailyWinnerConfig['metric'],
+  maxAwards: number,
+): CollectionDailyRankingRow[] {
+  const best = ranking[0];
+  if (!best) return [];
+  const primary = metric === 'PURCHASES' ? Number(best.purchases) : Number(best.points);
+  const secondary = metric === 'PURCHASES' ? Number(best.points) : Number(best.purchases);
+  return ranking.filter((row) => {
+    const rowPrimary = metric === 'PURCHASES' ? Number(row.purchases) : Number(row.points);
+    const rowSecondary = metric === 'PURCHASES' ? Number(row.points) : Number(row.purchases);
+    return rowPrimary === primary && rowSecondary === secondary;
+  }).slice(0, Math.max(1, Math.floor(maxAwards)));
 }
 
 export function requireStoreCollectionConfig(value: unknown): StoreCollectionConfig {

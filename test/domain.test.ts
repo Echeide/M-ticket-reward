@@ -29,6 +29,7 @@ import {
 } from '../src/domain/store';
 import { normalizeRewardTierInput } from '../src/domain/reward-tier';
 import {
+  cappedDailyCollectionWinners,
   crossedCollectionMilestones,
   normalizeStoreCollectionConfig,
   requireStoreCollectionConfig,
@@ -306,6 +307,7 @@ test('store input normalizes codes and unique OCR aliases', () => {
         enabled: false,
         metric: 'POINTS',
         minimumPurchases: 1,
+        maxAwards: 1,
         cardId: '',
       },
     },
@@ -321,13 +323,34 @@ test('collection rules normalize milestones, caps and daily categories', () => {
     milestones: [{ points: 100 }, { points: 50 }, { points: 100 }],
     maxCardsTotal: 500,
     maxCardsPerUser: 3,
-    dailyWinner: { enabled: true, metric: 'purchases', minimumPurchases: 2 },
+    dailyWinner: { enabled: true, metric: 'purchases', minimumPurchases: 2, maxAwards: 3 },
   });
   assert.deepEqual(config.milestones.map(({ points }) => points), [50, 100]);
   assert.equal(config.categoryCode, 'RESTAURACION_NORTE');
   assert.equal(config.dailyWinner.metric, 'PURCHASES');
   assert.equal(config.dailyWinner.minimumPurchases, 2);
+  assert.equal(config.dailyWinner.maxAwards, 3);
   assert.deepEqual(crossedCollectionMilestones(75, config).map(({ points }) => points), [50]);
+});
+
+test('daily collection rewards cap exact ties without rewarding lower ranks', () => {
+  const ranking = [
+    { external_user_id: 'user-a', points: 100, purchases: 2 },
+    { external_user_id: 'user-b', points: 100, purchases: 2 },
+    { external_user_id: 'user-c', points: 90, purchases: 8 },
+  ];
+  assert.deepEqual(
+    cappedDailyCollectionWinners(ranking, 'POINTS', 1).map((row) => row.external_user_id),
+    ['user-a'],
+  );
+  assert.deepEqual(
+    cappedDailyCollectionWinners(ranking, 'POINTS', 2).map((row) => row.external_user_id),
+    ['user-a', 'user-b'],
+  );
+  assert.deepEqual(
+    cappedDailyCollectionWinners(ranking, 'POINTS', 5).map((row) => row.external_user_id),
+    ['user-a', 'user-b'],
+  );
 });
 
 test('enabled collection rules require a target and at least one reward rule', () => {

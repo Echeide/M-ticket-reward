@@ -295,6 +295,7 @@ function renderCollectionConfig(config = {}) {
   form.elements.collectionDailyEnabled.checked = normalized.dailyWinner.enabled === true;
   form.elements.collectionDailyMetric.value = normalized.dailyWinner.metric || 'POINTS';
   form.elements.collectionDailyMinimum.value = normalized.dailyWinner.minimumPurchases || 1;
+  form.elements.collectionDailyMaxAwards.value = normalized.dailyWinner.maxAwards || 1;
   const installationSelect = form.elements.collectionInstallation;
   installationSelect.replaceChildren(new Option('Selecciona una instalación', ''), ...state.collectionCatalog.map((item) =>
     new Option(`${item.spaceName} · ${item.applicationName || 'Tickets'}`, item.installationId)));
@@ -1340,6 +1341,7 @@ async function saveStore(event) {
         enabled: form.elements.collectionDailyEnabled.checked,
         metric: form.elements.collectionDailyMetric.value,
         minimumPurchases: Number(form.elements.collectionDailyMinimum.value || 1),
+        maxAwards: Number(form.elements.collectionDailyMaxAwards.value || 1),
         cardId: form.elements.collectionDailyCard.value,
       },
     },

@@ -45,6 +45,7 @@ import {
   type StoreParticipationLevel,
 } from './domain/store-participation';
 import {
+  cappedDailyCollectionWinners,
   crossedCollectionMilestones,
   normalizeStoreCollectionConfig,
   type StoreCollectionConfig,
@@ -4843,19 +4844,12 @@ async function resolveDailyCollectionWinners(env: Env): Promise<void> {
             external_user_id ASC`,
         [group.storeIds, period.startAt, period.endAt, group.config.dailyWinner.minimumPurchases],
       );
-      const best = ranking.rows[0];
-      if (best) {
-        const primary = group.config.dailyWinner.metric === 'PURCHASES'
-          ? Number(best.purchases) : Number(best.points);
-        const secondary = group.config.dailyWinner.metric === 'PURCHASES'
-          ? Number(best.points) : Number(best.purchases);
-        const winners = ranking.rows.filter((row) => {
-          const rowPrimary = group.config.dailyWinner.metric === 'PURCHASES'
-            ? Number(row.purchases) : Number(row.points);
-          const rowSecondary = group.config.dailyWinner.metric === 'PURCHASES'
-            ? Number(row.points) : Number(row.purchases);
-          return rowPrimary === primary && rowSecondary === secondary;
-        });
+      const winners = cappedDailyCollectionWinners(
+        ranking.rows,
+        group.config.dailyWinner.metric,
+        group.config.dailyWinner.maxAwards,
+      );
+      if (winners.length) {
         for (const winner of winners) {
           const id = uuid();
           const inserted = await client.query<{ id: string }>(
