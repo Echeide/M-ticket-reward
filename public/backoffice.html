@@ -56,7 +56,7 @@
         </form>
       </section>
       <section class="ticket-users-card">
-        <div class="ticket-user-list-head"><span>Usuario</span><span>Subidos</span><span>Validados</span><span>Sin validar</span><span>Strikes</span><span>Compras autorizadas</span><span>Estado</span><span></span></div>
+        <div class="ticket-user-list-head"><span>Usuario e instalación</span><span>Subidos</span><span>Validados</span><span>Sin validar</span><span>Puntos</span><span>Strikes</span><span>Compras autorizadas</span><span>Estado</span><span></span></div>
         <div id="ticket-user-list"></div>
         <nav class="receipt-pagination" id="ticket-user-pagination" aria-label="Paginación de usuarios" hidden>
           <button class="secondary-button" id="previous-ticket-users" type="button">Anterior</button>
@@ -123,8 +123,8 @@
         <div class="settings-section-heading"><p class="eyebrow">Participación</p><h3>Límites de participación</h3><p>Introduce 0 para desactivar cualquiera de los límites.</p></div>
         <form id="participation-limits-form" class="limits-form">
           <label>Tickets diarios por usuario y establecimiento<input id="daily-store-ticket-limit" type="number" min="0" max="100" required /><small>Solo cuentan tickets válidos que puedan conceder puntos.</small></label>
-          <label>Puntos máximos por usuario y día<input id="daily-points-limit" type="number" min="0" max="10000000" required /><small>Se reinicia cada día natural según el horario de Canarias.</small></label>
-          <label>Puntos máximos por usuario durante la campaña<input id="total-points-limit" type="number" min="0" max="10000000" required /><small>Cuenta los puntos concedidos o pendientes de entrega dentro del periodo configurado.</small></label>
+          <label>Puntos máximos por usuario, instalación y día<input id="daily-points-limit" type="number" min="0" max="10000000" required /><small>Se reinicia por instalación cada día natural según el horario de Canarias.</small></label>
+          <label>Puntos máximos por usuario, instalación y campaña<input id="total-points-limit" type="number" min="0" max="10000000" required /><small>Cuenta por separado los puntos concedidos o pendientes de entrega en cada instalación.</small></label>
           <label>Puntos de infracción para banear<input id="ban-score-threshold" type="number" min="0" max="100" required /><small>El cambio se aplicará cuando se registre una nueva infracción.</small></label>
           <aside class="ban-points-explanation"><strong>Cómo se calculan los puntos</strong><span>Imagen que no es un ticket: <b>+1 punto</b></span><span>Fraude confirmado: <b>+2 puntos</b></span><small>Los puntos se acumulan hasta que el usuario es desbaneado.</small></aside>
           <p id="participation-limits-error" class="form-error" role="alert"></p>
@@ -326,6 +326,7 @@
         <div class="filter-dialog-grid">
           <label class="filter-store">Comercio autorizado<select id="store-filter" name="store" form="filters"><option value="">Todos los comercios</option></select></label>
           <label class="filter-store">Espacio<select id="receipt-space-filter" name="space" form="filters"><option value="">Todos los espacios</option></select></label>
+          <label class="filter-store">Instalación<select id="receipt-installation-filter" name="installation" form="filters"><option value="">Todas las instalaciones</option></select></label>
           <label>Estado<select name="status" form="filters">
             <option value="">Todos los estados</option>
             <option value="OCR_QUEUED">En espera de lectura</option>
@@ -355,6 +356,7 @@
           <label>Strikes<select name="strikes" form="ticket-user-search"><option value="">Cualquier puntuación</option><option value="NONE">Sin strikes</option><option value="ANY">Con strikes</option><option value="NEAR">Próximos al baneo</option></select></label>
           <label>Actividad<select name="activity" form="ticket-user-search"><option value="">Cualquier actividad</option><option value="VALIDATED">Con tickets validados</option><option value="UNVALIDATED">Con tickets sin validar</option><option value="NO_VALIDATED">Sin tickets validados</option></select></label>
           <label>Espacio<select id="ticket-user-space-filter" name="space" form="ticket-user-search"><option value="">Todos los espacios</option></select></label>
+          <label>Instalación<select id="ticket-user-installation-filter" name="installation" form="ticket-user-search"><option value="">Todas las instalaciones</option></select></label>
           <label>Última subida desde<input name="from" type="date" form="ticket-user-search" /></label>
           <label>Última subida hasta<input name="to" type="date" form="ticket-user-search" /></label>
         </div>
@@ -367,6 +369,6 @@
         <div id="ticket-user-detail-body"></div>
       </div>
     </dialog>
-    <script type="module" src="/backoffice.js?v=collection-daily-cap-1"></script>
+    <script type="module" src="/backoffice.js?v=installation-scoping-1"></script>
   </body>
 </html>

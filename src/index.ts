@@ -495,10 +495,10 @@ const PUBLIC_REASON_MESSAGES: Record<string, string> = {
   FUTURE_DATE: 'La fecha está fuera del periodo permitido.',
   TICKET_TOO_OLD: 'La fecha está fuera del periodo permitido.',
   DAILY_STORE_LIMIT: 'El ticket es válido, pero has alcanzado el límite diario para este establecimiento. Se ha registrado correctamente, aunque esta compra no genera puntos.',
-  USER_POINTS_LIMIT: 'El ticket es válido, pero ya has alcanzado el máximo de puntos de esta campaña. Se ha registrado correctamente, aunque esta compra no genera puntos.',
-  USER_POINTS_CAPPED: 'El ticket es válido y su recompensa se ha ajustado para no superar el máximo de puntos de la campaña.',
-  USER_DAILY_POINTS_LIMIT: 'El ticket es válido, pero ya has alcanzado el máximo de puntos de hoy. Se ha registrado correctamente, aunque no genera puntos. Podrás volver a participar mañana.',
-  USER_DAILY_POINTS_CAPPED: 'El ticket es válido y su recompensa se ha ajustado para no superar el máximo diario de puntos.',
+  USER_POINTS_LIMIT: 'El ticket es válido, pero ya has alcanzado el máximo de puntos de esta campaña en esta instalación. Se ha registrado correctamente, aunque esta compra no genera puntos.',
+  USER_POINTS_CAPPED: 'El ticket es válido y su recompensa se ha ajustado para no superar el máximo de puntos de la campaña en esta instalación.',
+  USER_DAILY_POINTS_LIMIT: 'El ticket es válido, pero ya has alcanzado el máximo de puntos de hoy en esta instalación. Se ha registrado correctamente, aunque no genera puntos. Podrás volver a participar mañana.',
+  USER_DAILY_POINTS_CAPPED: 'El ticket es válido y su recompensa se ha ajustado para no superar el máximo diario de puntos en esta instalación.',
   RTALES_DELIVERY_FAILED: 'No hemos podido añadir los puntos. El ticket sigue registrado y nuestro equipo revisará la asignación.',
   RTALES_DELIVERY_TIMEOUT: 'La asignación de puntos está tardando más de lo habitual. El ticket sigue registrado y nuestro equipo lo revisará. Puedes volver a Rtales y abrir de nuevo la utilidad para enviar otro ticket.',
 };
@@ -506,10 +506,10 @@ const PUBLIC_REASON_MESSAGES: Record<string, string> = {
 function publicReceiptMessage(row: ReceiptRow): string {
   const reasons = Array.isArray(row.validation_reasons) ? row.validation_reasons : [];
   if (reasons.includes('USER_DAILY_POINTS_CAPPED')) {
-    return `El ticket es válido. Como estabas cerca del máximo diario, se han concedido ${row.points_awarded} puntos hasta completar el límite de hoy.`;
+    return `El ticket es válido. Como estabas cerca del máximo diario de esta instalación, se han concedido ${row.points_awarded} puntos hasta completar el límite de hoy.`;
   }
   if (reasons.includes('USER_POINTS_CAPPED')) {
-    return `El ticket es válido. Como estabas cerca del máximo de la campaña, se han concedido ${row.points_awarded} puntos hasta completar tu límite.`;
+    return `El ticket es válido. Como estabas cerca del máximo de la campaña en esta instalación, se han concedido ${row.points_awarded} puntos hasta completar tu límite.`;
   }
   if (
     row.status === 'REWARD_FAILED' && row.review_status === 'CLEARED' &&
@@ -763,7 +763,9 @@ async function handlePublicSession(request: Request, env: Env): Promise<Response
       loadSessionReceipt(client, session.id),
     ]);
     const pointsLimit = !ban && !receipt
-      ? await userRewardPointLimitState(client, session.external_user_id, await loadAppSettings(client))
+      ? await userRewardPointLimitState(
+          client, session.external_user_id, session.installation_id || '', await loadAppSettings(client),
+        )
       : null;
     return { ban, receipt, pointsLimit };
   });
@@ -795,8 +797,8 @@ async function handlePublicSession(request: Request, env: Env): Promise<Response
               canUpload: false,
               code: pointsLimit.dailyReached ? 'USER_DAILY_POINTS_LIMIT' : 'USER_POINTS_LIMIT',
               message: pointsLimit.dailyReached
-                ? `Has alcanzado el máximo de ${pointsLimit.dailyLimit} puntos de hoy. Podrás volver a participar mañana.`
-                : `Has alcanzado el máximo de ${pointsLimit.campaignLimit} puntos de esta campaña. Podrás volver a participar cuando comience un nuevo periodo.`,
+                ? `Has alcanzado el máximo de ${pointsLimit.dailyLimit} puntos de hoy en esta instalación. Podrás volver a participar mañana.`
+                : `Has alcanzado el máximo de ${pointsLimit.campaignLimit} puntos de esta campaña en esta instalación. Podrás volver a participar cuando comience un nuevo periodo.`,
             }
         : { canUpload: true },
   });
@@ -905,19 +907,21 @@ const REWARD_POINT_LIMIT_STATUSES = [
 async function synchronizeUserRewardPointClaims(
   client: DbClient,
   externalUserId: string,
+  installationId: string,
   settings: Record<string, string>,
 ): Promise<void> {
   const campaign = uploadCampaign(settings);
   await client.query(
     `INSERT INTO user_reward_point_claims
-       (receipt_id, external_user_id, campaign_key, points)
-     SELECT id, external_user_id, $2, points_awarded FROM receipts
-       WHERE external_user_id = $1 AND points_awarded > 0
-         AND status = ANY($3::text[])
-         AND ($4 = '' OR created_at >= $4)
-         AND ($5 = '' OR created_at <= $5)
+       (receipt_id, external_user_id, installation_id, campaign_key, points)
+     SELECT r.id, r.external_user_id, $2, $3, r.points_awarded
+       FROM receipts r JOIN player_sessions s ON s.id = r.session_id
+       WHERE r.external_user_id = $1 AND COALESCE(s.installation_id, '') = $2
+         AND r.points_awarded > 0 AND r.status = ANY($4::text[])
+         AND ($5 = '' OR r.created_at >= $5)
+         AND ($6 = '' OR r.created_at <= $6)
      ON CONFLICT(receipt_id) DO NOTHING`,
-    [externalUserId, campaign.key, [...REWARD_POINT_LIMIT_STATUSES], campaign.startAt, campaign.endAt],
+    [externalUserId, installationId, campaign.key, [...REWARD_POINT_LIMIT_STATUSES], campaign.startAt, campaign.endAt],
   );
 }
 
@@ -968,9 +972,10 @@ type UserRewardPointLimitState = {
   reached: boolean;
 };
 
-async function userRewardPointLimitState(
+export async function userRewardPointLimitState(
   client: DbClient,
   externalUserId: string | null,
+  installationId: string,
   settings: Record<string, string>,
 ): Promise<UserRewardPointLimitState> {
   const campaignLimit = numericAppSetting(settings, 'limits.totalPointsPerUser');
@@ -981,16 +986,16 @@ async function userRewardPointLimitState(
       dailyLimit, dailyUsed: 0, dailyReached: false, reached: false,
     };
   }
-  await synchronizeUserRewardPointClaims(client, externalUserId, settings);
+  await synchronizeUserRewardPointClaims(client, externalUserId, installationId, settings);
   const campaign = uploadCampaign(settings);
   const day = currentCanaryDayWindow();
   const result = await client.query<{ campaign_total: number; daily_total: number }>(
-    `SELECT COALESCE(SUM(CASE WHEN c.campaign_key = $2 THEN c.points ELSE 0 END), 0) AS campaign_total,
-       COALESCE(SUM(CASE WHEN r.created_at >= $3 AND r.created_at < $4
+    `SELECT COALESCE(SUM(CASE WHEN c.campaign_key = $3 THEN c.points ELSE 0 END), 0) AS campaign_total,
+       COALESCE(SUM(CASE WHEN r.created_at >= $4 AND r.created_at < $5
          THEN c.points ELSE 0 END), 0) AS daily_total
        FROM user_reward_point_claims c JOIN receipts r ON r.id = c.receipt_id
-       WHERE c.external_user_id = $1`,
-    [externalUserId, campaign.key, day.startAt, day.endAt],
+       WHERE c.external_user_id = $1 AND c.installation_id = $2`,
+    [externalUserId, installationId, campaign.key, day.startAt, day.endAt],
   );
   const campaignUsed = Number(result.rows[0]?.campaign_total || 0);
   const dailyUsed = Number(result.rows[0]?.daily_total || 0);
@@ -1003,7 +1008,7 @@ async function userRewardPointLimitState(
   };
 }
 
-async function claimUserRewardPoints(
+export async function claimUserRewardPoints(
   client: DbClient,
   externalUserId: string | null,
   receiptId: string,
@@ -1015,31 +1020,38 @@ async function claimUserRewardPoints(
   if (!externalUserId || (campaignLimit === 0 && dailyLimit === 0) || requestedPoints <= 0) {
     return { points: requestedPoints, reason: '' };
   }
-  await synchronizeUserRewardPointClaims(client, externalUserId, settings);
+  const receiptContext = await client.query<{ installation_id: string }>(
+    `SELECT COALESCE(s.installation_id, '') AS installation_id
+       FROM receipts r JOIN player_sessions s ON s.id = r.session_id
+      WHERE r.id = $1 LIMIT 1`,
+    [receiptId],
+  );
+  const installationId = receiptContext.rows[0]?.installation_id || '';
+  await synchronizeUserRewardPointClaims(client, externalUserId, installationId, settings);
   const campaign = uploadCampaign(settings);
   const day = currentCanaryDayWindow();
   const claimed = await client.query<{ points: number }>(
     `WITH used AS (
-       SELECT COALESCE(SUM(CASE WHEN c.campaign_key = $3 THEN c.points ELSE 0 END), 0) AS campaign_total,
-         COALESCE(SUM(CASE WHEN r.created_at >= $7 AND r.created_at < $8
+       SELECT COALESCE(SUM(CASE WHEN c.campaign_key = $4 THEN c.points ELSE 0 END), 0) AS campaign_total,
+         COALESCE(SUM(CASE WHEN r.created_at >= $8 AND r.created_at < $9
            THEN c.points ELSE 0 END), 0) AS daily_total
          FROM user_reward_point_claims c JOIN receipts r ON r.id = c.receipt_id
-         WHERE c.external_user_id = $2
+         WHERE c.external_user_id = $2 AND c.installation_id = $3
      ), available AS (
-       SELECT CASE WHEN $5 = 0 THEN $4 ELSE $5 - campaign_total END AS campaign_remaining,
-         CASE WHEN $6 = 0 THEN $4 ELSE $6 - daily_total END AS daily_remaining
+       SELECT CASE WHEN $6 = 0 THEN $5 ELSE $6 - campaign_total END AS campaign_remaining,
+         CASE WHEN $7 = 0 THEN $5 ELSE $7 - daily_total END AS daily_remaining
          FROM used
      )
      INSERT INTO user_reward_point_claims
-       (receipt_id, external_user_id, campaign_key, points)
-     SELECT $1, $2, $3,
-       CASE WHEN $4 <= campaign_remaining AND $4 <= daily_remaining THEN $4
+       (receipt_id, external_user_id, installation_id, campaign_key, points)
+     SELECT $1, $2, $3, $4,
+       CASE WHEN $5 <= campaign_remaining AND $5 <= daily_remaining THEN $5
          WHEN campaign_remaining <= daily_remaining THEN campaign_remaining
          ELSE daily_remaining END
        FROM available WHERE campaign_remaining > 0 AND daily_remaining > 0
      ON CONFLICT(receipt_id) DO NOTHING
      RETURNING points`,
-    [receiptId, externalUserId, campaign.key, requestedPoints, campaignLimit, dailyLimit,
+    [receiptId, externalUserId, installationId, campaign.key, requestedPoints, campaignLimit, dailyLimit,
       day.startAt, day.endAt],
   );
   let points = Number(claimed.rows[0]?.points || 0);
@@ -1051,7 +1063,7 @@ async function claimUserRewardPoints(
     points = Number(existing.rows[0]?.points || 0);
   }
   if (points >= requestedPoints) return { points, reason: '' };
-  const state = await userRewardPointLimitState(client, externalUserId, settings);
+  const state = await userRewardPointLimitState(client, externalUserId, installationId, settings);
   const daily = state.dailyReached;
   return {
     points,
@@ -1223,14 +1235,16 @@ async function handleUpload(
   const uploadSettings = await withDatabase(env, loadAppSettings);
   const pointsLimit = await withDatabase(
     env,
-    (client) => userRewardPointLimitState(client, session.external_user_id, uploadSettings),
+    (client) => userRewardPointLimitState(
+      client, session.external_user_id, session.installation_id || '', uploadSettings,
+    ),
   );
   if (pointsLimit.reached) {
     const daily = pointsLimit.dailyReached;
     return error(
       daily
-        ? `Has alcanzado el máximo de ${pointsLimit.dailyLimit} puntos de hoy.`
-        : `Has alcanzado el máximo de ${pointsLimit.campaignLimit} puntos de esta campaña.`,
+        ? `Has alcanzado el máximo de ${pointsLimit.dailyLimit} puntos de hoy en esta instalación.`
+        : `Has alcanzado el máximo de ${pointsLimit.campaignLimit} puntos de esta campaña en esta instalación.`,
       429,
       daily ? 'USER_DAILY_POINTS_LIMIT' : 'USER_POINTS_LIMIT',
     );
@@ -2404,8 +2418,9 @@ function adminFilters(url: URL) {
   }
   if (url.searchParams.get('space')) {
     values.push(String(url.searchParams.get('space') || '').trim().toUpperCase());
-    conditions.push(`UPPER(COALESCE(u.space_code, s.space_code)) = $${values.length}`);
+    conditions.push(`UPPER(COALESCE(NULLIF(s.space_code, ''), u.space_code)) = $${values.length}`);
   }
+  if (url.searchParams.get('installation')) add('s.installation_id = ?', url.searchParams.get('installation'));
   if (url.searchParams.get('store')) {
     const value = `%${url.searchParams.get('store')}%`;
     values.push(value);
@@ -2438,8 +2453,8 @@ async function adminRows(env: Env, url: URL, pagination?: { limit: number; offse
       `SELECT r.*, COALESCE(u.display_name, s.display_name) AS user_display_name,
               COALESCE(u.email, s.user_email) AS user_email,
               COALESCE(u.rtales_lookup_code, r.rtales_lookup_code_snapshot, s.rtales_lookup_code) AS user_lookup_code,
-              COALESCE(u.space_code, s.space_code) AS user_space_code,
-              COALESCE(u.installation_id, s.installation_id) AS user_installation_id,
+              COALESCE(NULLIF(s.space_code, ''), u.space_code) AS user_space_code,
+              COALESCE(NULLIF(s.installation_id, ''), u.installation_id) AS user_installation_id,
               (SELECT COUNT(*) FROM collection_reward_claims c
                 WHERE c.receipt_id = r.id AND c.status IN ('PENDING', 'PROCESSING')) AS collection_reward_pending_count
          FROM receipts r JOIN player_sessions s ON s.id = r.session_id
@@ -2499,8 +2514,8 @@ async function handleAdminReceipt(request: Request, env: Env, receiptId: string)
       `SELECT r.*, COALESCE(u.display_name, s.display_name) AS user_display_name,
               COALESCE(u.email, s.user_email) AS user_email,
               COALESCE(u.rtales_lookup_code, r.rtales_lookup_code_snapshot, s.rtales_lookup_code) AS user_lookup_code,
-              COALESCE(u.space_code, s.space_code) AS user_space_code,
-              COALESCE(u.installation_id, s.installation_id) AS user_installation_id,
+              COALESCE(NULLIF(s.space_code, ''), u.space_code) AS user_space_code,
+              COALESCE(NULLIF(s.installation_id, ''), u.installation_id) AS user_installation_id,
               (SELECT COUNT(*) FROM collection_reward_claims c
                 WHERE c.receipt_id = r.id AND c.status IN ('PENDING', 'PROCESSING')) AS collection_reward_pending_count,
               (SELECT ro.status FROM reward_outbox ro WHERE ro.receipt_id = r.id AND ro.operation = 'GRANT'
@@ -2523,8 +2538,8 @@ async function handleAdminReceipt(request: Request, env: Env, receiptId: string)
 async function handleAdminSpaces(request: Request, env: Env): Promise<Response> {
   const manager = managerIdentity(request, env);
   if (!manager) return error('Acceso de gestor requerido', 401);
-  const spaces = await withDatabase(env, async (client) => {
-    const result = await client.query<{ code: string }>(
+  const contexts = await withDatabase(env, async (client) => {
+    const spaceResult = await client.query<{ code: string }>(
       `SELECT space_code AS code FROM (
          SELECT UPPER(TRIM(space_code)) AS space_code FROM external_users
          UNION
@@ -2533,9 +2548,22 @@ async function handleAdminSpaces(request: Request, env: Env): Promise<Response> 
        WHERE space_code <> ''
        ORDER BY space_code`,
     );
-    return result.rows.map((row) => row.code);
+    const installationResult = await client.query<{ installation_id: string; space_code: string }>(
+      `SELECT DISTINCT TRIM(installation_id) AS installation_id,
+          UPPER(TRIM(space_code)) AS space_code
+         FROM player_sessions
+        WHERE TRIM(installation_id) <> ''
+        ORDER BY space_code, installation_id`,
+    );
+    return {
+      spaces: spaceResult.rows.map((row) => row.code),
+      installations: installationResult.rows.map((row) => ({
+        installationId: row.installation_id,
+        spaceCode: row.space_code,
+      })),
+    };
   });
-  return json({ success: true, spaces });
+  return json({ success: true, ...contexts });
 }
 
 function csvCell(value: unknown): string {
@@ -2570,6 +2598,7 @@ type TicketUserSummaryRow = {
   tickets_submitted: number;
   tickets_validated: number;
   tickets_unvalidated: number;
+  points_awarded: number;
   strike_points: number;
   authorized_total_cents: number;
   last_submission_at: string;
@@ -2591,16 +2620,20 @@ function ticketUserSummaryQuery(url: URL, configuredThreshold: number, paginatio
   const strikes = String(url.searchParams.get('strikes') || '').toUpperCase();
   const activity = String(url.searchParams.get('activity') || '').toUpperCase();
   const space = String(url.searchParams.get('space') || '').trim().toUpperCase();
+  const installation = String(url.searchParams.get('installation') || '').trim();
   const from = String(url.searchParams.get('from') || '').trim();
   const to = String(url.searchParams.get('to') || '').trim();
   const pageClause = pagination ? ` LIMIT ${pagination.limit} OFFSET ${pagination.offset}` : '';
   return {
-    values: [normalized, `%${search}%`, configuredThreshold, status, strikes, activity, space, from, to],
+    values: [normalized, `%${search}%`, configuredThreshold, status, strikes, activity, space, installation, from, to],
     sql: `SELECT * FROM (SELECT u.id AS external_user_id, u.rtales_lookup_code,
-        u.rtales_lookup_code_normalized, u.display_name, u.email, u.space_code, u.installation_id,
+        u.rtales_lookup_code_normalized, u.display_name, u.email,
+        COALESCE(NULLIF(s.space_code, ''), u.space_code) AS space_code,
+        COALESCE(NULLIF(s.installation_id, ''), u.installation_id) AS installation_id,
         COUNT(r.id) AS tickets_submitted,
         SUM(CASE WHEN r.status = 'REWARDED' THEN 1 ELSE 0 END) AS tickets_validated,
         SUM(CASE WHEN r.status <> 'REWARDED' THEN 1 ELSE 0 END) AS tickets_unvalidated,
+        COALESCE(SUM(CASE WHEN r.status = 'REWARDED' THEN r.points_awarded ELSE 0 END), 0) AS points_awarded,
         COALESCE((SELECT SUM(o.score) FROM user_offenses o
           WHERE o.external_user_id = u.id AND o.active = TRUE), 0) AS strike_points,
         COALESCE(SUM(CASE WHEN r.status = 'REWARDED' THEN r.total_cents ELSE 0 END), 0) AS authorized_total_cents,
@@ -2621,7 +2654,9 @@ function ticketUserSummaryQuery(url: URL, configuredThreshold: number, paginatio
       WHERE ($1 = '' OR u.rtales_lookup_code_normalized = $1
         OR u.display_name ILIKE $2 OR COALESCE(u.email, '') ILIKE $2)
       GROUP BY u.id, u.rtales_lookup_code, u.rtales_lookup_code_normalized, u.display_name,
-        u.email, u.space_code, u.installation_id, b.id, b.status, b.ban_threshold, b.banned_at, b.reason
+        u.email, COALESCE(NULLIF(s.space_code, ''), u.space_code),
+        COALESCE(NULLIF(s.installation_id, ''), u.installation_id),
+        b.id, b.status, b.ban_threshold, b.banned_at, b.reason
       ) ticket_user_summary
       WHERE ($4 = '' OR ($4 = 'ALLOWED' AND ban_status IS NULL)
         OR ($4 = 'BANNED' AND ban_status = 'ACTIVE') OR ($4 = 'LIFTING' AND ban_status = 'LIFTING'))
@@ -2630,7 +2665,8 @@ function ticketUserSummaryQuery(url: URL, configuredThreshold: number, paginatio
         AND ($6 = '' OR ($6 = 'VALIDATED' AND tickets_validated > 0)
           OR ($6 = 'UNVALIDATED' AND tickets_unvalidated > 0) OR ($6 = 'NO_VALIDATED' AND tickets_validated = 0))
         AND ($7 = '' OR UPPER(space_code) = $7)
-        AND ($8 = '' OR last_submission_at >= $8) AND ($9 = '' OR last_submission_at < $9 || 'T23:59:59')
+        AND ($8 = '' OR installation_id = $8)
+        AND ($9 = '' OR last_submission_at >= $9) AND ($10 = '' OR last_submission_at < $10 || 'T23:59:59')
       ORDER BY CASE WHEN rtales_lookup_code_normalized = $1 THEN 0 ELSE 1 END,
         last_submission_at DESC, external_user_id DESC${pageClause}`,
   };
@@ -2646,6 +2682,7 @@ function ticketUserView(row: TicketUserSummaryRow) {
     ticketsSubmitted: Number(row.tickets_submitted),
     ticketsValidated: Number(row.tickets_validated),
     ticketsUnvalidated: Number(row.tickets_unvalidated),
+    pointsAwarded: Number(row.points_awarded),
     strikePoints: Number(row.strike_points),
     banThreshold: Number(row.ban_threshold || 0),
     banId: row.ban_id,
@@ -2702,11 +2739,11 @@ async function handleAdminTicketUsersCsv(request: Request, env: Env): Promise<Re
     return result.rows;
   });
   const header = ['ID usuario', 'Nombre', 'Correo', 'Espacio', 'Instalación', 'Tickets subidos',
-    'Tickets validados', 'Tickets sin validar', 'Strikes', 'Umbral', 'No-tickets', 'Fraudes confirmados',
+    'Tickets validados', 'Tickets sin validar', 'Puntos concedidos', 'Strikes', 'Umbral', 'No-tickets', 'Fraudes confirmados',
     'Duplicados automáticos', 'Estado', 'Motivo baneo', 'Fecha baneo', 'Compras autorizadas EUR', 'Última subida'];
   const lines = users.map((user) => [
     user.rtales_lookup_code, user.display_name, user.email || '', user.space_code, user.installation_id,
-    user.tickets_submitted, user.tickets_validated, user.tickets_unvalidated, user.strike_points,
+    user.tickets_submitted, user.tickets_validated, user.tickets_unvalidated, user.points_awarded, user.strike_points,
     user.ban_threshold, user.non_receipt_count, user.confirmed_fraud_count, user.duplicate_ticket_count,
     user.ban_status === 'ACTIVE' ? 'BANEADO' : user.ban_status === 'LIFTING' ? 'DESBLOQUEO EN PROCESO' : 'PERMITIDO',
     user.ban_reason || '', user.banned_at || '', (Number(user.authorized_total_cents) / 100).toFixed(2), user.last_submission_at,

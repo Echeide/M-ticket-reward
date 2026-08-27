@@ -1,5 +1,5 @@
 const state = {
-  rows: [], stores: [], spaces: [], tiers: [], ticketUsers: [], settings: [], adminUsers: [], trainingSamples: [], collectionCatalog: [], collectionCatalogError: '', trainingProfile: null, selected: null,
+  rows: [], stores: [], spaces: [], installations: [], tiers: [], ticketUsers: [], settings: [], adminUsers: [], trainingSamples: [], collectionCatalog: [], collectionCatalogError: '', trainingProfile: null, selected: null,
   currentAdmin: null,
   pagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
   ticketUserPagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
@@ -73,10 +73,10 @@ const reasonLabels = {
   FUTURE_DATE: 'La fecha está fuera del periodo permitido.',
   TICKET_TOO_OLD: 'La fecha del ticket supera el periodo permitido.',
   DAILY_STORE_LIMIT: 'El usuario alcanzó el límite diario para este establecimiento.',
-  USER_POINTS_LIMIT: 'El usuario alcanzó el máximo de puntos de la campaña. El ticket es válido, pero no genera puntos.',
-  USER_POINTS_CAPPED: 'La recompensa se ajustó para no superar el máximo de puntos de la campaña.',
-  USER_DAILY_POINTS_LIMIT: 'El usuario alcanzó el máximo de puntos del día. El ticket es válido, pero no genera puntos.',
-  USER_DAILY_POINTS_CAPPED: 'La recompensa se ajustó para no superar el máximo diario de puntos.',
+  USER_POINTS_LIMIT: 'El usuario alcanzó el máximo de puntos de la campaña en esta instalación. El ticket es válido, pero no genera puntos.',
+  USER_POINTS_CAPPED: 'La recompensa se ajustó para no superar el máximo de puntos de la campaña en esta instalación.',
+  USER_DAILY_POINTS_LIMIT: 'El usuario alcanzó el máximo de puntos del día en esta instalación. El ticket es válido, pero no genera puntos.',
+  USER_DAILY_POINTS_CAPPED: 'La recompensa se ajustó para no superar el máximo diario de puntos en esta instalación.',
   RTALES_DELIVERY_FAILED: 'La asignación no se ha completado. El ticket sigue validado y se reintentará con una sesión válida de Rtales.',
   RTALES_DELIVERY_TIMEOUT: 'La asignación superó el tiempo máximo. El ticket sigue validado y se reintentará con una sesión válida de Rtales.',
   OCR_REPROCESS_REQUESTED: 'La nueva comprobación está en curso.',
@@ -353,11 +353,20 @@ function populateSpaceFilters() {
     select.innerHTML = `<option value="">Todos los espacios</option>${options}`;
     if ([...select.options].some((option) => option.value === selected)) select.value = selected;
   });
+  const installationOptions = state.installations.map((installation) =>
+    `<option value="${escapeHtml(installation.installationId)}">${escapeHtml(installation.spaceCode || 'Sin espacio')} · ${escapeHtml(installation.installationId)}</option>`).join('');
+  ['#receipt-installation-filter', '#ticket-user-installation-filter'].forEach((selector) => {
+    const select = document.querySelector(selector);
+    const selected = select.value;
+    select.innerHTML = `<option value="">Todas las instalaciones</option>${installationOptions}`;
+    if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+  });
 }
 
 async function loadSpaces() {
   const payload = await request('/api/admin/spaces');
   state.spaces = payload.spaces;
+  state.installations = payload.installations || [];
   populateSpaceFilters();
 }
 
@@ -390,17 +399,19 @@ async function loadTicketUsers(page = state.ticketUserPagination.page) {
     const statusClass = user.banStatus === 'BANNED' ? 'revoked' : user.banStatus === 'LIFTING' ? 'reward_pending' : 'rewarded';
     return `
     <article class="ticket-user-row">
-      <span><strong class="ban-lookup-code">${escapeHtml(user.lookupCode)}</strong><small>${escapeHtml(user.displayName || 'Sin nombre')}${user.email ? ` · ${escapeHtml(user.email)}` : ''}</small><small>Espacio: ${escapeHtml(user.spaceCode || '—')}</small></span>
+      <span><strong class="ban-lookup-code">${escapeHtml(user.lookupCode)}</strong><small>${escapeHtml(user.displayName || 'Sin nombre')}${user.email ? ` · ${escapeHtml(user.email)}` : ''}</small><small>${escapeHtml(user.spaceCode || 'Sin espacio')} · ${escapeHtml(user.installationId || 'Sin instalación')}</small></span>
       <strong>${user.ticketsSubmitted}</strong>
       <strong class="validated-count">${user.ticketsValidated}</strong>
       <strong>${user.ticketsUnvalidated}</strong>
+      <strong>${user.pointsAwarded}</strong>
       <strong class="${user.strikePoints ? 'strike-count' : ''}">${user.strikePoints}/${user.banThreshold || '—'}</strong>
       <strong>${formatMoney(user.authorizedTotalCents)}</strong>
       <span class="status-chip ${statusClass}">${status}</span>
-      <span class="ticket-user-actions"><button class="secondary-button view-ticket-user" data-code="${escapeHtml(user.lookupCode)}" type="button">Ver</button>${user.banStatus === 'BANNED' ? `<button class="danger-button lift-ticket-user" data-id="${escapeHtml(user.banId)}" type="button">Desbanear</button>` : ''}</span>
+      <span class="ticket-user-actions"><button class="secondary-button view-ticket-user" data-code="${escapeHtml(user.lookupCode)}" data-installation="${escapeHtml(user.installationId || '')}" type="button">Ver</button>${user.banStatus === 'BANNED' ? `<button class="danger-button lift-ticket-user" data-id="${escapeHtml(user.banId)}" type="button">Desbanear</button>` : ''}</span>
     </article>`;
   }).join('') || '<p class="empty-state">No hay usuarios con tickets para esta búsqueda.</p>';
-  document.querySelectorAll('.view-ticket-user').forEach((button) => button.addEventListener('click', () => openTicketUserDetail(button.dataset.code)));
+  document.querySelectorAll('.view-ticket-user').forEach((button) => button.addEventListener('click', () =>
+    openTicketUserDetail(button.dataset.code, button.dataset.installation)));
   document.querySelectorAll('.lift-ticket-user').forEach((button) => button.addEventListener('click', () => liftTicketUserBan(button.dataset.id)));
   const pagination = state.ticketUserPagination;
   document.querySelector('#ticket-user-page-info').textContent = `Página ${pagination.page} de ${pagination.totalPages}`;
@@ -417,21 +428,25 @@ async function liftTicketUserBan(id) {
   showNotice(result.completed ? 'Usuario desbaneado e imágenes eliminadas.' : 'La anulación y limpieza están en proceso.');
 }
 
-async function openTicketUserDetail(lookupCode) {
+async function openTicketUserDetail(lookupCode, installationId = '') {
   const dialog = document.querySelector('#ticket-user-detail-dialog');
   const body = document.querySelector('#ticket-user-detail-body');
   document.querySelector('#ticket-user-detail-title').textContent = lookupCode;
   body.innerHTML = '<p class="empty-state">Cargando…</p>';
   dialog.showModal();
   try {
-    const payload = await request(`/api/admin/ticket-users/${encodeURIComponent(lookupCode)}`);
+    const params = new URLSearchParams();
+    if (installationId) params.set('installation', installationId);
+    const payload = await request(`/api/admin/ticket-users/${encodeURIComponent(lookupCode)}?${params}`);
     const user = payload.user;
     const status = user.banStatus === 'BANNED' ? 'Baneado' : user.banStatus === 'LIFTING' ? 'Desbaneo en proceso' : 'Permitido';
     body.innerHTML = `<div class="ticket-user-detail-summary">
       <div><span>Nombre</span><strong>${escapeHtml(user.displayName || 'Sin nombre')}</strong><small>${escapeHtml(user.email || 'Correo no compartido')}</small></div>
       <div><span>Espacio</span><strong>${escapeHtml(user.spaceCode || '—')}</strong></div>
+      <div><span>Instalación</span><strong>${escapeHtml(user.installationId || '—')}</strong></div>
       <div><span>Estado</span><strong>${status}</strong><small>${user.strikePoints}/${user.banThreshold || '—'} puntos</small></div>
       <div><span>Actividad</span><strong>${user.ticketsValidated} validados</strong><small>${user.ticketsSubmitted} subidos · ${user.ticketsUnvalidated} sin validar</small></div>
+      <div><span>Puntos concedidos</span><strong>${user.pointsAwarded}</strong></div>
       <div><span>Compras autorizadas</span><strong>${formatMoney(user.authorizedTotalCents)}</strong></div>
     </div>
     <section class="ticket-user-offenses"><h3>Infracciones activas</h3>
@@ -1610,7 +1625,7 @@ async function select(id, suppliedReceipt = null) {
       ${hasDeclaration ? `<section class="declared-ticket-data"><strong>Datos indicados antes de fotografiar</strong><dl><div><dt>Comercio</dt><dd>${escapeHtml(declaredStore?.name || (declared.storeId ? 'Comercio ya no disponible' : 'No solicitado'))}</dd></div><div><dt>Número</dt><dd>${escapeHtml(declared.ticketNumber || '—')}</dd></div><div><dt>Total</dt><dd>${formatMoney(declared.totalCents || 0)}</dd></div></dl></section>` : ''}
       ${reasons.length && !deliveryIssue ? `<div class="review-reasons"><strong>Comprobación automática</strong><ul>${reasons.map((reason) => `<li>${escapeHtml(reasonLabels[reason] || reason)}</li>`).join('')}</ul></div>` : ''}
       ${staffResolution}
-      <dl class="ticket-secondary-data"><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Espacio</dt><dd>${escapeHtml(receipt.user.spaceCode || '—')}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Cartas</dt><dd>${receipt.reward.cardsPending ? 'Asignando…' : receipt.reward.cardsAwarded?.length || 0}</dd></div><div><dt>Decisión</dt><dd>${escapeHtml(receiptReviewLabel(receipt))}</dd></div><div><dt>OCR</dt><dd>${escapeHtml([receipt.ocrProcessing?.provider, receipt.ocrProcessing?.model].filter(Boolean).join(' · ') || '—')}</dd></div><div><dt>Proceso OCR</dt><dd>${receipt.ocrProcessing?.durationMs == null ? 'Sin resultado' : `${receipt.ocrProcessing.durationMs} ms · ${receipt.ocrProcessing.attemptCount} llamada(s)`} · ${receipt.ocrProcessing?.jobAttemptCount || 0} ejecución(es)</dd></div>${receipt.ocrProcessing?.lastError ? `<div><dt>Último error OCR</dt><dd>${escapeHtml(receipt.ocrProcessing.lastError)}</dd></div>` : ''}<div><dt>Creado</dt><dd>${escapeHtml(new Date(receipt.createdAt).toLocaleString('es-ES'))}</dd></div></dl>
+      <dl class="ticket-secondary-data"><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Espacio</dt><dd>${escapeHtml(receipt.user.spaceCode || '—')}</dd></div><div><dt>Instalación</dt><dd>${escapeHtml(receipt.user.installationId || '—')}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Cartas</dt><dd>${receipt.reward.cardsPending ? 'Asignando…' : receipt.reward.cardsAwarded?.length || 0}</dd></div><div><dt>Decisión</dt><dd>${escapeHtml(receiptReviewLabel(receipt))}</dd></div><div><dt>OCR</dt><dd>${escapeHtml([receipt.ocrProcessing?.provider, receipt.ocrProcessing?.model].filter(Boolean).join(' · ') || '—')}</dd></div><div><dt>Proceso OCR</dt><dd>${receipt.ocrProcessing?.durationMs == null ? 'Sin resultado' : `${receipt.ocrProcessing.durationMs} ms · ${receipt.ocrProcessing.attemptCount} llamada(s)`} · ${receipt.ocrProcessing?.jobAttemptCount || 0} ejecución(es)</dd></div>${receipt.ocrProcessing?.lastError ? `<div><dt>Último error OCR</dt><dd>${escapeHtml(receipt.ocrProcessing.lastError)}</dd></div>` : ''}<div><dt>Creado</dt><dd>${escapeHtml(new Date(receipt.createdAt).toLocaleString('es-ES'))}</dd></div></dl>
     </div>`;
   const image = await fetch(`/api/admin/receipts/${id}/image`, { headers: headers() });
   if (image.ok) {

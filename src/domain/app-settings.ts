@@ -66,8 +66,8 @@ export const APP_SETTING_DEFINITIONS: readonly AppSettingDefinition[] = [
   {
     key: 'limits.totalPointsPerUser',
     group: 'Límites de participación',
-    label: 'Puntos máximos por usuario durante la campaña',
-    help: 'Máximo de puntos que puede obtener un usuario durante el periodo de campaña actual. Usa 0 para desactivarlo.',
+    label: 'Puntos máximos por usuario, instalación y campaña',
+    help: 'Máximo de puntos que puede obtener un usuario en cada instalación durante el periodo de campaña actual. Usa 0 para desactivarlo.',
     format: 'integer',
     defaultValue: '0',
     maxLength: 8,
@@ -77,8 +77,8 @@ export const APP_SETTING_DEFINITIONS: readonly AppSettingDefinition[] = [
   {
     key: 'limits.dailyPointsPerUser',
     group: 'Límites de participación',
-    label: 'Puntos máximos por usuario y día',
-    help: 'Máximo de puntos que puede obtener un usuario en un día natural de Canarias. Usa 0 para desactivarlo.',
+    label: 'Puntos máximos por usuario, instalación y día',
+    help: 'Máximo de puntos que puede obtener un usuario en cada instalación durante un día natural de Canarias. Usa 0 para desactivarlo.',
     format: 'integer',
     defaultValue: '0',
     maxLength: 8,

@@ -103,4 +103,4 @@ Antes de desplegar:
 
 ## Política inicial
 
-Los puntos se conceden automáticamente tras confirmar los datos de un ticket que supera las reglas automáticas. La revisión humana es posterior: el gestor solo marca el ticket como revisado sin fraude o revoca el premio ya concedido. Cada comercio puede activar opcionalmente cartas por hitos de puntos y la campaña puede premiar al líder diario de una categoría. Las entregas tienen límites globales y por usuario, son idempotentes y se revierten junto con un ticket invalidado.
+Los puntos se conceden automáticamente tras confirmar los datos de un ticket que supera las reglas automáticas. La revisión humana es posterior: el gestor solo marca el ticket como revisado sin fraude o revoca el premio ya concedido. Cada comercio puede activar opcionalmente cartas por hitos de puntos y la campaña puede premiar al líder diario de una categoría. Las entregas tienen límites globales y por usuario e instalación, son idempotentes y se revierten junto con un ticket invalidado. La identidad, los duplicados, los strikes y los bloqueos siguen siendo globales para la misma persona aunque participe desde varias instalaciones de Rtales.
