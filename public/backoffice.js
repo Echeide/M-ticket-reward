@@ -1,5 +1,5 @@
 const state = {
-  rows: [], stores: [], spaces: [], tiers: [], ticketUsers: [], settings: [], adminUsers: [], trainingSamples: [], collectionCatalog: [], trainingProfile: null, selected: null,
+  rows: [], stores: [], spaces: [], tiers: [], ticketUsers: [], settings: [], adminUsers: [], trainingSamples: [], collectionCatalog: [], collectionCatalogError: '', trainingProfile: null, selected: null,
   currentAdmin: null,
   pagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
   ticketUserPagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
@@ -236,8 +236,15 @@ async function loadStores() {
 }
 
 async function loadCollectionCatalog() {
-  const payload = await request('/api/admin/collection-catalog');
-  state.collectionCatalog = Array.isArray(payload.installations) ? payload.installations : [];
+  try {
+    const payload = await request('/api/admin/collection-catalog');
+    state.collectionCatalog = Array.isArray(payload.installations) ? payload.installations : [];
+    state.collectionCatalogError = '';
+  } catch (error) {
+    state.collectionCatalog = [];
+    state.collectionCatalogError = error instanceof Error ? error.message : 'No se pudo cargar el catálogo de Rtales';
+    throw error;
+  }
 }
 
 function populateCollectionFamilies(selectedFamilyId = '', selectedCardId = '') {
@@ -300,7 +307,9 @@ function renderCollectionConfig(config = {}) {
   document.querySelector('#collection-daily-fields').hidden = normalized.dailyWinner.enabled !== true;
   document.querySelector('#collection-catalog-help').textContent = state.collectionCatalog.length
     ? 'Rtales controla la familia, las cartas disponibles y evita duplicados según su política.'
-    : 'No se pudo cargar el catálogo de Rtales. La configuración existente se conservará.';
+    : state.collectionCatalogError
+      ? `No se pudo cargar el catálogo de Rtales: ${state.collectionCatalogError}`
+      : 'Rtales no ofrece ninguna instalación con cartas disponible para esta credencial.';
 }
 
 function renderStores() {

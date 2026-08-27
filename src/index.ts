@@ -4492,8 +4492,15 @@ async function handleAdminCollectionCatalog(request: Request, env: Env): Promise
   if (!managerIdentity(request, env)) return error('Acceso de gestor requerido', 401);
   const upstream = await loadRtalesRewardCatalog(env);
   if (!upstream.response.ok || !upstream.payload.success) {
+    console.error('Rtales collection catalog rejected', {
+      status: upstream.response.status,
+      error: String(upstream.payload.error || 'UNKNOWN_RTALES_CATALOG_ERROR').slice(0, 300),
+    });
     return error(String(upstream.payload.error || 'No se pudo cargar el catálogo de Rtales'), 502);
   }
+  const installations = Array.isArray(upstream.payload.installations)
+    ? upstream.payload.installations.length : 0;
+  if (!installations) console.warn('Rtales collection catalog is empty');
   return json(upstream.payload);
 }
 
