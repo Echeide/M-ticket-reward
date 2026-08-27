@@ -45,6 +45,11 @@ import {
   type StoreParticipationLevel,
 } from './domain/store-participation';
 import {
+  crossedCollectionMilestones,
+  normalizeStoreCollectionConfig,
+  type StoreCollectionConfig,
+} from './domain/collection-rewards';
+import {
   buildTrainingOcrCatalog,
   compareTrainingResult,
   normalizeTrainingSampleInput,
@@ -88,7 +93,9 @@ import { adminAccessSyncConfigured, syncAdminAccessEmails } from './integrations
 import { adminInvitationMailConfigured, sendAdminInvitation } from './integrations/mailjet';
 import {
   exchangeLaunchCode,
+  grantStablePlayerReward,
   grantTicketPoints,
+  loadRtalesRewardCatalog,
   RtalesApiError,
   RtalesTransportError,
   retryAfterSeconds,
@@ -168,6 +175,7 @@ type ReceiptRow = {
   user_installation_id?: string | null;
   rtales_lookup_code_snapshot: string | null;
   points_awarded: number;
+  cards_awarded: string[];
   rtales_result_id: string | null;
   rtales_reversal_id: string | null;
   created_at: string;
@@ -178,6 +186,7 @@ type ReceiptRow = {
   reward_outbox_status?: string | null;
   reward_outbox_last_error?: string | null;
   reward_outbox_attempt_count?: number | null;
+  collection_reward_pending_count?: number | null;
 };
 
 type StoreRow = {
@@ -187,6 +196,7 @@ type StoreRow = {
   aliases: string[];
   active: boolean;
   participation_level: StoreParticipationLevel;
+  collection_config: StoreCollectionConfig | null;
   ocr_profile: StoreOcrProfile | null;
   logo_key: string | null;
   logo_content_type: string | null;
@@ -279,6 +289,25 @@ type AppSettingRow = {
   value: string;
   updated_at: string;
   updated_by: string | null;
+};
+
+type CollectionRewardClaimRow = {
+  id: string;
+  store_id: string;
+  external_user_id: string;
+  receipt_id: string | null;
+  rule_type: 'MILESTONE' | 'DAILY_WINNER';
+  rule_key: string;
+  period_key: string;
+  installation_id: string;
+  family_id: string;
+  requested_card_id: string | null;
+  status: string;
+  idempotency_key: string;
+  rtales_result_id: string | null;
+  awarded_card_ids: string[];
+  attempt_count: number;
+  last_error: string | null;
 };
 
 type AdminUserRow = {
@@ -419,6 +448,8 @@ function receiptView(row: ReceiptRow, includeManagerFields = false) {
     } : {}),
     reward: {
       pointsAwarded: row.points_awarded,
+      cardsAwarded: Array.isArray(row.cards_awarded) ? row.cards_awarded : [],
+      cardsPending: Number(row.collection_reward_pending_count || 0) > 0,
       resultId: row.rtales_result_id,
       reversalId: row.rtales_reversal_id,
       ...(includeManagerFields ? {
@@ -889,10 +920,10 @@ async function synchronizeUserRewardPointClaims(
   );
 }
 
-function currentCanaryDayWindow() {
+function currentCanaryDayWindow(now = new Date()) {
   const dateParts = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Atlantic/Canary', year: 'numeric', month: '2-digit', day: '2-digit',
-  }).formatToParts(new Date());
+  }).formatToParts(now);
   const part = (type: Intl.DateTimeFormatPartTypes) =>
     Number(dateParts.find((item) => item.type === type)?.value);
   const year = part('year');
@@ -906,6 +937,24 @@ function currentCanaryDayWindow() {
     startAt: databaseTimestamp(canaryDateTimeToTimestamp(`${today}T00:00`)),
     endAt: databaseTimestamp(canaryDateTimeToTimestamp(`${tomorrow}T00:00`)),
   };
+}
+
+function previousCanaryDayWindow(now = new Date()) {
+  const current = currentCanaryDayWindow(now);
+  const [year, month, day] = current.key.split('-').map(Number);
+  const previousDate = new Date(Date.UTC(year!, month! - 1, day! - 1));
+  const key = `${previousDate.getUTCFullYear()}-${String(previousDate.getUTCMonth() + 1).padStart(2, '0')}-${String(previousDate.getUTCDate()).padStart(2, '0')}`;
+  return {
+    key,
+    startAt: databaseTimestamp(canaryDateTimeToTimestamp(`${key}T00:00`)),
+    endAt: current.startAt,
+  };
+}
+
+function currentCanaryHour(now = new Date()) {
+  return Number(new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Atlantic/Canary', hour: '2-digit', hourCycle: 'h23',
+  }).format(now));
 }
 
 type UserRewardPointLimitState = {
@@ -1009,6 +1058,67 @@ async function claimUserRewardPoints(
       ? points > 0 ? 'USER_DAILY_POINTS_CAPPED' : 'USER_DAILY_POINTS_LIMIT'
       : points > 0 ? 'USER_POINTS_CAPPED' : 'USER_POINTS_LIMIT',
   };
+}
+
+const ACTIVE_COLLECTION_CLAIM_STATUSES = [
+  'PENDING', 'PROCESSING', 'DELIVERED', 'REVOKE_PENDING',
+] as const;
+
+async function claimCollectionMilestones(
+  client: DbClient,
+  receipt: Pick<ReceiptRow, 'id' | 'store_id' | 'external_user_id'>,
+): Promise<string[]> {
+  if (!receipt.store_id || !receipt.external_user_id) return [];
+  const storeResult = await client.query<Pick<StoreRow, 'id' | 'collection_config'>>(
+    'SELECT id, collection_config FROM stores WHERE id = $1 AND active = TRUE LIMIT 1',
+    [receipt.store_id],
+  );
+  const store = storeResult.rows[0];
+  if (!store) return [];
+  const config = normalizeStoreCollectionConfig(store.collection_config);
+  if (!config.enabled || !config.installationId || !config.familyId || !config.milestones.length) return [];
+  const totalResult = await client.query<{ total: number }>(
+    `SELECT COALESCE(SUM(c.points), 0) AS total
+       FROM user_reward_point_claims c JOIN receipts r ON r.id = c.receipt_id
+      WHERE c.external_user_id = $1 AND r.store_id = $2
+        AND r.status IN ('REWARD_PENDING', 'REWARDED', 'REVOKE_PENDING')`,
+    [receipt.external_user_id, receipt.store_id],
+  );
+  const milestones = crossedCollectionMilestones(Number(totalResult.rows[0]?.total || 0), config);
+  const ids: string[] = [];
+  for (const milestone of milestones) {
+    const claimId = uuid();
+    const inserted = await client.query<{ id: string }>(
+      `INSERT INTO collection_reward_claims
+         (id, store_id, external_user_id, receipt_id, rule_type, rule_key,
+          installation_id, family_id, requested_card_id, idempotency_key)
+       SELECT $1, $2, $3, $4, 'MILESTONE', $5, $6, $7, $8, $9
+       WHERE ($10 = 0 OR (
+          SELECT COUNT(*) FROM collection_reward_claims
+           WHERE store_id = $2 AND status = ANY($12::text[])
+       ) < $10)
+         AND ($11 = 0 OR (
+          SELECT COUNT(*) FROM collection_reward_claims
+           WHERE store_id = $2 AND external_user_id = $3 AND status = ANY($12::text[])
+       ) < $11)
+       ON CONFLICT(store_id, external_user_id, rule_type, rule_key, period_key) DO NOTHING
+       RETURNING id`,
+      [claimId, receipt.store_id, receipt.external_user_id, receipt.id,
+        String(milestone.points), config.installationId, config.familyId,
+        milestone.cardId || null,
+        `ticket-collection:${receipt.store_id}:${receipt.external_user_id}:milestone:${milestone.points}`,
+        config.maxCardsTotal, config.maxCardsPerUser, [...ACTIVE_COLLECTION_CLAIM_STATUSES]],
+    );
+    if (inserted.rows[0]) ids.push(inserted.rows[0].id);
+  }
+  return ids;
+}
+
+async function enqueueCollectionClaims(env: Env, claimIds: string[]): Promise<void> {
+  await Promise.all(claimIds.map((claimId) =>
+    env.REWARD_JOBS.send({ kind: 'DELIVER_COLLECTION_REWARD', claimId }).catch((caught) => {
+      console.error('Could not enqueue collection reward claim', { claimId }, caught);
+    })));
 }
 
 async function dailyStoreLimitReached(
@@ -1309,7 +1419,10 @@ async function loadOwnedReceipt(
   lock = false,
 ): Promise<ReceiptRow | null> {
   const result = await client.query<ReceiptRow>(
-    `SELECT * FROM receipts WHERE id = $1 AND user_ref = $2${lock ? ' FOR UPDATE' : ''}`,
+    `SELECT r.*,
+        (SELECT COUNT(*) FROM collection_reward_claims c
+          WHERE c.receipt_id = r.id AND c.status IN ('PENDING', 'PROCESSING')) AS collection_reward_pending_count
+       FROM receipts r WHERE r.id = $1 AND r.user_ref = $2${lock ? ' FOR UPDATE' : ''}`,
     [receiptId, session.user_ref],
   );
   return result.rows[0] ?? null;
@@ -1330,8 +1443,11 @@ async function handleReceiptList(request: Request, env: Env): Promise<Response> 
     const session = await authenticatedSession(request, env, client);
     if (!session) return error('Sesión no válida', 401);
     const result = await client.query<ReceiptRow>(
-      `SELECT * FROM receipts
-        WHERE user_ref = $1
+      `SELECT r.*,
+          (SELECT COUNT(*) FROM collection_reward_claims c
+            WHERE c.receipt_id = r.id AND c.status IN ('PENDING', 'PROCESSING')) AS collection_reward_pending_count
+         FROM receipts r
+        WHERE r.user_ref = $1
           AND status <> 'DUPLICATE'
         ORDER BY created_at DESC, id DESC
         LIMIT 50`,
@@ -1346,8 +1462,11 @@ async function handleCurrentSessionReceipt(request: Request, env: Env): Promise<
     const session = await authenticatedSession(request, env, client);
     if (!session) return error('Sesión no válida', 401);
     const result = await client.query<ReceiptRow>(
-      `SELECT * FROM receipts
-        WHERE session_id = $1 OR reward_session_id = $1
+      `SELECT r.*,
+          (SELECT COUNT(*) FROM collection_reward_claims c
+            WHERE c.receipt_id = r.id AND c.status IN ('PENDING', 'PROCESSING')) AS collection_reward_pending_count
+         FROM receipts r
+        WHERE r.session_id = $1 OR r.reward_session_id = $1
         ORDER BY created_at DESC LIMIT 1`,
       [session.id],
     );
@@ -2023,6 +2142,8 @@ async function processOutbox(env: Env, outboxId: string): Promise<number | null>
   }
 
   const resultPayload = (delivery.payload.result || delivery.payload.reversal) as Record<string, unknown> | undefined;
+  let collectionClaimIds: string[] = [];
+  let collectionRevokeClaimIds: string[] = [];
   await withDatabase(env, async (client) => inTransaction(client, async () => {
     await client.query(
       `UPDATE reward_outbox SET status = 'DELIVERED', response_payload = $2::jsonb,
@@ -2035,6 +2156,7 @@ async function processOutbox(env: Env, outboxId: string): Promise<number | null>
            rewarded_at = NOW(), updated_at = NOW() WHERE id = $1`,
         [receipt.id, String(resultPayload?.id || '')],
       );
+      collectionClaimIds = await claimCollectionMilestones(client, receipt);
     } else {
       await client.query(
         `UPDATE receipts SET status = 'REVOKED', rtales_reversal_id = $2,
@@ -2045,11 +2167,208 @@ async function processOutbox(env: Env, outboxId: string): Promise<number | null>
         'DELETE FROM user_reward_point_claims WHERE receipt_id = $1',
         [receipt.id],
       );
+      const cardClaims = await client.query<{ id: string }>(
+        `UPDATE collection_reward_claims SET status = 'REVOKE_PENDING', attempt_count = 0,
+            next_attempt_at = NOW(), locked_until = NULL, last_error = NULL, updated_at = NOW()
+          WHERE receipt_id = $1 AND status = 'DELIVERED' AND rtales_result_id IS NOT NULL
+          RETURNING id`,
+        [receipt.id],
+      );
+      collectionRevokeClaimIds = cardClaims.rows.map((claim) => claim.id);
     }
   }));
+  if (collectionClaimIds.length) await enqueueCollectionClaims(env, collectionClaimIds);
+  if (collectionRevokeClaimIds.length) {
+    await Promise.all(collectionRevokeClaimIds.map((claimId) =>
+      env.REWARD_JOBS.send({ kind: 'REVOKE_COLLECTION_REWARD', claimId })));
+  }
   if (outbox.operation === 'REVOKE' && receipt.deletion_requested_at) {
     await purgeReceipt(env, receipt.id, receipt.deletion_requested_by || 'SYSTEM');
   }
+  return null;
+}
+
+async function processCollectionRewardClaim(env: Env, claimId: string): Promise<number | null> {
+  const claimed = await withDatabase(env, async (client) => {
+    const result = await client.query<CollectionRewardClaimRow & {
+      rtales_subject: string;
+      rtales_lookup_code: string;
+      store_code: string;
+    }>(
+      `UPDATE collection_reward_claims SET status = 'PROCESSING',
+          attempt_count = attempt_count + 1,
+          locked_until = NOW() + INTERVAL '45 seconds', updated_at = NOW()
+        WHERE id = $1 AND next_attempt_at <= NOW()
+          AND attempt_count < $2
+          AND (status = 'PENDING' OR (status = 'PROCESSING' AND locked_until < NOW()))
+        RETURNING *`,
+      [claimId, rewardMaxAttempts(env)],
+    );
+    const claim = result.rows[0];
+    if (!claim) return null;
+    const identity = await client.query<{
+      rtales_subject: string; rtales_lookup_code: string; store_code: string;
+    }>(
+      `SELECT u.rtales_subject, u.rtales_lookup_code, s.code AS store_code
+         FROM external_users u JOIN stores s ON s.id = $2
+        WHERE u.id = $1 LIMIT 1`,
+      [claim.external_user_id, claim.store_id],
+    );
+    return identity.rows[0] ? { ...claim, ...identity.rows[0] } : null;
+  });
+  if (!claimed) return null;
+
+  let delivery: Awaited<ReturnType<typeof grantStablePlayerReward>>;
+  try {
+    delivery = await grantStablePlayerReward(env, {
+      installationId: claimed.installation_id,
+      playerSubject: claimed.rtales_subject,
+      playerLookupCode: claimed.rtales_lookup_code,
+      familyId: claimed.family_id,
+      externalMatchId: `ticket-collection:${claimed.id}`,
+      eventType: claimed.rule_type === 'DAILY_WINNER'
+        ? 'TICKET_DAILY_CATEGORY_WINNER'
+        : 'TICKET_COLLECTION_MILESTONE',
+      cardId: claimed.requested_card_id || undefined,
+      metadata: {
+        claimId: claimed.id,
+        receiptId: claimed.receipt_id,
+        storeCode: claimed.store_code,
+        familyId: claimed.family_id,
+        ruleType: claimed.rule_type,
+        ruleKey: claimed.rule_key,
+        periodKey: claimed.period_key,
+      },
+      idempotencyKey: claimed.idempotency_key,
+    });
+  } catch (caught) {
+    const failure = caught instanceof RtalesTransportError ? caught.code : 'RTALES_NETWORK_ERROR';
+    const delay = rewardRetryDelaySeconds(claimed.attempt_count);
+    await withDatabase(env, (client) => client.query(
+      `UPDATE collection_reward_claims SET status = $2, last_error = $3,
+          next_attempt_at = $4, locked_until = NULL, updated_at = NOW()
+        WHERE id = $1`,
+      [claimId, claimed.attempt_count >= rewardMaxAttempts(env) ? 'FAILED' : 'PENDING',
+        failure, databaseTimestampAfter(delay)],
+    ).then(() => undefined));
+    return claimed.attempt_count >= rewardMaxAttempts(env) ? null : delay;
+  }
+
+  if (!delivery.response.ok || !delivery.payload.success) {
+    const failure = String(delivery.payload.error || `HTTP_${delivery.response.status}`);
+    const retryable = isRetryableRewardFailure(delivery.response.status, failure) &&
+      claimed.attempt_count < rewardMaxAttempts(env);
+    const delay = rewardRetryDelaySeconds(claimed.attempt_count,
+      delivery.response.status === 429 ? retryAfterSeconds(delivery.response) : 0);
+    await withDatabase(env, (client) => client.query(
+      `UPDATE collection_reward_claims SET status = $2, last_error = $3,
+          next_attempt_at = $4, locked_until = NULL, updated_at = NOW()
+        WHERE id = $1`,
+      [claimId, retryable ? 'PENDING' : 'FAILED', failure.slice(0, 500), databaseTimestampAfter(delay)],
+    ).then(() => undefined));
+    return retryable ? delay : null;
+  }
+
+  const result = delivery.payload.result && typeof delivery.payload.result === 'object'
+    ? delivery.payload.result as Record<string, unknown>
+    : {};
+  const awardedCardIds = Array.isArray(result.awardedCardIds)
+    ? result.awardedCardIds.map((value) => String(value || '')).filter(Boolean)
+    : [];
+  await withDatabase(env, (client) => inTransaction(client, async () => {
+    await client.query(
+      `UPDATE collection_reward_claims SET status = $2, rtales_result_id = $3,
+          awarded_card_ids = $4::jsonb, delivered_at = NOW(), locked_until = NULL,
+          last_error = $5, updated_at = NOW() WHERE id = $1`,
+      [claimId, awardedCardIds.length ? 'DELIVERED' : 'SKIPPED', String(result.id || ''),
+        JSON.stringify(awardedCardIds), awardedCardIds.length ? null : 'NO_ELIGIBLE_CARDS'],
+    );
+    if (claimed.receipt_id && awardedCardIds.length) {
+      const receipt = await client.query<Pick<ReceiptRow, 'cards_awarded'>>(
+        'SELECT cards_awarded FROM receipts WHERE id = $1 LIMIT 1',
+        [claimed.receipt_id],
+      );
+      const merged = Array.from(new Set([
+        ...(Array.isArray(receipt.rows[0]?.cards_awarded) ? receipt.rows[0]!.cards_awarded : []),
+        ...awardedCardIds,
+      ]));
+      await client.query(
+        'UPDATE receipts SET cards_awarded = $2::jsonb, updated_at = NOW() WHERE id = $1',
+        [claimed.receipt_id, JSON.stringify(merged)],
+      );
+    }
+  }));
+  return null;
+}
+
+async function processCollectionRewardReversal(env: Env, claimId: string): Promise<number | null> {
+  const claim = await withDatabase(env, async (client) => {
+    const result = await client.query<CollectionRewardClaimRow>(
+      `UPDATE collection_reward_claims SET status = 'REVOKING',
+          attempt_count = attempt_count + 1,
+          locked_until = NOW() + INTERVAL '45 seconds', updated_at = NOW()
+        WHERE id = $1 AND status = 'REVOKE_PENDING' AND rtales_result_id IS NOT NULL
+          AND next_attempt_at <= NOW() AND attempt_count < $2
+        RETURNING *`,
+      [claimId, rewardMaxAttempts(env)],
+    );
+    return result.rows[0] || null;
+  });
+  if (!claim?.rtales_result_id) return null;
+  let delivery: Awaited<ReturnType<typeof revokeTicketPoints>>;
+  try {
+    delivery = await revokeTicketPoints(env, {
+      resultId: claim.rtales_result_id,
+      receiptId: `collection:${claim.id}`,
+      reason: 'Ticket invalidado tras revisión antifraude',
+      managerEmail: 'SYSTEM',
+      idempotencyKey: `${claim.idempotency_key}:revoke`,
+    });
+  } catch (caught) {
+    const failure = caught instanceof RtalesTransportError ? caught.code : 'RTALES_NETWORK_ERROR';
+    const delay = rewardRetryDelaySeconds(claim.attempt_count);
+    await withDatabase(env, (client) => client.query(
+      `UPDATE collection_reward_claims SET status = $2, last_error = $3,
+          next_attempt_at = $4, locked_until = NULL, updated_at = NOW() WHERE id = $1`,
+      [claimId, claim.attempt_count >= rewardMaxAttempts(env) ? 'FAILED' : 'REVOKE_PENDING',
+        failure, databaseTimestampAfter(delay)],
+    ).then(() => undefined));
+    return claim.attempt_count >= rewardMaxAttempts(env) ? null : delay;
+  }
+  if (!delivery.response.ok || !delivery.payload.success) {
+    const failure = String(delivery.payload.error || `HTTP_${delivery.response.status}`);
+    const retryable = isRetryableRewardFailure(delivery.response.status, failure) &&
+      claim.attempt_count < rewardMaxAttempts(env);
+    const delay = rewardRetryDelaySeconds(claim.attempt_count);
+    await withDatabase(env, (client) => client.query(
+      `UPDATE collection_reward_claims SET status = $2, last_error = $3,
+          next_attempt_at = $4, locked_until = NULL, updated_at = NOW() WHERE id = $1`,
+      [claimId, retryable ? 'REVOKE_PENDING' : 'FAILED', failure.slice(0, 500), databaseTimestampAfter(delay)],
+    ).then(() => undefined));
+    return retryable ? delay : null;
+  }
+  const reversal = delivery.payload.reversal && typeof delivery.payload.reversal === 'object'
+    ? delivery.payload.reversal as Record<string, unknown>
+    : {};
+  await withDatabase(env, (client) => inTransaction(client, async () => {
+    await client.query(
+      `UPDATE collection_reward_claims SET status = 'REVOKED', rtales_reversal_id = $2,
+          revoked_at = NOW(), locked_until = NULL, last_error = NULL, updated_at = NOW()
+        WHERE id = $1`,
+      [claimId, String(reversal.id || '')],
+    );
+    if (claim.receipt_id && claim.awarded_card_ids.length) {
+      const receipt = await client.query<Pick<ReceiptRow, 'cards_awarded'>>(
+        'SELECT cards_awarded FROM receipts WHERE id = $1 LIMIT 1', [claim.receipt_id],
+      );
+      const reversed = new Set(claim.awarded_card_ids);
+      const remaining = (receipt.rows[0]?.cards_awarded || []).filter((cardId) => !reversed.has(cardId));
+      await client.query(
+        'UPDATE receipts SET cards_awarded = $2::jsonb, updated_at = NOW() WHERE id = $1',
+        [claim.receipt_id, JSON.stringify(remaining)],
+      );
+    }
+  }));
   return null;
 }
 
@@ -2119,7 +2438,9 @@ async function adminRows(env: Env, url: URL, pagination?: { limit: number; offse
               COALESCE(u.email, s.user_email) AS user_email,
               COALESCE(u.rtales_lookup_code, r.rtales_lookup_code_snapshot, s.rtales_lookup_code) AS user_lookup_code,
               COALESCE(u.space_code, s.space_code) AS user_space_code,
-              COALESCE(u.installation_id, s.installation_id) AS user_installation_id
+              COALESCE(u.installation_id, s.installation_id) AS user_installation_id,
+              (SELECT COUNT(*) FROM collection_reward_claims c
+                WHERE c.receipt_id = r.id AND c.status IN ('PENDING', 'PROCESSING')) AS collection_reward_pending_count
          FROM receipts r JOIN player_sessions s ON s.id = r.session_id
          LEFT JOIN external_users u ON u.id = COALESCE(r.external_user_id, s.external_user_id)
         WHERE ${filters.where}
@@ -2179,6 +2500,8 @@ async function handleAdminReceipt(request: Request, env: Env, receiptId: string)
               COALESCE(u.rtales_lookup_code, r.rtales_lookup_code_snapshot, s.rtales_lookup_code) AS user_lookup_code,
               COALESCE(u.space_code, s.space_code) AS user_space_code,
               COALESCE(u.installation_id, s.installation_id) AS user_installation_id,
+              (SELECT COUNT(*) FROM collection_reward_claims c
+                WHERE c.receipt_id = r.id AND c.status IN ('PENDING', 'PROCESSING')) AS collection_reward_pending_count,
               (SELECT ro.status FROM reward_outbox ro WHERE ro.receipt_id = r.id AND ro.operation = 'GRANT'
                 ORDER BY ro.created_at DESC LIMIT 1) AS reward_outbox_status,
               (SELECT ro.last_error FROM reward_outbox ro WHERE ro.receipt_id = r.id AND ro.operation = 'GRANT'
@@ -2814,6 +3137,7 @@ function storeView(row: StoreRow) {
     aliases: Array.isArray(row.aliases) ? row.aliases : [],
     active: row.active,
     ...storeParticipationView(row.participation_level),
+    collectionConfig: normalizeStoreCollectionConfig(row.collection_config),
     ocrProfile: normalizeStoreOcrProfile(row.ocr_profile),
     logoUrl: row.logo_key
       ? `/api/admin/stores/${row.id}/logo?v=${encodeURIComponent(row.logo_updated_at || row.logo_key)}`
@@ -2964,9 +3288,10 @@ async function handleAdminStores(request: Request, env: Env): Promise<Response> 
     const duplicate = await client.query('SELECT id FROM stores WHERE code = $1 LIMIT 1', [input.code]);
     if (duplicate.rowCount) return null;
     const result = await client.query<StoreRow>(
-      `INSERT INTO stores (id, code, name, aliases, active, participation_level)
-       VALUES ($1, $2, $3, $4::jsonb, $5, $6) RETURNING *`,
-      [id, input.code, input.name, JSON.stringify(input.aliases), input.active, input.participationLevel],
+      `INSERT INTO stores (id, code, name, aliases, active, participation_level, collection_config)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7::jsonb) RETURNING *`,
+      [id, input.code, input.name, JSON.stringify(input.aliases), input.active,
+        input.participationLevel, JSON.stringify(input.collectionConfig)],
     );
     await client.query(
       `INSERT INTO store_audit_log (id, store_id, action, manager_email, changes)
@@ -3007,6 +3332,7 @@ async function handleAdminStoreUpdate(
         aliases: current.aliases,
         active: current.active,
         participationLevel: current.participation_level,
+        collectionConfig: normalizeStoreCollectionConfig(current.collection_config),
       },
       after: input,
     };
@@ -3015,9 +3341,10 @@ async function handleAdminStoreUpdate(
       : 'UPDATED';
     const result = await client.query<StoreRow>(
       `UPDATE stores SET code = $2, name = $3, aliases = $4::jsonb,
-          active = $5, participation_level = $6, updated_at = NOW()
+          active = $5, participation_level = $6, collection_config = $7::jsonb, updated_at = NOW()
         WHERE id = $1 RETURNING *`,
-      [storeId, input.code, input.name, JSON.stringify(input.aliases), input.active, input.participationLevel],
+      [storeId, input.code, input.name, JSON.stringify(input.aliases), input.active,
+        input.participationLevel, JSON.stringify(input.collectionConfig)],
     );
     await client.query(
       `INSERT INTO store_audit_log (id, store_id, action, manager_email, changes)
@@ -3033,16 +3360,22 @@ async function handleAdminStoreUpdate(
 }
 
 async function storeDependencyCounts(client: DbClient, storeId: string): Promise<StoreDependencyCounts> {
-  const result = await client.query<{ receipt_count: number; training_sample_count: number }>(
+  const result = await client.query<{
+    receipt_count: number;
+    training_sample_count: number;
+    collection_reward_count: number;
+  }>(
     `SELECT
        (SELECT COUNT(DISTINCT id) FROM receipts
          WHERE store_id = $1 OR declared_store_id = $1) AS receipt_count,
-       (SELECT COUNT(*) FROM store_training_samples WHERE store_id = $1) AS training_sample_count`,
+       (SELECT COUNT(*) FROM store_training_samples WHERE store_id = $1) AS training_sample_count,
+       (SELECT COUNT(*) FROM collection_reward_claims WHERE store_id = $1) AS collection_reward_count`,
     [storeId],
   );
   return {
     receiptCount: Number(result.rows[0]?.receipt_count || 0),
     trainingSampleCount: Number(result.rows[0]?.training_sample_count || 0),
+    collectionRewardCount: Number(result.rows[0]?.collection_reward_count || 0),
   };
 }
 
@@ -4155,6 +4488,15 @@ async function handleAdminScanFlow(request: Request, env: Env): Promise<Response
   return json({ success: true, scanFlow: Object.fromEntries(updates) });
 }
 
+async function handleAdminCollectionCatalog(request: Request, env: Env): Promise<Response> {
+  if (!managerIdentity(request, env)) return error('Acceso de gestor requerido', 401);
+  const upstream = await loadRtalesRewardCatalog(env);
+  if (!upstream.response.ok || !upstream.payload.success) {
+    return error(String(upstream.payload.error || 'No se pudo cargar el catálogo de Rtales'), 502);
+  }
+  return json(upstream.payload);
+}
+
 async function handleFetch(request: Request, env: Env, context: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   try {
@@ -4198,6 +4540,9 @@ async function handleFetch(request: Request, env: Env, context: ExecutionContext
     const confirmMatch = url.pathname.match(/^\/api\/receipts\/([^/]+)\/confirm$/);
     if (request.method === 'POST' && confirmMatch?.[1]) return await handleConfirm(request, env, confirmMatch[1]);
     if (request.method === 'GET' && url.pathname === '/api/admin/session') return await handleAdminSession(request, env);
+    if (request.method === 'GET' && url.pathname === '/api/admin/collection-catalog') {
+      return await handleAdminCollectionCatalog(request, env);
+    }
     if (request.method === 'GET' && url.pathname === '/api/admin/spaces') return await handleAdminSpaces(request, env);
     if (request.method === 'GET' && url.pathname === '/api/admin/receipts') return await handleAdminList(request, env);
     if (request.method === 'GET' && url.pathname === '/api/admin/receipts.csv') return await handleAdminCsv(request, env);
@@ -4362,6 +4707,9 @@ async function handleFetch(request: Request, env: Env, context: ExecutionContext
       UPLOAD_REQUEST_ID_INVALID: 'El identificador del envío no es válido',
       ADMIN_EMAIL_INVALID: 'Introduce un correo electrónico válido',
       ADMIN_ROLE_INVALID: 'Selecciona un rol válido para el usuario',
+      STORE_COLLECTION_TARGET_REQUIRED: 'Selecciona la instalación y la familia de cartas de Rtales',
+      STORE_COLLECTION_RULE_REQUIRED: 'Añade al menos un hito de puntos o activa el premio diario',
+      STORE_COLLECTION_CATEGORY_REQUIRED: 'Indica la categoría que se utilizará para el premio diario',
     };
     return error(validationErrors[message] || 'No se pudo completar la operación', validationErrors[message] ? 400 : 500);
   }
@@ -4392,6 +4740,153 @@ async function requeueDueOutbox(env: Env): Promise<void> {
   });
   await Promise.all(ids.exhausted.map(({ id }) => markOutboxTerminalFailure(env, id, 'RTALES_MAX_ATTEMPTS')));
   await Promise.all(ids.due.map((outboxId) => env.REWARD_JOBS.send({ kind: 'DELIVER_REWARD', outboxId })));
+}
+
+async function requeueDueCollectionRewards(env: Env): Promise<void> {
+  const maxAttempts = rewardMaxAttempts(env);
+  const claims = await withDatabase(env, async (client) => {
+    await client.query(
+      `UPDATE collection_reward_claims SET status = 'FAILED',
+          last_error = COALESCE(last_error, 'RTALES_MAX_ATTEMPTS'),
+          locked_until = NULL, updated_at = NOW()
+        WHERE status IN ('PENDING', 'PROCESSING', 'REVOKE_PENDING', 'REVOKING')
+          AND attempt_count >= $1`,
+      [maxAttempts],
+    );
+    await client.query(
+      `UPDATE collection_reward_claims SET status = 'PENDING', locked_until = NULL,
+          updated_at = NOW()
+        WHERE status = 'PROCESSING' AND locked_until < NOW() AND attempt_count < $1`,
+      [maxAttempts],
+    );
+    await client.query(
+      `UPDATE collection_reward_claims SET status = 'REVOKE_PENDING', locked_until = NULL,
+          updated_at = NOW()
+        WHERE status = 'REVOKING' AND locked_until < NOW() AND attempt_count < $1`,
+      [maxAttempts],
+    );
+    const result = await client.query<{ id: string; status: 'PENDING' | 'REVOKE_PENDING' }>(
+      `SELECT id, status FROM collection_reward_claims
+        WHERE status IN ('PENDING', 'REVOKE_PENDING')
+          AND next_attempt_at <= NOW() AND attempt_count < $1
+        ORDER BY created_at ASC LIMIT 100`,
+      [maxAttempts],
+    );
+    return result.rows;
+  });
+  await Promise.all(claims.map(({ id, status }) => env.REWARD_JOBS.send(status === 'REVOKE_PENDING'
+    ? { kind: 'REVOKE_COLLECTION_REWARD', claimId: id }
+    : { kind: 'DELIVER_COLLECTION_REWARD', claimId: id })));
+}
+
+async function resolveDailyCollectionWinners(env: Env): Promise<void> {
+  if (currentCanaryHour() < 1) return;
+  const period = previousCanaryDayWindow();
+  const claimIds = await withDatabase(env, async (client) => {
+    const stores = await client.query<Pick<StoreRow, 'id' | 'collection_config'>>(
+      'SELECT id, collection_config FROM stores WHERE active = TRUE ORDER BY id ASC',
+    );
+    const groups = new Map<string, {
+      installationId: string;
+      categoryCode: string;
+      familyId: string;
+      storeIds: string[];
+      ruleStoreId: string;
+      config: StoreCollectionConfig;
+    }>();
+    for (const store of stores.rows) {
+      const config = normalizeStoreCollectionConfig(store.collection_config);
+      if (!config.enabled || !config.dailyWinner.enabled || !config.categoryCode) continue;
+      const key = `${config.installationId}:${config.categoryCode}`;
+      const group = groups.get(key);
+      if (group) group.storeIds.push(store.id);
+      else groups.set(key, {
+        installationId: config.installationId,
+        categoryCode: config.categoryCode,
+        familyId: config.familyId,
+        storeIds: [store.id],
+        ruleStoreId: store.id,
+        config,
+      });
+    }
+
+    const created: string[] = [];
+    for (const group of groups.values()) {
+      const resolved = await client.query(
+        `SELECT period_key FROM collection_daily_periods
+          WHERE installation_id = $1 AND category_code = $2 AND period_key = $3 LIMIT 1`,
+        [group.installationId, group.categoryCode, period.key],
+      );
+      if (resolved.rowCount) continue;
+      const ranking = await client.query<{
+        external_user_id: string;
+        points: number;
+        purchases: number;
+      }>(
+        `SELECT external_user_id, COALESCE(SUM(points_awarded), 0) AS points,
+            COUNT(*) AS purchases
+           FROM receipts
+          WHERE external_user_id IS NOT NULL AND store_id = ANY($1::text[])
+            AND created_at >= $2 AND created_at < $3
+            AND status = 'REWARDED' AND points_awarded > 0
+          GROUP BY external_user_id
+          HAVING COUNT(*) >= $4
+          ORDER BY ${group.config.dailyWinner.metric === 'PURCHASES' ? 'purchases' : 'points'} DESC,
+            ${group.config.dailyWinner.metric === 'PURCHASES' ? 'points' : 'purchases'} DESC,
+            external_user_id ASC`,
+        [group.storeIds, period.startAt, period.endAt, group.config.dailyWinner.minimumPurchases],
+      );
+      const best = ranking.rows[0];
+      if (best) {
+        const primary = group.config.dailyWinner.metric === 'PURCHASES'
+          ? Number(best.purchases) : Number(best.points);
+        const secondary = group.config.dailyWinner.metric === 'PURCHASES'
+          ? Number(best.points) : Number(best.purchases);
+        const winners = ranking.rows.filter((row) => {
+          const rowPrimary = group.config.dailyWinner.metric === 'PURCHASES'
+            ? Number(row.purchases) : Number(row.points);
+          const rowSecondary = group.config.dailyWinner.metric === 'PURCHASES'
+            ? Number(row.points) : Number(row.purchases);
+          return rowPrimary === primary && rowSecondary === secondary;
+        });
+        for (const winner of winners) {
+          const id = uuid();
+          const inserted = await client.query<{ id: string }>(
+            `INSERT INTO collection_reward_claims
+               (id, store_id, external_user_id, rule_type, rule_key, period_key,
+                installation_id, family_id, requested_card_id, idempotency_key)
+             SELECT $1, $2, $3, 'DAILY_WINNER', $4, $5, $6, $7, $8, $9
+             WHERE ($10 = 0 OR (
+                SELECT COUNT(*) FROM collection_reward_claims
+                 WHERE store_id = $2 AND status = ANY($12::text[])
+             ) < $10)
+               AND ($11 = 0 OR (
+                SELECT COUNT(*) FROM collection_reward_claims
+                 WHERE store_id = $2 AND external_user_id = $3 AND status = ANY($12::text[])
+             ) < $11)
+             ON CONFLICT(store_id, external_user_id, rule_type, rule_key, period_key) DO NOTHING
+             RETURNING id`,
+            [id, group.ruleStoreId, winner.external_user_id,
+              `CATEGORY:${group.categoryCode}`, period.key, group.installationId, group.familyId,
+              group.config.dailyWinner.cardId || null,
+              `ticket-collection:${group.installationId}:${group.categoryCode}:${period.key}:${winner.external_user_id}`,
+              group.config.maxCardsTotal, group.config.maxCardsPerUser,
+              [...ACTIVE_COLLECTION_CLAIM_STATUSES]],
+          );
+          if (inserted.rows[0]) created.push(inserted.rows[0].id);
+        }
+      }
+      await client.query(
+        `INSERT INTO collection_daily_periods
+           (installation_id, category_code, period_key)
+         VALUES ($1, $2, $3)
+         ON CONFLICT(installation_id, category_code, period_key) DO NOTHING`,
+        [group.installationId, group.categoryCode, period.key],
+      );
+    }
+    return created;
+  });
+  if (claimIds.length) await enqueueCollectionClaims(env, claimIds);
 }
 
 async function requeueStuckOcr(env: Env): Promise<void> {
@@ -4503,7 +4998,19 @@ export default {
     for (const message of batch.messages) {
       try {
         if (message.body.kind === 'OCR_RECEIPT') await processOcr(env, message.body.receiptId);
-        else {
+        else if (message.body.kind === 'DELIVER_COLLECTION_REWARD') {
+          const retryDelaySeconds = await processCollectionRewardClaim(env, message.body.claimId);
+          if (retryDelaySeconds !== null) {
+            message.retry({ delaySeconds: retryDelaySeconds });
+            continue;
+          }
+        } else if (message.body.kind === 'REVOKE_COLLECTION_REWARD') {
+          const retryDelaySeconds = await processCollectionRewardReversal(env, message.body.claimId);
+          if (retryDelaySeconds !== null) {
+            message.retry({ delaySeconds: retryDelaySeconds });
+            continue;
+          }
+        } else {
           const retryDelaySeconds = await processOutbox(env, message.body.outboxId);
           if (retryDelaySeconds !== null) {
             message.retry({ delaySeconds: retryDelaySeconds });
@@ -4522,6 +5029,15 @@ export default {
           } else {
             message.retry({ delaySeconds: ocrRetryDelaySeconds(message.attempts) });
           }
+        } else if (message.body.kind === 'DELIVER_COLLECTION_REWARD' || message.body.kind === 'REVOKE_COLLECTION_REWARD') {
+          const claimId = message.body.claimId;
+          await withDatabase(env, (client) => client.query(
+            `UPDATE collection_reward_claims SET status = 'FAILED',
+                last_error = 'COLLECTION_REWARD_JOB_FAILED', locked_until = NULL,
+                updated_at = NOW() WHERE id = $1`,
+            [claimId],
+          ).then(() => undefined));
+          message.ack();
         } else if (message.attempts >= rewardMaxAttempts(env)) {
           await markOutboxTerminalFailure(env, message.body.outboxId, 'REWARD_JOB_FAILED');
           message.ack();
@@ -4534,6 +5050,8 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env, context: ExecutionContext): Promise<void> {
     context.waitUntil(Promise.all([
       requeueDueOutbox(env),
+      requeueDueCollectionRewards(env),
+      resolveDailyCollectionWinners(env),
       requeueStuckOcr(env),
       releaseStuckRewardSessions(env),
       resolveDuplicateOffenses(env),

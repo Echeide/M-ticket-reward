@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  grantStablePlayerReward,
   grantTicketPoints,
+  loadRtalesRewardCatalog,
   retryAfterSeconds,
   RtalesTransportError,
 } from '../src/integrations/rtales';
@@ -37,6 +39,44 @@ test('Rtales requests include timeout and idempotency protection', async (contex
   };
 
   const result = await grantTicketPoints(rtalesEnv(), request);
+  assert.equal(result.payload.success, true);
+});
+
+test('Rtales collection catalog is loaded without a request body', async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async (input, init) => {
+    assert.equal(new URL(String(input)).pathname, '/api/integrations/external-games/reward-catalog');
+    assert.equal(init?.method, 'GET');
+    assert.equal(init?.body, undefined);
+    return Response.json({ success: true, installations: [] });
+  };
+  const result = await loadRtalesRewardCatalog(rtalesEnv());
+  assert.equal(result.payload.success, true);
+});
+
+test('stable collection rewards identify the player without an open web session', async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.playerSubject, 'rtps_player');
+    assert.equal(body.playerLookupCode, 'ABCD1234');
+    assert.equal(body.familyId, 'family-1');
+    assert.deepEqual(body.cardIds, ['card-1']);
+    assert.equal(body.points, 0);
+    return Response.json({ success: true, result: { id: 'result-card-1' } });
+  };
+  const result = await grantStablePlayerReward(rtalesEnv(), {
+    installationId: 'installation-1',
+    playerSubject: 'rtps_player',
+    playerLookupCode: 'ABCD1234',
+    familyId: 'family-1',
+    externalMatchId: 'claim-1',
+    eventType: 'TICKET_COLLECTION_MILESTONE',
+    cardId: 'card-1',
+    idempotencyKey: 'claim-1',
+  });
   assert.equal(result.payload.success, true);
 });
 

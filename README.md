@@ -98,9 +98,9 @@ Antes de desplegar:
 - crea y vincula la base D1;
 - carga `RTALES_EXTERNAL_GAME_TOKEN` y `DATA_ENCRYPTION_KEY` con `wrangler secret put`;
 - registra el origen HTTPS y CSP del proveedor en Rtales;
-- aplica los cambios de reversión descritos en `docs/ARCHITECTURE.md`.
+- configura en Rtales las instalaciones y familias disponibles para las recompensas de colección;
 - activa “Compartir correo con este juego” únicamente para este proveedor.
 
 ## Política inicial
 
-Los puntos se conceden automáticamente tras confirmar los datos de un ticket que supera las reglas automáticas. La revisión humana es posterior: el gestor solo marca el ticket como revisado sin fraude o revoca el premio ya concedido. Las cartas permanecen desactivadas hasta que su reversión sea transaccional y auditable.
+Los puntos se conceden automáticamente tras confirmar los datos de un ticket que supera las reglas automáticas. La revisión humana es posterior: el gestor solo marca el ticket como revisado sin fraude o revoca el premio ya concedido. Cada comercio puede activar opcionalmente cartas por hitos de puntos y la campaña puede premiar al líder diario de una categoría. Las entregas tienen límites globales y por usuario, son idempotentes y se revierten junto con un ticket invalidado.

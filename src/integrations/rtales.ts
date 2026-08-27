@@ -52,17 +52,18 @@ async function rtalesRequest(
   pathname: string,
   body: unknown,
   idempotencyKey?: string,
+  method: 'GET' | 'POST' = 'POST',
 ): Promise<{ response: Response; payload: RtalesResponse }> {
   let response: Response;
   try {
     response = await fetch(new URL(pathname, env.RTALES_BASE_URL), {
-      method: 'POST',
+      method,
       headers: {
         Authorization: `Bearer ${env.RTALES_EXTERNAL_GAME_TOKEN}`,
         'Content-Type': 'application/json',
         ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
       },
-      body: JSON.stringify(body),
+      ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(rtalesTimeoutMs(env)),
     });
   } catch (caught) {
@@ -158,6 +159,42 @@ export async function revokeTicketPoints(
       externalReference: input.receiptId,
       reason: input.reason,
       managerReference: input.managerEmail,
+    },
+    input.idempotencyKey,
+  );
+}
+
+export async function loadRtalesRewardCatalog(env: Env) {
+  return rtalesRequest(env, '/api/integrations/external-games/reward-catalog', undefined, undefined, 'GET');
+}
+
+export async function grantStablePlayerReward(
+  env: Env,
+  input: {
+    installationId: string;
+    playerSubject: string;
+    playerLookupCode: string;
+    familyId: string;
+    externalMatchId: string;
+    eventType: string;
+    cardId?: string;
+    metadata?: Record<string, unknown>;
+    idempotencyKey: string;
+  },
+) {
+  return rtalesRequest(
+    env,
+    '/api/integrations/external-games/player-rewards',
+    {
+      installationId: input.installationId,
+      playerSubject: input.playerSubject,
+      playerLookupCode: input.playerLookupCode,
+      familyId: input.familyId,
+      externalMatchId: input.externalMatchId,
+      eventType: input.eventType,
+      points: 0,
+      ...(input.cardId ? { cardIds: [input.cardId] } : { cardRewardCount: 1 }),
+      metadata: input.metadata || {},
     },
     input.idempotencyKey,
   );

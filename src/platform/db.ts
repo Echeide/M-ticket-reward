@@ -13,6 +13,8 @@ const JSON_COLUMNS = new Set([
   'aliases',
   'actual_payload',
   'changes',
+  'cards_awarded',
+  'collection_config',
   'context',
   'evaluation_actual_payload',
   'evaluation_context',
@@ -25,6 +27,7 @@ const JSON_COLUMNS = new Set([
   'response_payload',
   'validation_reasons',
   'verification_issues',
+  'awarded_card_ids',
 ]);
 
 const BOOLEAN_COLUMNS = new Set(['active']);

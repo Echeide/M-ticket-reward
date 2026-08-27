@@ -53,7 +53,7 @@ Debe añadirse una huella perceptual para detectar recortes o recompresión de l
 
 Una revocación usa `ticket:{receiptId}:revoke:v1`, referencia el resultado original y descuenta exactamente `pointsAwarded`. Rtales debe permitir saldo negativo para representar deuda si el usuario ya gastó los puntos. Los canjes continuarán bloqueados mientras el saldo sea insuficiente.
 
-Las cartas quedan desactivadas en la primera versión. Antes de habilitarlas Rtales necesita una reversión equivalente que contemple cartas ya consumidas o transferidas.
+Las cartas se conceden en operaciones separadas e idempotentes vinculadas al ticket o al cierre diario. Si se revoca un ticket, las cartas de sus hitos pasan a una cola de compensación y Rtales elimina la adquisición asociada al resultado original. Cuando existe otra adquisición válida de la misma carta, esa adquisición conserva la propiedad.
 
 ## Privacidad
 
@@ -66,9 +66,8 @@ Las cartas quedan desactivadas en la primera versión. Antes de habilitarlas Rta
 
 ## Cambios necesarios en Rtales
 
-1. Añadir un endpoint de reversión autenticado e idempotente asociado a `ExternalGameResult`.
-2. Registrar la compensación en un ledger/auditoría y exponerla en el historial general de Rtales.
+1. Mantener activos los endpoints autenticados de premios por identidad estable y reversión asociada a `ExternalGameResult`.
+2. Registrar las compensaciones en el ledger y conservar la adquisición de origen para auditoría.
 3. Permitir saldo negativo o una deuda separada y bloquear canjes si no existe saldo disponible.
-4. Añadir el scope `rewards:revoke` a las credenciales que lo necesiten.
+4. Autorizar los scopes `results:write` y `rewards:revoke` a la credencial de esta aplicación.
 5. Autorizar `player:email` únicamente para servicios que necesiten identificar al usuario.
-6. No habilitar cartas en esta instalación hasta implementar su revocación.

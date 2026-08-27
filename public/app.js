@@ -497,7 +497,10 @@ async function resumeReceipt(receipt) {
     show('ocr-review');
     return;
   }
-  if (receipt.status === 'REWARDED') return finish(receipt);
+  if (receipt.status === 'REWARDED') {
+    if (receipt.reward?.cardsPending) return showTicketDetail(receipt);
+    return finish(receipt);
+  }
   if (receipt.status === 'NOT_A_RECEIPT') return show('not-receipt');
   if (receipt.status === 'DUPLICATE') return show('duplicate');
   if (['AUTO_REJECTED', 'REWARD_FAILED', 'REVOKE_PENDING', 'REVOKED'].includes(receipt.status)) {
@@ -635,7 +638,7 @@ function notifyRewardCompleted(receipt) {
   if (state.parentOrigin && window.parent !== window) {
     window.parent.postMessage({
       type: 'EXTERNAL_GAME_COMPLETED',
-      rewards: { pointsAwarded: receipt.reward.pointsAwarded, cards: [] },
+      rewards: { pointsAwarded: receipt.reward.pointsAwarded, cards: receipt.reward.cardsAwarded || [] },
     }, state.parentOrigin);
   }
 }
@@ -647,7 +650,9 @@ function finish(receipt) {
   document.querySelector('#receipt-reference').textContent = receipt.publicId;
   document.querySelector('#final-message').textContent = receipt.rewardCapped
     ? receipt.message
-    : 'La validación ha sido automática. Nuestro equipo puede revisar posteriormente el ticket y revocar los puntos si detecta fraude.';
+    : receipt.reward.cardsAwarded?.length
+      ? `La validación ha sido automática. También has conseguido ${receipt.reward.cardsAwarded.length === 1 ? 'una carta de colección' : `${receipt.reward.cardsAwarded.length} cartas de colección`}.`
+      : 'La validación ha sido automática. Nuestro equipo puede revisar posteriormente el ticket y revocar los puntos si detecta fraude.';
   show('final');
   notifyRewardCompleted(receipt);
 }
@@ -706,7 +711,7 @@ async function openHistory() {
   const payload = await api('/api/receipts');
   renderHistory(payload.receipts);
   const completedReceipt = payload.receipts.find((receipt) => (
-    receipt.id === state.receiptId && receipt.status === 'REWARDED'
+    receipt.id === state.receiptId && receipt.status === 'REWARDED' && !receipt.reward?.cardsPending
   ));
   if (completedReceipt) notifyRewardCompleted(completedReceipt);
   monitorHistory(generation, payload.receipts).catch((caught) => {
@@ -740,6 +745,8 @@ function historySignature(receipts) {
     receipt.fields.purchaseDate,
     receipt.fields.totalCents,
     receipt.reward.pointsAwarded,
+    receipt.reward.cardsPending,
+    (receipt.reward.cardsAwarded || []).join(','),
   ].join(':')).join('|');
 }
 
@@ -762,7 +769,7 @@ async function monitorHistory(generation, initialReceipts) {
   while (
     generation === state.pollGeneration &&
     screens.get('ticket-history')?.classList.contains('active') &&
-    receipts.some((receipt) => ASYNC_RECEIPT_STATUSES.has(receipt.status))
+    receipts.some((receipt) => ASYNC_RECEIPT_STATUSES.has(receipt.status) || receipt.reward?.cardsPending)
   ) {
     await new Promise((resolve) => setTimeout(resolve, document.hidden ? 10_000 : 2_000));
     if (
@@ -781,7 +788,7 @@ async function monitorHistory(generation, initialReceipts) {
       announceHistoryChanges(receipts, payload.receipts);
       renderHistory(payload.receipts);
       const completedReceipt = payload.receipts.find((receipt) => (
-        receipt.id === state.receiptId && receipt.status === 'REWARDED'
+        receipt.id === state.receiptId && receipt.status === 'REWARDED' && !receipt.reward?.cardsPending
       ));
       if (completedReceipt) notifyRewardCompleted(completedReceipt);
       signature = nextSignature;
@@ -792,6 +799,7 @@ async function monitorHistory(generation, initialReceipts) {
 
 function receiptStatusIcon(receipt) {
   if (receipt.retryableReward) return { name: 'refresh', tone: 'processing' };
+  if (receipt.reward?.cardsPending) return { name: 'refresh', tone: 'processing' };
   if (ASYNC_RECEIPT_STATUSES.has(receipt.status)) return { name: 'refresh', tone: 'processing' };
   if (receipt.validWithoutReward) return { name: 'check', tone: 'approved' };
   if (SUCCESS_RECEIPT_STATUSES.has(receipt.status)) return { name: 'check', tone: 'approved' };
@@ -833,7 +841,7 @@ function renderHistory(receipts) {
     const chip = document.createElement('span');
     chip.className = `ticket-status ${meta.tone}`;
     chip.textContent = ['REWARD_PENDING', 'REWARDED'].includes(receipt.status)
-      ? `${meta.label} · +${receipt.reward.pointsAwarded} pts`
+      ? `${meta.label} · +${receipt.reward.pointsAwarded} pts${receipt.reward.cardsPending ? ' · Carta en proceso' : receipt.reward.cardsAwarded?.length ? ` · +${receipt.reward.cardsAwarded.length} carta` : ''}`
       : meta.label;
 
     const summary = document.createElement('span');
@@ -857,7 +865,7 @@ function showTicketDetail(receipt) {
   const status = document.querySelector('#detail-status');
   status.className = `ticket-status ${meta.tone}`;
   status.textContent = receipt.status === 'REWARDED'
-    ? `${meta.label} · +${receipt.reward.pointsAwarded} puntos`
+    ? `${meta.label} · +${receipt.reward.pointsAwarded} puntos${receipt.reward.cardsPending ? ' · Carta en proceso' : receipt.reward.cardsAwarded?.length ? ` · +${receipt.reward.cardsAwarded.length} carta` : ''}`
     : meta.label;
   document.querySelector('#detail-message').textContent = receipt.message || meta.message;
   document.querySelector('#detail-store').textContent = receipt.fields.storeName || 'Pendiente';
@@ -886,7 +894,7 @@ function showTicketDetail(receipt) {
     action.onclick = closeGame;
   }
   show('ticket-detail');
-  if (receipt.status === 'REWARD_PENDING') {
+  if (receipt.status === 'REWARD_PENDING' || receipt.reward?.cardsPending) {
     monitorPendingRewardDetail(generation, receipt.id).catch((caught) => {
       console.warn('No se pudo actualizar automáticamente la entrega de puntos', caught);
     });
@@ -910,7 +918,7 @@ async function monitorPendingRewardDetail(generation, receiptId) {
       console.warn('No se pudo consultar la entrega de puntos; se reintentará', caught);
       continue;
     }
-    if (receipt.status === 'REWARD_PENDING') continue;
+    if (receipt.status === 'REWARD_PENDING' || receipt.reward?.cardsPending) continue;
     await refreshSessionAccess().catch(() => undefined);
     return resumeReceipt(receipt);
   }

@@ -29,6 +29,11 @@ import {
 } from '../src/domain/store';
 import { normalizeRewardTierInput } from '../src/domain/reward-tier';
 import {
+  crossedCollectionMilestones,
+  normalizeStoreCollectionConfig,
+  requireStoreCollectionConfig,
+} from '../src/domain/collection-rewards';
+import {
   APP_SETTING_DEFINITIONS,
   appSettingsWithDefaults,
   booleanAppSetting,
@@ -289,7 +294,52 @@ test('store input normalizes codes and unique OCR aliases', () => {
     aliases: ['Tienda Uno SL', 'T. Uno'],
     active: true,
     participationLevel: 'STANDARD',
+    collectionConfig: {
+      enabled: false,
+      categoryCode: '',
+      installationId: '',
+      familyId: '',
+      milestones: [],
+      maxCardsTotal: 0,
+      maxCardsPerUser: 0,
+      dailyWinner: {
+        enabled: false,
+        metric: 'POINTS',
+        minimumPurchases: 1,
+        cardId: '',
+      },
+    },
   });
+});
+
+test('collection rules normalize milestones, caps and daily categories', () => {
+  const config = requireStoreCollectionConfig({
+    enabled: true,
+    installationId: ' installation-1 ',
+    familyId: 'family-1',
+    categoryCode: ' restauración / norte ',
+    milestones: [{ points: 100 }, { points: 50 }, { points: 100 }],
+    maxCardsTotal: 500,
+    maxCardsPerUser: 3,
+    dailyWinner: { enabled: true, metric: 'purchases', minimumPurchases: 2 },
+  });
+  assert.deepEqual(config.milestones.map(({ points }) => points), [50, 100]);
+  assert.equal(config.categoryCode, 'RESTAURACION_NORTE');
+  assert.equal(config.dailyWinner.metric, 'PURCHASES');
+  assert.equal(config.dailyWinner.minimumPurchases, 2);
+  assert.deepEqual(crossedCollectionMilestones(75, config).map(({ points }) => points), [50]);
+});
+
+test('enabled collection rules require a target and at least one reward rule', () => {
+  assert.equal(normalizeStoreCollectionConfig(undefined).enabled, false);
+  assert.throws(() => requireStoreCollectionConfig({ enabled: true }), /STORE_COLLECTION_TARGET_REQUIRED/);
+  assert.throws(() => requireStoreCollectionConfig({
+    enabled: true, installationId: 'i', familyId: 'f',
+  }), /STORE_COLLECTION_RULE_REQUIRED/);
+  assert.throws(() => requireStoreCollectionConfig({
+    enabled: true, installationId: 'i', familyId: 'f',
+    dailyWinner: { enabled: true },
+  }), /STORE_COLLECTION_CATEGORY_REQUIRED/);
 });
 
 test('store input rejects unsafe or incomplete identifiers', () => {
@@ -300,10 +350,11 @@ test('store input rejects unsafe or incomplete identifiers', () => {
   }), /STORE_PARTICIPATION_LEVEL_INVALID/);
 });
 
-test('store removal deletes only merchants without receipts or training data', () => {
-  assert.equal(storeRemovalMode({ receiptCount: 0, trainingSampleCount: 0 }), 'DELETE');
-  assert.equal(storeRemovalMode({ receiptCount: 1, trainingSampleCount: 0 }), 'ARCHIVE');
-  assert.equal(storeRemovalMode({ receiptCount: 0, trainingSampleCount: 1 }), 'ARCHIVE');
+test('store removal deletes only merchants without receipts, training or collection history', () => {
+  assert.equal(storeRemovalMode({ receiptCount: 0, trainingSampleCount: 0, collectionRewardCount: 0 }), 'DELETE');
+  assert.equal(storeRemovalMode({ receiptCount: 1, trainingSampleCount: 0, collectionRewardCount: 0 }), 'ARCHIVE');
+  assert.equal(storeRemovalMode({ receiptCount: 0, trainingSampleCount: 1, collectionRewardCount: 0 }), 'ARCHIVE');
+  assert.equal(storeRemovalMode({ receiptCount: 0, trainingSampleCount: 0, collectionRewardCount: 1 }), 'ARCHIVE');
 });
 
 test('store deletion confirmation requires the exact current merchant name', () => {

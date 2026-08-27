@@ -3,6 +3,10 @@ import {
   requireStoreParticipationLevel,
   type StoreParticipationLevel,
 } from './store-participation';
+import {
+  requireStoreCollectionConfig,
+  type StoreCollectionConfig,
+} from './collection-rewards';
 
 export type StoreInput = {
   code: string;
@@ -10,6 +14,7 @@ export type StoreInput = {
   aliases: string[];
   active: boolean;
   participationLevel: StoreParticipationLevel;
+  collectionConfig: StoreCollectionConfig;
 };
 
 export type StoreIdentity = {
@@ -27,10 +32,12 @@ export type StoreOcrEvidence = {
 export type StoreDependencyCounts = {
   receiptCount: number;
   trainingSampleCount: number;
+  collectionRewardCount: number;
 };
 
 export function storeRemovalMode(counts: StoreDependencyCounts): 'DELETE' | 'ARCHIVE' {
-  return counts.receiptCount > 0 || counts.trainingSampleCount > 0 ? 'ARCHIVE' : 'DELETE';
+  return counts.receiptCount > 0 || counts.trainingSampleCount > 0 || counts.collectionRewardCount > 0
+    ? 'ARCHIVE' : 'DELETE';
 }
 
 export function storeDeletionNameMatches(value: unknown, storeName: string): boolean {
@@ -147,5 +154,6 @@ export function normalizeStoreInput(value: Record<string, unknown>): StoreInput 
     aliases,
     active: value.active !== false,
     participationLevel: requireStoreParticipationLevel(value.participationLevel),
+    collectionConfig: requireStoreCollectionConfig(value.collectionConfig),
   };
 }

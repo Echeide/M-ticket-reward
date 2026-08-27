@@ -1,5 +1,5 @@
 const state = {
-  rows: [], stores: [], spaces: [], tiers: [], ticketUsers: [], settings: [], adminUsers: [], trainingSamples: [], trainingProfile: null, selected: null,
+  rows: [], stores: [], spaces: [], tiers: [], ticketUsers: [], settings: [], adminUsers: [], trainingSamples: [], collectionCatalog: [], trainingProfile: null, selected: null,
   currentAdmin: null,
   pagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
   ticketUserPagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
@@ -223,6 +223,7 @@ async function load(page = state.pagination.page) {
 }
 
 async function loadStores() {
+  if (!state.collectionCatalog.length) await loadCollectionCatalog().catch(() => undefined);
   const payload = await request('/api/admin/stores');
   state.stores = payload.stores;
   populateStoreFilter();
@@ -234,12 +235,80 @@ async function loadStores() {
   renderStores();
 }
 
+async function loadCollectionCatalog() {
+  const payload = await request('/api/admin/collection-catalog');
+  state.collectionCatalog = Array.isArray(payload.installations) ? payload.installations : [];
+}
+
+function populateCollectionFamilies(selectedFamilyId = '', selectedCardId = '') {
+  const form = document.querySelector('#store-form');
+  const installation = state.collectionCatalog.find((item) => item.installationId === form.elements.collectionInstallation.value);
+  const familySelect = form.elements.collectionFamily;
+  const familyOptions = installation?.families || [];
+  familySelect.replaceChildren(new Option('Selecciona una familia', ''), ...familyOptions.map((family) =>
+    new Option(`${family.category?.name ? `${family.category.name} · ` : ''}${family.name}`, family.id)));
+  if (selectedFamilyId && !familyOptions.some((family) => family.id === selectedFamilyId)) {
+    familySelect.append(new Option(`Familia configurada · ${selectedFamilyId}`, selectedFamilyId));
+  }
+  familySelect.value = selectedFamilyId || familyOptions[0]?.id || '';
+  populateCollectionCards(selectedCardId);
+}
+
+function populateCollectionCards(selectedCardId = '') {
+  const form = document.querySelector('#store-form');
+  const installation = state.collectionCatalog.find((item) => item.installationId === form.elements.collectionInstallation.value);
+  const family = installation?.families?.find((item) => item.id === form.elements.collectionFamily.value);
+  const cardSelect = form.elements.collectionDailyCard;
+  const cards = family?.cards || [];
+  cardSelect.replaceChildren(new Option('Aleatoria de la familia', ''), ...cards.map((card) =>
+    new Option(`${card.number ? `${card.number} · ` : ''}${card.name || card.code}`, card.id)));
+  if (selectedCardId && !cards.some((card) => card.id === selectedCardId)) {
+    cardSelect.append(new Option(`Carta configurada · ${selectedCardId}`, selectedCardId));
+  }
+  cardSelect.value = selectedCardId || '';
+}
+
+function renderCollectionConfig(config = {}) {
+  const form = document.querySelector('#store-form');
+  const normalized = {
+    enabled: config.enabled === true,
+    categoryCode: config.categoryCode || '',
+    installationId: config.installationId || '',
+    familyId: config.familyId || '',
+    milestones: Array.isArray(config.milestones) ? config.milestones : [],
+    maxCardsTotal: Number(config.maxCardsTotal || 0),
+    maxCardsPerUser: Number(config.maxCardsPerUser || 0),
+    dailyWinner: config.dailyWinner || {},
+  };
+  form.elements.collectionEnabled.checked = normalized.enabled;
+  form.elements.collectionCategory.value = normalized.categoryCode;
+  form.elements.collectionMilestones.value = normalized.milestones.map((item) => item.points).join(', ');
+  form.elements.collectionMaxTotal.value = normalized.maxCardsTotal;
+  form.elements.collectionMaxUser.value = normalized.maxCardsPerUser;
+  form.elements.collectionDailyEnabled.checked = normalized.dailyWinner.enabled === true;
+  form.elements.collectionDailyMetric.value = normalized.dailyWinner.metric || 'POINTS';
+  form.elements.collectionDailyMinimum.value = normalized.dailyWinner.minimumPurchases || 1;
+  const installationSelect = form.elements.collectionInstallation;
+  installationSelect.replaceChildren(new Option('Selecciona una instalación', ''), ...state.collectionCatalog.map((item) =>
+    new Option(`${item.spaceName} · ${item.applicationName || 'Tickets'}`, item.installationId)));
+  if (normalized.installationId && !state.collectionCatalog.some((item) => item.installationId === normalized.installationId)) {
+    installationSelect.append(new Option(`Instalación configurada · ${normalized.installationId}`, normalized.installationId));
+  }
+  installationSelect.value = normalized.installationId || state.collectionCatalog[0]?.installationId || '';
+  populateCollectionFamilies(normalized.familyId, normalized.dailyWinner.cardId || '');
+  document.querySelector('#collection-reward-fields').hidden = !normalized.enabled;
+  document.querySelector('#collection-daily-fields').hidden = normalized.dailyWinner.enabled !== true;
+  document.querySelector('#collection-catalog-help').textContent = state.collectionCatalog.length
+    ? 'Rtales controla la familia, las cartas disponibles y evita duplicados según su política.'
+    : 'No se pudo cargar el catálogo de Rtales. La configuración existente se conservará.';
+}
+
 function renderStores() {
   const showArchived = document.querySelector('#show-archived-stores').checked;
   const stores = state.stores.filter((store) => showArchived || !store.archived);
   document.querySelector('#store-list').innerHTML = stores.map((store) => `
     <article class="store-row ${store.archived ? 'archived' : store.active ? '' : 'inactive'}">
-      <span class="store-identity">${store.logoUrl ? `<img src="${escapeHtml(store.logoUrl)}" alt="" loading="lazy" />` : '<span class="store-logo-empty" aria-hidden="true">—</span>'}<span><strong>${escapeHtml(store.name)}</strong><small>${escapeHtml(store.code)}</small><small class="participation-chip">${escapeHtml(store.participationLabel || 'Estándar')} · ×${formatMultiplier(store.rewardMultiplierPercent)}</small></span></span>
+      <span class="store-identity">${store.logoUrl ? `<img src="${escapeHtml(store.logoUrl)}" alt="" loading="lazy" />` : '<span class="store-logo-empty" aria-hidden="true">—</span>'}<span><strong>${escapeHtml(store.name)}</strong><small>${escapeHtml(store.code)}</small><small class="participation-chip">${escapeHtml(store.participationLabel || 'Estándar')} · ×${formatMultiplier(store.rewardMultiplierPercent)}</small>${store.collectionConfig?.enabled ? '<small class="collection-chip">Colección activa</small>' : ''}</span></span>
       <span class="alias-list">${store.aliases.length ? store.aliases.map((alias) => `<small>${escapeHtml(alias)}</small>`).join('') : '<small>Sin alias</small>'}</span>
       <strong>${store.receiptCount}</strong>
       <span class="status-chip ${store.archived ? 'archived' : store.active ? 'rewarded' : 'duplicate'}">${store.archived ? 'ARCHIVADO' : store.active ? 'ACTIVO' : 'INACTIVO'}</span>
@@ -701,6 +770,7 @@ function openStoreDialog(id = '') {
   form.elements.aliases.value = (store?.aliases || []).join('\n');
   form.elements.participationLevel.value = store?.participationLevel || 'STANDARD';
   form.elements.active.checked = store?.active ?? true;
+  renderCollectionConfig(store?.collectionConfig || {});
   setStoreLogoPreview(store?.logoUrl || '');
   clearTrainingDrafts();
   state.trainingSamples = [];
@@ -1247,6 +1317,23 @@ async function saveStore(event) {
     code: form.elements.code.value,
     aliases: form.elements.aliases.value.split('\n').map((value) => value.trim()).filter(Boolean),
     participationLevel: form.elements.participationLevel.value,
+    collectionConfig: {
+      enabled: form.elements.collectionEnabled.checked,
+      categoryCode: form.elements.collectionCategory.value,
+      installationId: form.elements.collectionInstallation.value,
+      familyId: form.elements.collectionFamily.value,
+      milestones: form.elements.collectionMilestones.value.split(/[,;\s]+/)
+        .map((value) => Number(value)).filter((points) => Number.isInteger(points) && points > 0)
+        .map((points) => ({ points, cardId: '' })),
+      maxCardsTotal: Number(form.elements.collectionMaxTotal.value || 0),
+      maxCardsPerUser: Number(form.elements.collectionMaxUser.value || 0),
+      dailyWinner: {
+        enabled: form.elements.collectionDailyEnabled.checked,
+        metric: form.elements.collectionDailyMetric.value,
+        minimumPurchases: Number(form.elements.collectionDailyMinimum.value || 1),
+        cardId: form.elements.collectionDailyCard.value,
+      },
+    },
     active,
   };
   const errorNode = document.querySelector('#store-form-error');
@@ -1306,7 +1393,8 @@ async function openStoreDeleteDialog() {
       : 'Este comercio tiene información vinculada. Se archivará, dejará de aparecer públicamente y conservará todo su histórico.';
     document.querySelector('#store-delete-counts').innerHTML = `
       <span><strong>${Number(preview.counts.receiptCount || 0)}</strong> tickets vinculados</span>
-      <span><strong>${Number(preview.counts.trainingSampleCount || 0)}</strong> ejemplos de entrenamiento</span>`;
+      <span><strong>${Number(preview.counts.trainingSampleCount || 0)}</strong> ejemplos de entrenamiento</span>
+      <span><strong>${Number(preview.counts.collectionRewardCount || 0)}</strong> premios de colección</span>`;
     document.querySelector('#store-delete-confirmation-name').textContent = preview.store.name;
     document.querySelector('#store-delete-error').textContent = '';
     const confirmButton = document.querySelector('#confirm-store-delete');
@@ -1511,7 +1599,7 @@ async function select(id, suppliedReceipt = null) {
       ${hasDeclaration ? `<section class="declared-ticket-data"><strong>Datos indicados antes de fotografiar</strong><dl><div><dt>Comercio</dt><dd>${escapeHtml(declaredStore?.name || (declared.storeId ? 'Comercio ya no disponible' : 'No solicitado'))}</dd></div><div><dt>Número</dt><dd>${escapeHtml(declared.ticketNumber || '—')}</dd></div><div><dt>Total</dt><dd>${formatMoney(declared.totalCents || 0)}</dd></div></dl></section>` : ''}
       ${reasons.length && !deliveryIssue ? `<div class="review-reasons"><strong>Comprobación automática</strong><ul>${reasons.map((reason) => `<li>${escapeHtml(reasonLabels[reason] || reason)}</li>`).join('')}</ul></div>` : ''}
       ${staffResolution}
-      <dl class="ticket-secondary-data"><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Espacio</dt><dd>${escapeHtml(receipt.user.spaceCode || '—')}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Decisión</dt><dd>${escapeHtml(receiptReviewLabel(receipt))}</dd></div><div><dt>OCR</dt><dd>${escapeHtml([receipt.ocrProcessing?.provider, receipt.ocrProcessing?.model].filter(Boolean).join(' · ') || '—')}</dd></div><div><dt>Proceso OCR</dt><dd>${receipt.ocrProcessing?.durationMs == null ? 'Sin resultado' : `${receipt.ocrProcessing.durationMs} ms · ${receipt.ocrProcessing.attemptCount} llamada(s)`} · ${receipt.ocrProcessing?.jobAttemptCount || 0} ejecución(es)</dd></div>${receipt.ocrProcessing?.lastError ? `<div><dt>Último error OCR</dt><dd>${escapeHtml(receipt.ocrProcessing.lastError)}</dd></div>` : ''}<div><dt>Creado</dt><dd>${escapeHtml(new Date(receipt.createdAt).toLocaleString('es-ES'))}</dd></div></dl>
+      <dl class="ticket-secondary-data"><div><dt>Correo</dt><dd>${escapeHtml(receipt.user.email || 'No compartido')}</dd></div><div><dt>Espacio</dt><dd>${escapeHtml(receipt.user.spaceCode || '—')}</dd></div><div><dt>Riesgo</dt><dd>${receipt.riskScore}/100</dd></div><div><dt>Puntos</dt><dd>${receipt.reward.pointsAwarded}</dd></div><div><dt>Cartas</dt><dd>${receipt.reward.cardsPending ? 'Asignando…' : receipt.reward.cardsAwarded?.length || 0}</dd></div><div><dt>Decisión</dt><dd>${escapeHtml(receiptReviewLabel(receipt))}</dd></div><div><dt>OCR</dt><dd>${escapeHtml([receipt.ocrProcessing?.provider, receipt.ocrProcessing?.model].filter(Boolean).join(' · ') || '—')}</dd></div><div><dt>Proceso OCR</dt><dd>${receipt.ocrProcessing?.durationMs == null ? 'Sin resultado' : `${receipt.ocrProcessing.durationMs} ms · ${receipt.ocrProcessing.attemptCount} llamada(s)`} · ${receipt.ocrProcessing?.jobAttemptCount || 0} ejecución(es)</dd></div>${receipt.ocrProcessing?.lastError ? `<div><dt>Último error OCR</dt><dd>${escapeHtml(receipt.ocrProcessing.lastError)}</dd></div>` : ''}<div><dt>Creado</dt><dd>${escapeHtml(new Date(receipt.createdAt).toLocaleString('es-ES'))}</dd></div></dl>
     </div>`;
   const image = await fetch(`/api/admin/receipts/${id}/image`, { headers: headers() });
   if (image.ok) {
@@ -1770,6 +1858,18 @@ document.querySelector('#next-ticket-users').addEventListener('click', () => {
 });
 document.querySelector('#close-ticket-user-detail').addEventListener('click', () => document.querySelector('#ticket-user-detail-dialog').close());
 document.querySelector('#store-form').addEventListener('submit', saveStore);
+document.querySelector('#store-form [name="collectionEnabled"]').addEventListener('change', (event) => {
+  document.querySelector('#collection-reward-fields').hidden = !event.currentTarget.checked;
+});
+document.querySelector('#store-form [name="collectionDailyEnabled"]').addEventListener('change', (event) => {
+  document.querySelector('#collection-daily-fields').hidden = !event.currentTarget.checked;
+});
+document.querySelector('#store-form [name="collectionInstallation"]').addEventListener('change', () => {
+  populateCollectionFamilies();
+});
+document.querySelector('#store-form [name="collectionFamily"]').addEventListener('change', () => {
+  populateCollectionCards();
+});
 document.querySelectorAll('[data-store-panel]').forEach((button) => button.addEventListener('click', async () => {
   if (button.disabled) return;
   setStorePanel(button.dataset.storePanel);
