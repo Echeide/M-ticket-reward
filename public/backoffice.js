@@ -247,6 +247,42 @@ async function loadCollectionCatalog() {
   }
 }
 
+function collectionRewardLabels(reward) {
+  const installation = state.collectionCatalog.find((item) => item.installationId === reward.installationId);
+  const family = installation?.families?.find((item) => item.id === reward.familyId);
+  const cardIds = reward.awardedCardIds?.length ? reward.awardedCardIds : reward.requestedCardId ? [reward.requestedCardId] : [];
+  const cards = cardIds.map((cardId) => {
+    const card = family?.cards?.find((item) => item.id === cardId);
+    return card ? `${card.number ? `${card.number} · ` : ''}${card.name || card.code || cardId}` : `Carta ${cardId}`;
+  });
+  return {
+    family: family?.name || `Familia ${reward.familyId}`,
+    cards: cards.length ? cards : ['Carta aleatoria'],
+  };
+}
+
+function collectionRewardStatus(reward) {
+  const statuses = {
+    PENDING: ['Pendiente', 'reward_pending'], PROCESSING: ['Asignando', 'reward_pending'],
+    DELIVERED: ['Entregada', 'rewarded'], SKIPPED: ['No asignada', 'duplicate'],
+    FAILED: ['Fallida', 'revoked'], REVOKE_PENDING: ['Anulando', 'reward_pending'],
+    REVOKING: ['Anulando', 'reward_pending'], REVOKED: ['Revocada', 'revoked'],
+  };
+  return statuses[reward.status] || [reward.status, 'duplicate'];
+}
+
+function collectionRewardReason(reward) {
+  return reward.ruleType === 'DAILY_WINNER'
+    ? `Ganador diario · ${String(reward.ruleKey || '').replace(/^CATEGORY:/, '') || 'categoría'}`
+    : `Hito de ${reward.ruleKey} puntos`;
+}
+
+function collectionRewardDate(reward) {
+  if (reward.ruleType === 'DAILY_WINNER' && reward.periodKey) return formatSpanishDate(reward.periodKey);
+  const timestamp = reward.deliveredAt || reward.createdAt;
+  return timestamp ? new Date(timestamp).toLocaleString('es-ES') : '—';
+}
+
 function populateCollectionFamilies(selectedFamilyId = '', selectedCardId = '') {
   const form = document.querySelector('#store-form');
   const installation = state.collectionCatalog.find((item) => item.installationId === form.elements.collectionInstallation.value);
@@ -404,6 +440,7 @@ async function loadTicketUsers(page = state.ticketUserPagination.page) {
       <strong class="validated-count">${user.ticketsValidated}</strong>
       <strong>${user.ticketsUnvalidated}</strong>
       <strong>${user.pointsAwarded}</strong>
+      <span class="ticket-user-card-count"><strong>${user.cardsAwarded}</strong><small>${user.dailyCardsAwarded ? `${user.dailyCardsAwarded} diaria${user.dailyCardsAwarded === 1 ? '' : 's'}` : '—'}</small></span>
       <strong class="${user.strikePoints ? 'strike-count' : ''}">${user.strikePoints}/${user.banThreshold || '—'}</strong>
       <strong>${formatMoney(user.authorizedTotalCents)}</strong>
       <span class="status-chip ${statusClass}">${status}</span>
@@ -437,8 +474,12 @@ async function openTicketUserDetail(lookupCode, installationId = '') {
   try {
     const params = new URLSearchParams();
     if (installationId) params.set('installation', installationId);
-    const payload = await request(`/api/admin/ticket-users/${encodeURIComponent(lookupCode)}?${params}`);
+    const [payload] = await Promise.all([
+      request(`/api/admin/ticket-users/${encodeURIComponent(lookupCode)}?${params}`),
+      state.collectionCatalog.length ? Promise.resolve() : loadCollectionCatalog().catch(() => undefined),
+    ]);
     const user = payload.user;
+    const collectionRewards = payload.collectionRewards || [];
     const status = user.banStatus === 'BANNED' ? 'Baneado' : user.banStatus === 'LIFTING' ? 'Desbaneo en proceso' : 'Permitido';
     body.innerHTML = `<div class="ticket-user-detail-summary">
       <div><span>Nombre</span><strong>${escapeHtml(user.displayName || 'Sin nombre')}</strong><small>${escapeHtml(user.email || 'Correo no compartido')}</small></div>
@@ -447,8 +488,16 @@ async function openTicketUserDetail(lookupCode, installationId = '') {
       <div><span>Estado</span><strong>${status}</strong><small>${user.strikePoints}/${user.banThreshold || '—'} puntos</small></div>
       <div><span>Actividad</span><strong>${user.ticketsValidated} validados</strong><small>${user.ticketsSubmitted} subidos · ${user.ticketsUnvalidated} sin validar</small></div>
       <div><span>Puntos concedidos</span><strong>${user.pointsAwarded}</strong></div>
+      <div><span>Cartas entregadas</span><strong>${user.cardsAwarded}</strong><small>${user.dailyCardsAwarded} mediante premio diario</small></div>
       <div><span>Compras autorizadas</span><strong>${formatMoney(user.authorizedTotalCents)}</strong></div>
     </div>
+    <section class="ticket-user-collection-rewards"><h3>Historial de cartas</h3>
+      ${collectionRewards.length ? collectionRewards.map((reward) => {
+        const labels = collectionRewardLabels(reward);
+        const [rewardStatus, rewardStatusClass] = collectionRewardStatus(reward);
+        return `<article><span class="collection-reward-main"><strong>${escapeHtml(labels.cards.join(', '))}</strong><small>${escapeHtml(labels.family)} · ${escapeHtml(collectionRewardReason(reward))}</small><small>${escapeHtml(reward.storeName || reward.storeCode)} · ${escapeHtml(collectionRewardDate(reward))}</small></span><span class="collection-reward-result"><span class="status-chip ${rewardStatusClass}">${escapeHtml(rewardStatus)}</span>${reward.receiptPublicId ? `<button class="text-button open-collection-ticket" data-id="${escapeHtml(reward.receiptId)}" data-public-id="${escapeHtml(reward.receiptPublicId)}" type="button">${escapeHtml(reward.receiptPublicId)}</button>` : ''}${reward.lastError ? `<small title="${escapeHtml(reward.lastError)}">${escapeHtml(reward.lastError)}</small>` : ''}</span></article>`;
+      }).join('') : '<p class="empty-state">No tiene entregas de cartas en esta instalación.</p>'}
+    </section>
     <section class="ticket-user-offenses"><h3>Infracciones activas</h3>
       <div class="offense-summary"><span>No-tickets: <strong>${user.nonReceiptCount}</strong></span><span>Duplicados: <strong>${user.duplicateTicketCount}</strong></span><span>Fraudes confirmados: <strong>${user.confirmedFraudCount}</strong></span></div>
       ${payload.offenses.length ? payload.offenses.map((offense) => `<article><span><strong>${offense.category === 'CONFIRMED_FRAUD' ? (offense.source === 'AUTOMATIC' ? 'Ticket duplicado' : 'Fraude confirmado') : 'Imagen no-ticket'}</strong><small><button class="text-button open-offense-ticket" data-id="${escapeHtml(offense.receiptId)}" data-public-id="${escapeHtml(offense.receiptPublicId)}" type="button">${escapeHtml(offense.receiptPublicId)}</button> · ${escapeHtml(new Date(offense.createdAt).toLocaleString('es-ES'))}</small></span><b>+${offense.score}</b></article>`).join('') : '<p class="empty-state">No tiene infracciones activas.</p>'}
@@ -456,6 +505,8 @@ async function openTicketUserDetail(lookupCode, installationId = '') {
     ${user.banStatus === 'BANNED' ? `<div class="dialog-actions"><button class="danger-button" id="detail-lift-ticket-user" type="button">Desbanear usuario</button></div>` : ''}`;
     document.querySelector('#detail-lift-ticket-user')?.addEventListener('click', () => liftTicketUserBan(user.banId));
     document.querySelectorAll('.open-offense-ticket').forEach((button) => button.addEventListener('click', () =>
+      openOffenseTicket(button.dataset.id, button.dataset.publicId)));
+    document.querySelectorAll('.open-collection-ticket').forEach((button) => button.addEventListener('click', () =>
       openOffenseTicket(button.dataset.id, button.dataset.publicId)));
   } catch (error) {
     body.innerHTML = `<p class="form-error">${escapeHtml(error instanceof Error ? error.message : 'No se pudo cargar el usuario')}</p>`;

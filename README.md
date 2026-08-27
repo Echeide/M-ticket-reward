@@ -10,7 +10,7 @@ Aplicación externa para escanear tickets de comercios asociados, extraer sus da
 - base de datos Cloudflare D1;
 - imágenes privadas en Cloudflare R2, agrupadas por usuario mediante prefijos;
 - outbox y Cloudflare Queue para premios y reintentos;
-- backoffice filtrable y exportable a CSV;
+- backoffice filtrable y exportable a CSV, con historial de cartas y premios diarios por usuario e instalación;
 - auditoría de confirmaciones y revocaciones.
 
 ## Desarrollo

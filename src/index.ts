@@ -306,10 +306,45 @@ type CollectionRewardClaimRow = {
   status: string;
   idempotency_key: string;
   rtales_result_id: string | null;
+  rtales_reversal_id: string | null;
   awarded_card_ids: string[];
   attempt_count: number;
   last_error: string | null;
+  created_at: string;
+  delivered_at: string | null;
+  revoked_at: string | null;
 };
+
+type AdminCollectionRewardClaimRow = CollectionRewardClaimRow & {
+  store_name: string;
+  store_code: string;
+  receipt_public_id: string | null;
+};
+
+export function adminCollectionRewardClaimView(row: AdminCollectionRewardClaimRow) {
+  return {
+    id: row.id,
+    ruleType: row.rule_type,
+    ruleKey: row.rule_key,
+    periodKey: row.period_key,
+    installationId: row.installation_id,
+    familyId: row.family_id,
+    requestedCardId: row.requested_card_id,
+    awardedCardIds: Array.isArray(row.awarded_card_ids) ? row.awarded_card_ids : [],
+    status: row.status,
+    resultId: row.rtales_result_id,
+    reversalId: row.rtales_reversal_id,
+    storeName: row.store_name,
+    storeCode: row.store_code,
+    receiptId: row.receipt_id,
+    receiptPublicId: row.receipt_public_id,
+    attemptCount: Number(row.attempt_count),
+    lastError: row.last_error,
+    createdAt: row.created_at,
+    deliveredAt: row.delivered_at,
+    revokedAt: row.revoked_at,
+  };
+}
 
 type AdminUserRow = {
   id: string;
@@ -1077,7 +1112,7 @@ const ACTIVE_COLLECTION_CLAIM_STATUSES = [
   'PENDING', 'PROCESSING', 'DELIVERED', 'REVOKE_PENDING',
 ] as const;
 
-async function claimCollectionMilestones(
+export async function claimCollectionMilestones(
   client: DbClient,
   receipt: Pick<ReceiptRow, 'id' | 'store_id' | 'external_user_id'>,
 ): Promise<string[]> {
@@ -1090,12 +1125,20 @@ async function claimCollectionMilestones(
   if (!store) return [];
   const config = normalizeStoreCollectionConfig(store.collection_config);
   if (!config.enabled || !config.installationId || !config.familyId || !config.milestones.length) return [];
+  const receiptContext = await client.query<{ installation_id: string }>(
+    `SELECT COALESCE(s.installation_id, '') AS installation_id
+       FROM receipts r JOIN player_sessions s ON s.id = r.session_id
+      WHERE r.id = $1 LIMIT 1`,
+    [receipt.id],
+  );
+  if (receiptContext.rows[0]?.installation_id !== config.installationId) return [];
   const totalResult = await client.query<{ total: number }>(
     `SELECT COALESCE(SUM(c.points), 0) AS total
        FROM user_reward_point_claims c JOIN receipts r ON r.id = c.receipt_id
       WHERE c.external_user_id = $1 AND r.store_id = $2
+        AND c.installation_id = $3
         AND r.status IN ('REWARD_PENDING', 'REWARDED', 'REVOKE_PENDING')`,
-    [receipt.external_user_id, receipt.store_id],
+    [receipt.external_user_id, receipt.store_id, config.installationId],
   );
   const milestones = crossedCollectionMilestones(Number(totalResult.rows[0]?.total || 0), config);
   const ids: string[] = [];
@@ -2599,6 +2642,8 @@ type TicketUserSummaryRow = {
   tickets_validated: number;
   tickets_unvalidated: number;
   points_awarded: number;
+  cards_awarded: number;
+  daily_cards_awarded: number;
   strike_points: number;
   authorized_total_cents: number;
   last_submission_at: string;
@@ -2613,7 +2658,7 @@ type TicketUserSummaryRow = {
   duplicate_ticket_count: number;
 };
 
-function ticketUserSummaryQuery(url: URL, configuredThreshold: number, pagination?: { limit: number; offset: number }) {
+export function ticketUserSummaryQuery(url: URL, configuredThreshold: number, pagination?: { limit: number; offset: number }) {
   const search = String(url.searchParams.get('q') || '').trim();
   const normalized = normalizeLookupCode(search);
   const status = String(url.searchParams.get('status') || '').toUpperCase();
@@ -2621,11 +2666,15 @@ function ticketUserSummaryQuery(url: URL, configuredThreshold: number, paginatio
   const activity = String(url.searchParams.get('activity') || '').toUpperCase();
   const space = String(url.searchParams.get('space') || '').trim().toUpperCase();
   const installation = String(url.searchParams.get('installation') || '').trim();
+  const collection = String(url.searchParams.get('collection') || '').trim().toUpperCase();
+  const cardFrom = String(url.searchParams.get('cardFrom') || '').trim();
+  const cardTo = String(url.searchParams.get('cardTo') || '').trim();
   const from = String(url.searchParams.get('from') || '').trim();
   const to = String(url.searchParams.get('to') || '').trim();
   const pageClause = pagination ? ` LIMIT ${pagination.limit} OFFSET ${pagination.offset}` : '';
   return {
-    values: [normalized, `%${search}%`, configuredThreshold, status, strikes, activity, space, installation, from, to],
+    values: [normalized, `%${search}%`, configuredThreshold, status, strikes, activity, space, installation,
+      from, to, collection, cardFrom, cardTo],
     sql: `SELECT * FROM (SELECT u.id AS external_user_id, u.rtales_lookup_code,
         u.rtales_lookup_code_normalized, u.display_name, u.email,
         COALESCE(NULLIF(s.space_code, ''), u.space_code) AS space_code,
@@ -2634,6 +2683,14 @@ function ticketUserSummaryQuery(url: URL, configuredThreshold: number, paginatio
         SUM(CASE WHEN r.status = 'REWARDED' THEN 1 ELSE 0 END) AS tickets_validated,
         SUM(CASE WHEN r.status <> 'REWARDED' THEN 1 ELSE 0 END) AS tickets_unvalidated,
         COALESCE(SUM(CASE WHEN r.status = 'REWARDED' THEN r.points_awarded ELSE 0 END), 0) AS points_awarded,
+        COALESCE((SELECT COUNT(*) FROM collection_reward_claims c
+          WHERE c.external_user_id = u.id
+            AND c.installation_id = COALESCE(NULLIF(s.installation_id, ''), u.installation_id)
+            AND c.status = 'DELIVERED'), 0) AS cards_awarded,
+        COALESCE((SELECT COUNT(*) FROM collection_reward_claims c
+          WHERE c.external_user_id = u.id
+            AND c.installation_id = COALESCE(NULLIF(s.installation_id, ''), u.installation_id)
+            AND c.status = 'DELIVERED' AND c.rule_type = 'DAILY_WINNER'), 0) AS daily_cards_awarded,
         COALESCE((SELECT SUM(o.score) FROM user_offenses o
           WHERE o.external_user_id = u.id AND o.active = TRUE), 0) AS strike_points,
         COALESCE(SUM(CASE WHEN r.status = 'REWARDED' THEN r.total_cents ELSE 0 END), 0) AS authorized_total_cents,
@@ -2667,6 +2724,20 @@ function ticketUserSummaryQuery(url: URL, configuredThreshold: number, paginatio
         AND ($7 = '' OR UPPER(space_code) = $7)
         AND ($8 = '' OR installation_id = $8)
         AND ($9 = '' OR last_submission_at >= $9) AND ($10 = '' OR last_submission_at < $10 || 'T23:59:59')
+        AND ($11 = '' OR ($11 = 'ANY' AND cards_awarded > 0)
+          OR ($11 = 'DAILY' AND daily_cards_awarded > 0))
+        AND ($12 = '' OR EXISTS (SELECT 1 FROM collection_reward_claims c
+          WHERE c.external_user_id = ticket_user_summary.external_user_id
+            AND c.installation_id = ticket_user_summary.installation_id AND c.status = 'DELIVERED'
+            AND ($11 <> 'DAILY' OR c.rule_type = 'DAILY_WINNER')
+            AND CASE WHEN c.rule_type = 'DAILY_WINNER' THEN c.period_key
+              ELSE SUBSTR(c.delivered_at, 1, 10) END >= $12))
+        AND ($13 = '' OR EXISTS (SELECT 1 FROM collection_reward_claims c
+          WHERE c.external_user_id = ticket_user_summary.external_user_id
+            AND c.installation_id = ticket_user_summary.installation_id AND c.status = 'DELIVERED'
+            AND ($11 <> 'DAILY' OR c.rule_type = 'DAILY_WINNER')
+            AND CASE WHEN c.rule_type = 'DAILY_WINNER' THEN c.period_key
+              ELSE SUBSTR(c.delivered_at, 1, 10) END <= $13))
       ORDER BY CASE WHEN rtales_lookup_code_normalized = $1 THEN 0 ELSE 1 END,
         last_submission_at DESC, external_user_id DESC${pageClause}`,
   };
@@ -2683,6 +2754,8 @@ function ticketUserView(row: TicketUserSummaryRow) {
     ticketsValidated: Number(row.tickets_validated),
     ticketsUnvalidated: Number(row.tickets_unvalidated),
     pointsAwarded: Number(row.points_awarded),
+    cardsAwarded: Number(row.cards_awarded),
+    dailyCardsAwarded: Number(row.daily_cards_awarded),
     strikePoints: Number(row.strike_points),
     banThreshold: Number(row.ban_threshold || 0),
     banId: row.ban_id,
@@ -2739,11 +2812,13 @@ async function handleAdminTicketUsersCsv(request: Request, env: Env): Promise<Re
     return result.rows;
   });
   const header = ['ID usuario', 'Nombre', 'Correo', 'Espacio', 'Instalación', 'Tickets subidos',
-    'Tickets validados', 'Tickets sin validar', 'Puntos concedidos', 'Strikes', 'Umbral', 'No-tickets', 'Fraudes confirmados',
+    'Tickets validados', 'Tickets sin validar', 'Puntos concedidos', 'Cartas entregadas', 'Premios diarios',
+    'Strikes', 'Umbral', 'No-tickets', 'Fraudes confirmados',
     'Duplicados automáticos', 'Estado', 'Motivo baneo', 'Fecha baneo', 'Compras autorizadas EUR', 'Última subida'];
   const lines = users.map((user) => [
     user.rtales_lookup_code, user.display_name, user.email || '', user.space_code, user.installation_id,
-    user.tickets_submitted, user.tickets_validated, user.tickets_unvalidated, user.points_awarded, user.strike_points,
+    user.tickets_submitted, user.tickets_validated, user.tickets_unvalidated, user.points_awarded,
+    user.cards_awarded, user.daily_cards_awarded, user.strike_points,
     user.ban_threshold, user.non_receipt_count, user.confirmed_fraud_count, user.duplicate_ticket_count,
     user.ban_status === 'ACTIVE' ? 'BANEADO' : user.ban_status === 'LIFTING' ? 'DESBLOQUEO EN PROCESO' : 'PERMITIDO',
     user.ban_reason || '', user.banned_at || '', (Number(user.authorized_total_cents) / 100).toFixed(2), user.last_submission_at,
@@ -2783,7 +2858,20 @@ async function handleAdminTicketUserDetail(request: Request, env: Env, lookupCod
         WHERE external_user_id = $1 AND active = TRUE ORDER BY created_at DESC`,
       [externalUser.id],
     );
-    return { summary: summary.rows[0], offenses: offenses.rows };
+    const installationId = String(detailUrl.searchParams.get('installation') || '').trim();
+    const collectionRewards = await client.query<AdminCollectionRewardClaimRow>(
+      `SELECT c.*, st.name AS store_name, st.code AS store_code,
+          r.public_id AS receipt_public_id
+         FROM collection_reward_claims c
+         JOIN stores st ON st.id = c.store_id
+         LEFT JOIN receipts r ON r.id = c.receipt_id
+        WHERE c.external_user_id = $1 AND ($2 = '' OR c.installation_id = $2)
+        ORDER BY CASE WHEN c.rule_type = 'DAILY_WINNER' THEN c.period_key
+          ELSE COALESCE(c.delivered_at, c.created_at) END DESC, c.created_at DESC
+        LIMIT 100`,
+      [externalUser.id, installationId],
+    );
+    return { summary: summary.rows[0], offenses: offenses.rows, collectionRewards: collectionRewards.rows };
   });
   if (!detail?.summary) return error('Usuario no encontrado', 404);
   return json({
@@ -2797,6 +2885,7 @@ async function handleAdminTicketUserDetail(request: Request, env: Env, lookupCod
       source: offense.source,
       createdAt: offense.created_at,
     })),
+    collectionRewards: detail.collectionRewards.map(adminCollectionRewardClaimView),
   });
 }
 
@@ -4824,6 +4913,31 @@ async function requeueDueCollectionRewards(env: Env): Promise<void> {
     : { kind: 'DELIVER_COLLECTION_REWARD', claimId: id })));
 }
 
+export function dailyCollectionRankingQuery(input: {
+  storeIds: string[];
+  startAt: string;
+  endAt: string;
+  installationId: string;
+  minimumPurchases: number;
+  metric: 'POINTS' | 'PURCHASES';
+}) {
+  return {
+    sql: `SELECT r.external_user_id, COALESCE(SUM(r.points_awarded), 0) AS points,
+        COUNT(*) AS purchases
+       FROM receipts r JOIN player_sessions s ON s.id = r.session_id
+      WHERE r.external_user_id IS NOT NULL AND r.store_id = ANY($1::text[])
+        AND r.created_at >= $2 AND r.created_at < $3
+        AND s.installation_id = $4
+        AND r.status = 'REWARDED' AND r.points_awarded > 0
+      GROUP BY r.external_user_id
+      HAVING COUNT(*) >= $5
+      ORDER BY ${input.metric === 'PURCHASES' ? 'purchases' : 'points'} DESC,
+        ${input.metric === 'PURCHASES' ? 'points' : 'purchases'} DESC,
+        r.external_user_id ASC`,
+    values: [input.storeIds, input.startAt, input.endAt, input.installationId, input.minimumPurchases],
+  };
+}
+
 async function resolveDailyCollectionWinners(env: Env): Promise<void> {
   if (currentCanaryHour() < 1) return;
   const period = previousCanaryDayWindow();
@@ -4863,24 +4977,19 @@ async function resolveDailyCollectionWinners(env: Env): Promise<void> {
         [group.installationId, group.categoryCode, period.key],
       );
       if (resolved.rowCount) continue;
+      const rankingQuery = dailyCollectionRankingQuery({
+        storeIds: group.storeIds,
+        startAt: period.startAt,
+        endAt: period.endAt,
+        installationId: group.installationId,
+        minimumPurchases: group.config.dailyWinner.minimumPurchases,
+        metric: group.config.dailyWinner.metric,
+      });
       const ranking = await client.query<{
         external_user_id: string;
         points: number;
         purchases: number;
-      }>(
-        `SELECT external_user_id, COALESCE(SUM(points_awarded), 0) AS points,
-            COUNT(*) AS purchases
-           FROM receipts
-          WHERE external_user_id IS NOT NULL AND store_id = ANY($1::text[])
-            AND created_at >= $2 AND created_at < $3
-            AND status = 'REWARDED' AND points_awarded > 0
-          GROUP BY external_user_id
-          HAVING COUNT(*) >= $4
-          ORDER BY ${group.config.dailyWinner.metric === 'PURCHASES' ? 'purchases' : 'points'} DESC,
-            ${group.config.dailyWinner.metric === 'PURCHASES' ? 'points' : 'purchases'} DESC,
-            external_user_id ASC`,
-        [group.storeIds, period.startAt, period.endAt, group.config.dailyWinner.minimumPurchases],
-      );
+      }>(rankingQuery.sql, rankingQuery.values);
       const winners = cappedDailyCollectionWinners(
         ranking.rows,
         group.config.dailyWinner.metric,

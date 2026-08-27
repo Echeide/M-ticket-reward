@@ -56,7 +56,7 @@
         </form>
       </section>
       <section class="ticket-users-card">
-        <div class="ticket-user-list-head"><span>Usuario e instalación</span><span>Subidos</span><span>Validados</span><span>Sin validar</span><span>Puntos</span><span>Strikes</span><span>Compras autorizadas</span><span>Estado</span><span></span></div>
+        <div class="ticket-user-list-head"><span>Usuario e instalación</span><span>Subidos</span><span>Validados</span><span>Sin validar</span><span>Puntos</span><span>Cartas</span><span>Strikes</span><span>Compras autorizadas</span><span>Estado</span><span></span></div>
         <div id="ticket-user-list"></div>
         <nav class="receipt-pagination" id="ticket-user-pagination" aria-label="Paginación de usuarios" hidden>
           <button class="secondary-button" id="previous-ticket-users" type="button">Anterior</button>
@@ -357,6 +357,9 @@
           <label>Actividad<select name="activity" form="ticket-user-search"><option value="">Cualquier actividad</option><option value="VALIDATED">Con tickets validados</option><option value="UNVALIDATED">Con tickets sin validar</option><option value="NO_VALIDATED">Sin tickets validados</option></select></label>
           <label>Espacio<select id="ticket-user-space-filter" name="space" form="ticket-user-search"><option value="">Todos los espacios</option></select></label>
           <label>Instalación<select id="ticket-user-installation-filter" name="installation" form="ticket-user-search"><option value="">Todas las instalaciones</option></select></label>
+          <label>Cartas de colección<select name="collection" form="ticket-user-search"><option value="">Cualquier usuario</option><option value="ANY">Con cartas entregadas</option><option value="DAILY">Con premio diario</option></select></label>
+          <label>Fecha del premio desde<input name="cardFrom" type="date" form="ticket-user-search" /></label>
+          <label>Fecha del premio hasta<input name="cardTo" type="date" form="ticket-user-search" /></label>
           <label>Última subida desde<input name="from" type="date" form="ticket-user-search" /></label>
           <label>Última subida hasta<input name="to" type="date" form="ticket-user-search" /></label>
         </div>
@@ -365,10 +368,10 @@
     </dialog>
     <dialog id="ticket-user-detail-dialog" class="ticket-user-detail-dialog">
       <div class="ticket-user-detail-content">
-        <div class="dialog-heading"><div><p class="eyebrow">Actividad y fraude</p><h2 id="ticket-user-detail-title">Usuario</h2></div><button class="icon-button" id="close-ticket-user-detail" type="button" aria-label="Cerrar">×</button></div>
+        <div class="dialog-heading"><div><p class="eyebrow">Actividad, cartas y fraude</p><h2 id="ticket-user-detail-title">Usuario</h2></div><button class="icon-button" id="close-ticket-user-detail" type="button" aria-label="Cerrar">×</button></div>
         <div id="ticket-user-detail-body"></div>
       </div>
     </dialog>
-    <script type="module" src="/backoffice.js?v=installation-scoping-1"></script>
+    <script type="module" src="/backoffice.js?v=user-card-history-1"></script>
   </body>
 </html>
