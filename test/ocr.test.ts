@@ -590,6 +590,52 @@ test('OCR selects the verified orientation for a landscape ticket', async () => 
   ]);
 });
 
+test('OCR keeps testing landscape orientations until the declared store is visible', async () => {
+  let calls = 0;
+  const env = {
+    OCR_MODE: 'workers-ai',
+    OCR_PROVIDER: 'workers-ai',
+    OCR_MODEL: '@cf/moondream/moondream3.1-9B-A2B',
+    OCR_TIMEOUT_MS: '5000',
+    AI: {
+      async run() {
+        calls += 1;
+        const answer = calls === 1
+          ? {
+              ...validExtraction,
+              storeName: 'Hiperdino',
+              headerText: 'Centro Venta Documento Fecha Hora',
+              rawText: validExtraction.rawText.replace('DINOSOL\n', ''),
+            }
+          : validExtraction;
+        return { answer: JSON.stringify(answer) };
+      },
+    },
+    IMAGES: {
+      info: async () => ({ width: 1200, height: 900, format: 'image/webp' }),
+      input: () => {
+        const transformer = {
+          transform: () => transformer,
+          output: () => ({ response: () => new Response(new Uint8Array([4, 5, 6])) }),
+        };
+        return transformer;
+      },
+    },
+  } as unknown as Env;
+
+  const result = await readReceipt(
+    env,
+    new Uint8Array([1, 2, 3]).buffer,
+    'image/webp',
+    [{ name: 'Hiperdino', aliases: ['Dinosol'] }],
+    { storeName: 'Hiperdino', ticketNumber: validExtraction.ticketNumber, totalCents: 1592 },
+  );
+
+  assert.equal(calls, 2);
+  assert.match(result.receipt.headerText || '', /DINOSOL/);
+  assert.deepEqual(result.verificationIssues, []);
+});
+
 test('OCR retries an incomplete reading with focused regions', async () => {
   const requests: Record<string, unknown>[] = [];
   const answers = [

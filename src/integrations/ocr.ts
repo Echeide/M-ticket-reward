@@ -6,7 +6,7 @@ import {
 } from '../domain/receipt';
 import { classifyOcrFailure } from '../domain/ocr-failure';
 import { profileHasGuidance, ticketNumberPatternFromExample } from '../domain/ocr-profile';
-import { findMatchingStore, type StoreIdentity } from '../domain/store';
+import { findMatchingStore, storeHasVisibleEvidence, type StoreIdentity } from '../domain/store';
 import { prepareOcrImageCandidates, prepareOcrRegions } from '../platform/image';
 import type { Env } from '../types';
 import {
@@ -53,6 +53,16 @@ export type ReceiptOcrHints = {
   totalCents: number;
   currency?: string;
 };
+
+function hasVisibleDeclaredStoreEvidence(
+  receipt: OcrReceipt,
+  authorizedStores: StoreIdentity[],
+  hints?: ReceiptOcrHints,
+): boolean {
+  if (!hints?.storeName) return true;
+  const declaredStore = authorizedStores.find((store) => store.name === hints.storeName);
+  return !declaredStore || storeHasVisibleEvidence(declaredStore, receipt);
+}
 
 type ReceiptPreflight = {
   decision: 'TICKET' | 'NO_TICKET' | 'UNCERTAIN';
@@ -767,6 +777,7 @@ export async function readReceipt(
       response: OcrProviderResponse;
       receipt: OcrReceipt;
       issues: string[];
+      storeEvidenceVerified: boolean;
       bytes: ArrayBuffer;
       contentType: string;
     }> = [];
@@ -782,20 +793,26 @@ export async function readReceipt(
           recoverProfileTicketNumber(extracted.receipt, authorizedStores),
         );
         const candidateIssues = verifyOcr(candidateReceipt);
+        const storeEvidenceVerified = hasVisibleDeclaredStoreEvidence(
+          candidateReceipt, authorizedStores, hints,
+        );
         initialCandidates.push({
           ...extracted,
           receipt: candidateReceipt,
           issues: candidateIssues,
+          storeEvidenceVerified,
           bytes: candidate.bytes,
           contentType: candidate.contentType,
         });
-        if (candidateReceipt.isReceipt && candidateIssues.length === 0) break;
+        if (candidateReceipt.isReceipt && candidateIssues.length === 0 && storeEvidenceVerified) break;
       } catch (caught) {
         candidateError = caught;
       }
     }
     if (!initialCandidates.length) throw candidateError || new Error('OCR_PROCESSING_FAILED');
     initialCandidates.sort((left, right) => {
+      const storeEvidenceDifference = Number(right.storeEvidenceVerified) - Number(left.storeEvidenceVerified);
+      if (storeEvidenceDifference) return storeEvidenceDifference;
       const issueDifference = left.issues.length - right.issues.length;
       if (issueDifference) return issueDifference;
       const fieldScore = (value: OcrReceipt) => Number(Boolean(value.ticketNumber)) +
@@ -823,7 +840,10 @@ export async function readReceipt(
       };
     }
 
-    if (receipt.confidence < 0.75 || !receipt.isReceipt || issues.length > 0) {
+    if (
+      receipt.confidence < 0.75 || !receipt.isReceipt || issues.length > 0 ||
+      (!initial.storeEvidenceVerified && Boolean(env.IMAGES))
+    ) {
       const matchedStore = findMatchingStore(authorizedStores, receipt);
       const declaredStore = hints?.storeName
         ? authorizedStores.find((store) => store.name === hints.storeName)
