@@ -24,6 +24,7 @@ const JSON_COLUMNS = new Set([
   'ocr_payload',
   'ocr_profile',
   'payload',
+  'product_terms',
   'response_payload',
   'validation_reasons',
   'verification_issues',

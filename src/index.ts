@@ -89,6 +89,11 @@ import {
   validateAppSettingPeriod,
 } from './domain/app-settings';
 import { OcrReadError, readReceipt } from './integrations/ocr';
+import { readProductCampaignMatches } from './integrations/product-ocr';
+import {
+  normalizeProductCampaignInput,
+  type ProductCampaignInput,
+} from './domain/product-campaign';
 import { classifyOcrFailure, ocrMaxAttempts, ocrRetryDelaySeconds } from './domain/ocr-failure';
 import { adminAccessSyncConfigured, syncAdminAccessEmails } from './integrations/cloudflare-access';
 import { adminInvitationMailConfigured, sendAdminInvitation } from './integrations/mailjet';
@@ -184,6 +189,7 @@ type ReceiptRow = {
   revoked_at: string | null;
   deletion_requested_at: string | null;
   deletion_requested_by: string | null;
+  updated_at: string;
   reward_outbox_status?: string | null;
   reward_outbox_last_error?: string | null;
   reward_outbox_attempt_count?: number | null;
@@ -297,7 +303,8 @@ type CollectionRewardClaimRow = {
   store_id: string;
   external_user_id: string;
   receipt_id: string | null;
-  rule_type: 'MILESTONE' | 'DAILY_WINNER';
+  campaign_id: string | null;
+  rule_type: 'MILESTONE' | 'DAILY_WINNER' | 'PRODUCT_CAMPAIGN';
   rule_key: string;
   period_key: string;
   installation_id: string;
@@ -319,11 +326,14 @@ type AdminCollectionRewardClaimRow = CollectionRewardClaimRow & {
   store_name: string;
   store_code: string;
   receipt_public_id: string | null;
+  campaign_name?: string | null;
 };
 
 export function adminCollectionRewardClaimView(row: AdminCollectionRewardClaimRow) {
   return {
     id: row.id,
+    campaignId: row.campaign_id,
+    campaignName: row.campaign_name || '',
     ruleType: row.rule_type,
     ruleKey: row.rule_key,
     periodKey: row.period_key,
@@ -343,6 +353,52 @@ export function adminCollectionRewardClaimView(row: AdminCollectionRewardClaimRo
     createdAt: row.created_at,
     deliveredAt: row.delivered_at,
     revokedAt: row.revoked_at,
+  };
+}
+
+export type ProductCampaignRow = {
+  id: string;
+  store_id: string;
+  name: string;
+  active: boolean;
+  product_terms: string[];
+  required_tickets: number;
+  installation_id: string;
+  family_id: string;
+  card_id: string;
+  starts_on: string | null;
+  ends_on: string | null;
+  max_awards_total: number;
+  activated_at: string | null;
+  archived_at: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  analyzed_tickets?: number;
+  matched_tickets?: number;
+  awarded_cards?: number;
+};
+
+function productCampaignView(row: ProductCampaignRow) {
+  return {
+    id: row.id,
+    storeId: row.store_id,
+    name: row.name,
+    active: row.active,
+    productTerms: Array.isArray(row.product_terms) ? row.product_terms : [],
+    requiredTickets: Number(row.required_tickets),
+    installationId: row.installation_id,
+    familyId: row.family_id,
+    cardId: row.card_id,
+    startsOn: row.starts_on || '',
+    endsOn: row.ends_on || '',
+    maxAwardsTotal: Number(row.max_awards_total || 0),
+    archived: Boolean(row.archived_at),
+    analyzedTickets: Number(row.analyzed_tickets || 0),
+    matchedTickets: Number(row.matched_tickets || 0),
+    awardedCards: Number(row.awarded_cards || 0),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -1175,6 +1231,179 @@ async function enqueueCollectionClaims(env: Env, claimIds: string[]): Promise<vo
     env.REWARD_JOBS.send({ kind: 'DELIVER_COLLECTION_REWARD', claimId }).catch((caught) => {
       console.error('Could not enqueue collection reward claim', { claimId }, caught);
     })));
+}
+
+const PRODUCT_CAMPAIGN_VALID_WITHOUT_POINTS = [
+  'DAILY_STORE_LIMIT', 'USER_POINTS_LIMIT', 'USER_DAILY_POINTS_LIMIT',
+] as const;
+
+export function receiptEligibleForProductCampaign(status: string, reasons: string[] = []): boolean {
+  return status === 'REWARDED' || (status === 'AUTO_REJECTED' &&
+    reasons.some((reason) => (PRODUCT_CAMPAIGN_VALID_WITHOUT_POINTS as readonly string[]).includes(reason)));
+}
+
+export type ProductAnalysisReceipt = Pick<ReceiptRow,
+  'id' | 'store_id' | 'external_user_id' | 'image_key' | 'image_content_type' |
+  'purchase_date' | 'status' | 'validation_reasons'> & {
+    installation_id: string;
+    eligibility_at: string;
+  };
+
+async function productAnalysisContext(
+  client: DbClient,
+  receiptId: string,
+): Promise<{ receipt: ProductAnalysisReceipt; campaigns: ProductCampaignRow[] } | null> {
+  const receiptResult = await client.query<ProductAnalysisReceipt>(
+    `SELECT r.id, r.store_id, r.external_user_id, r.image_key, r.image_content_type,
+        r.purchase_date, r.status, r.validation_reasons,
+        COALESCE(CASE WHEN r.status = 'REWARDED' THEN r.rewarded_at ELSE r.reviewed_at END,
+          r.created_at) AS eligibility_at,
+        COALESCE(s.installation_id, '') AS installation_id
+       FROM receipts r JOIN player_sessions s ON s.id = r.session_id
+      WHERE r.id = $1 LIMIT 1`,
+    [receiptId],
+  );
+  const receipt = receiptResult.rows[0];
+  if (!receipt?.store_id || !receipt.external_user_id ||
+      !receiptEligibleForProductCampaign(receipt.status, receipt.validation_reasons)) return null;
+  const campaigns = await client.query<ProductCampaignRow>(
+    `SELECT * FROM store_product_campaigns
+      WHERE store_id = $1 AND installation_id = $2 AND active = TRUE
+        AND archived_at IS NULL AND activated_at IS NOT NULL AND activated_at <= $3
+        AND ($4 = '' OR starts_on IS NULL OR starts_on <= $4)
+        AND ($4 = '' OR ends_on IS NULL OR ends_on >= $4)
+      ORDER BY created_at ASC LIMIT 20`,
+    [receipt.store_id, receipt.installation_id, receipt.eligibility_at, receipt.purchase_date || ''],
+  );
+  return campaigns.rows.length ? { receipt, campaigns: campaigns.rows } : null;
+}
+
+export async function claimProductCampaignReward(
+  client: DbClient,
+  campaign: ProductCampaignRow,
+  receipt: ProductAnalysisReceipt,
+): Promise<string> {
+  const progress = await client.query<{ total: number }>(
+    `SELECT COUNT(DISTINCT m.receipt_id) AS total
+       FROM receipt_product_matches m JOIN receipts r ON r.id = m.receipt_id
+      WHERE m.campaign_id = $1 AND m.external_user_id = $2 AND m.status = 'MATCHED'
+        AND (r.status = 'REWARDED' OR (r.status = 'AUTO_REJECTED' AND EXISTS (
+          SELECT 1 FROM json_each(r.validation_reasons)
+           WHERE value IN ('DAILY_STORE_LIMIT', 'USER_POINTS_LIMIT', 'USER_DAILY_POINTS_LIMIT')
+        )))`,
+    [campaign.id, receipt.external_user_id],
+  );
+  if (Number(progress.rows[0]?.total || 0) < Number(campaign.required_tickets)) return '';
+  const claimId = uuid();
+  const inserted = await client.query<{ id: string }>(
+    `INSERT INTO collection_reward_claims
+       (id, store_id, external_user_id, receipt_id, campaign_id, rule_type, rule_key,
+        installation_id, family_id, requested_card_id, idempotency_key)
+     SELECT $1, $2, $3, $4, $5, 'PRODUCT_CAMPAIGN', $5, $6, $7, $8, $9
+      WHERE ($10 = 0 OR (
+        SELECT COUNT(*) FROM collection_reward_claims
+         WHERE campaign_id = $5 AND status = ANY($11::text[])
+      ) < $10)
+     ON CONFLICT(store_id, external_user_id, rule_type, rule_key, period_key)
+     DO UPDATE SET receipt_id = $4, campaign_id = $5, status = 'PENDING',
+       attempt_count = 0, next_attempt_at = NOW(), locked_until = NULL,
+       last_error = NULL, updated_at = NOW()
+     WHERE collection_reward_claims.status = 'REVOKED'
+     RETURNING id`,
+    [claimId, campaign.store_id, receipt.external_user_id, receipt.id, campaign.id,
+      campaign.installation_id, campaign.family_id, campaign.card_id,
+      `ticket-product-campaign:${campaign.id}:${receipt.external_user_id}`,
+      campaign.max_awards_total, [...ACTIVE_COLLECTION_CLAIM_STATUSES]],
+  );
+  return inserted.rows[0]?.id || '';
+}
+
+export async function processReceiptProductCampaigns(env: Env, receiptId: string): Promise<void> {
+  const context = await withDatabase(env, (client) => productAnalysisContext(client, receiptId));
+  if (!context) return;
+  const existing = await withDatabase(env, async (client) => {
+    const result = await client.query<{ campaign_id: string; status: string }>(
+      'SELECT campaign_id, status FROM receipt_product_matches WHERE receipt_id = $1', [receiptId],
+    );
+    return new Map(result.rows.map((row) => [row.campaign_id, row.status]));
+  });
+  const missing = context.campaigns.filter((campaign) => !existing.has(campaign.id));
+  if (missing.length) {
+    const image = await env.TICKETS.get(context.receipt.image_key);
+    if (!image) throw new Error('R2_OBJECT_NOT_FOUND');
+    const storedBytes = await image.arrayBuffer();
+    const bytes = image.customMetadata?.ocrReady === 'true'
+      ? storedBytes
+      : await prepareOcrImage(env, storedBytes);
+    const analysis = await readProductCampaignMatches(
+      env,
+      bytes,
+      context.receipt.image_content_type || 'image/webp',
+      missing.map((campaign) => ({
+        id: campaign.id,
+        name: campaign.name,
+        productTerms: campaign.product_terms,
+      })),
+    );
+    await withDatabase(env, async (client) => {
+      for (const match of analysis.matches) {
+        const status = match.matched ? 'MATCHED' : 'NOT_MATCHED';
+        await client.query(
+          `INSERT INTO receipt_product_matches
+             (receipt_id, campaign_id, external_user_id, status, confidence,
+              product_text, evidence_text, provider, model, duration_ms)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           ON CONFLICT(receipt_id, campaign_id) DO NOTHING`,
+          [receiptId, match.campaignId, context.receipt.external_user_id, status,
+            match.confidence, match.productText || null, match.evidenceText || null,
+            analysis.provider, analysis.model, analysis.durationMs],
+        );
+        existing.set(match.campaignId, status);
+      }
+    });
+  }
+  const claimIds = await withDatabase(env, async (client) => {
+    const created: string[] = [];
+    for (const campaign of context.campaigns) {
+      if (existing.get(campaign.id) !== 'MATCHED') continue;
+      const claimId = await claimProductCampaignReward(client, campaign, context.receipt);
+      if (claimId) created.push(claimId);
+    }
+    return created;
+  });
+  await enqueueCollectionClaims(env, claimIds);
+}
+
+async function recordProductCampaignAnalysisFailure(
+  env: Env,
+  receiptId: string,
+  lastError: string,
+): Promise<void> {
+  await withDatabase(env, async (client) => {
+    const context = await productAnalysisContext(client, receiptId);
+    if (!context) return;
+    for (const campaign of context.campaigns) {
+      await client.query(
+        `INSERT INTO receipt_product_matches
+           (receipt_id, campaign_id, external_user_id, status, last_error)
+         VALUES ($1, $2, $3, 'FAILED', $4)
+         ON CONFLICT(receipt_id, campaign_id) DO NOTHING`,
+        [receiptId, campaign.id, context.receipt.external_user_id, lastError.slice(0, 500)],
+      );
+    }
+  });
+}
+
+async function enqueueProductAnalysisIfEligible(env: Env, receiptId: string): Promise<void> {
+  const eligible = await withDatabase(env, async (client) => Boolean(
+    await productAnalysisContext(client, receiptId),
+  ));
+  if (!eligible) return;
+  try {
+    await env.OCR_JOBS.send({ kind: 'ANALYZE_RECEIPT_PRODUCTS', receiptId });
+  } catch (caught) {
+    console.error('Could not enqueue product campaign analysis', { receiptId }, caught);
+  }
 }
 
 async function dailyStoreLimitReached(
@@ -2022,6 +2251,7 @@ async function processOcr(env: Env, receiptId: string): Promise<void> {
     }));
   }
   await enqueueRewardOutbox(env, receiptId, rewardOutboxId);
+  await enqueueProductAnalysisIfEligible(env, receiptId);
 }
 
 async function recordOcrFailure(env: Env, receiptId: string, lastError: string): Promise<void> {
@@ -2129,6 +2359,50 @@ async function scheduleOutboxRetry(
   return delaySeconds;
 }
 
+async function reconcileProductCampaignClaimsAfterRevocation(
+  client: DbClient,
+  receiptId: string,
+  externalUserId: string | null,
+): Promise<string[]> {
+  if (!externalUserId) return [];
+  const matched = await client.query<{ campaign_id: string }>(
+    `SELECT campaign_id FROM receipt_product_matches
+      WHERE receipt_id = $1 AND status = 'MATCHED'`, [receiptId],
+  );
+  const reversalIds: string[] = [];
+  for (const { campaign_id: campaignId } of matched.rows) {
+    const campaign = await client.query<Pick<ProductCampaignRow, 'required_tickets'>>(
+      'SELECT required_tickets FROM store_product_campaigns WHERE id = $1 LIMIT 1', [campaignId],
+    );
+    if (!campaign.rows[0]) continue;
+    const progress = await client.query<{ total: number }>(
+      `SELECT COUNT(DISTINCT m.receipt_id) AS total
+         FROM receipt_product_matches m JOIN receipts r ON r.id = m.receipt_id
+        WHERE m.campaign_id = $1 AND m.external_user_id = $2 AND m.status = 'MATCHED'
+          AND (r.status = 'REWARDED' OR (r.status = 'AUTO_REJECTED' AND EXISTS (
+            SELECT 1 FROM json_each(r.validation_reasons)
+             WHERE value IN ('DAILY_STORE_LIMIT', 'USER_POINTS_LIMIT', 'USER_DAILY_POINTS_LIMIT')
+          )))`,
+      [campaignId, externalUserId],
+    );
+    if (Number(progress.rows[0]?.total || 0) >= Number(campaign.rows[0].required_tickets)) continue;
+    const updated = await client.query<{ id: string; status: string }>(
+      `UPDATE collection_reward_claims
+          SET status = CASE WHEN status = 'DELIVERED' THEN 'REVOKE_PENDING' ELSE 'REVOKED' END,
+              attempt_count = 0, next_attempt_at = NOW(), locked_until = NULL,
+              last_error = NULL, updated_at = NOW()
+        WHERE campaign_id = $1 AND external_user_id = $2
+          AND status IN ('PENDING', 'PROCESSING', 'DELIVERED', 'FAILED', 'SKIPPED')
+        RETURNING id, status`,
+      [campaignId, externalUserId],
+    );
+    reversalIds.push(...updated.rows
+      .filter((claim) => claim.status === 'REVOKE_PENDING')
+      .map((claim) => claim.id));
+  }
+  return reversalIds;
+}
+
 async function processOutbox(env: Env, outboxId: string): Promise<number | null> {
   const maxAttempts = rewardMaxAttempts(env);
   const claimed = await withDatabase(env, async (client) =>
@@ -2233,9 +2507,17 @@ async function processOutbox(env: Env, outboxId: string): Promise<number | null>
         [receipt.id],
       );
       collectionRevokeClaimIds = cardClaims.rows.map((claim) => claim.id);
+      const productReversals = await reconcileProductCampaignClaimsAfterRevocation(
+        client, receipt.id, receipt.external_user_id,
+      );
+      collectionRevokeClaimIds = Array.from(new Set([
+        ...collectionRevokeClaimIds,
+        ...productReversals,
+      ]));
     }
   }));
   if (collectionClaimIds.length) await enqueueCollectionClaims(env, collectionClaimIds);
+  if (outbox.operation === 'GRANT') await enqueueProductAnalysisIfEligible(env, receipt.id);
   if (collectionRevokeClaimIds.length) {
     await Promise.all(collectionRevokeClaimIds.map((claimId) =>
       env.REWARD_JOBS.send({ kind: 'REVOKE_COLLECTION_REWARD', claimId })));
@@ -2286,7 +2568,9 @@ async function processCollectionRewardClaim(env: Env, claimId: string): Promise<
       externalMatchId: `ticket-collection:${claimed.id}`,
       eventType: claimed.rule_type === 'DAILY_WINNER'
         ? 'TICKET_DAILY_CATEGORY_WINNER'
-        : 'TICKET_COLLECTION_MILESTONE',
+        : claimed.rule_type === 'PRODUCT_CAMPAIGN'
+          ? 'TICKET_PRODUCT_CAMPAIGN'
+          : 'TICKET_COLLECTION_MILESTONE',
       cardId: claimed.requested_card_id || undefined,
       metadata: {
         claimId: claimed.id,
@@ -2295,6 +2579,7 @@ async function processCollectionRewardClaim(env: Env, claimId: string): Promise<
         familyId: claimed.family_id,
         ruleType: claimed.rule_type,
         ruleKey: claimed.rule_key,
+        campaignId: claimed.campaign_id,
         periodKey: claimed.period_key,
       },
       idempotencyKey: claimed.idempotency_key,
@@ -2861,10 +3146,11 @@ async function handleAdminTicketUserDetail(request: Request, env: Env, lookupCod
     const installationId = String(detailUrl.searchParams.get('installation') || '').trim();
     const collectionRewards = await client.query<AdminCollectionRewardClaimRow>(
       `SELECT c.*, st.name AS store_name, st.code AS store_code,
-          r.public_id AS receipt_public_id
+          r.public_id AS receipt_public_id, pc.name AS campaign_name
          FROM collection_reward_claims c
          JOIN stores st ON st.id = c.store_id
          LEFT JOIN receipts r ON r.id = c.receipt_id
+         LEFT JOIN store_product_campaigns pc ON pc.id = c.campaign_id
         WHERE c.external_user_id = $1 AND ($2 = '' OR c.installation_id = $2)
         ORDER BY CASE WHEN c.rule_type = 'DAILY_WINNER' THEN c.period_key
           ELSE COALESCE(c.delivered_at, c.created_at) END DESC, c.created_at DESC
@@ -3253,6 +3539,7 @@ async function handleAdminReview(
     return json({ success: true, status: 'REVOKE_PENDING' }, 202);
   }));
   if (outboxId) await env.REWARD_JOBS.send({ kind: 'DELIVER_REWARD', outboxId });
+  await enqueueProductAnalysisIfEligible(env, receiptId);
   return response;
 }
 
@@ -3484,6 +3771,164 @@ async function handleAdminStoreUpdate(
   if (updated.kind === 'archived') return error('Restaura el comercio antes de modificarlo', 409);
   if (updated.kind === 'duplicate') return error('Ya existe un comercio con ese código', 409);
   return json({ success: true, store: storeView(updated.row) });
+}
+
+function productCampaignValues(input: ProductCampaignInput) {
+  return [
+    input.name,
+    input.active,
+    JSON.stringify(input.productTerms),
+    input.requiredTickets,
+    input.installationId,
+    input.familyId,
+    input.cardId,
+    input.startsOn || null,
+    input.endsOn || null,
+    input.maxAwardsTotal,
+  ];
+}
+
+async function handleAdminProductCampaigns(
+  request: Request,
+  env: Env,
+  storeId: string,
+): Promise<Response> {
+  const managerEmail = managerIdentity(request, env);
+  if (!managerEmail) return error('Acceso de gestor requerido', 401);
+  const store = await withDatabase(env, async (client) => {
+    const result = await client.query<Pick<StoreRow, 'id' | 'archived_at'>>(
+      'SELECT id, archived_at FROM stores WHERE id = $1 LIMIT 1', [storeId],
+    );
+    return result.rows[0];
+  });
+  if (!store) return error('Comercio no encontrado', 404);
+  if (request.method === 'GET') {
+    const campaigns = await withDatabase(env, async (client) => {
+      const result = await client.query<ProductCampaignRow>(
+        `SELECT c.*,
+            (SELECT COUNT(*) FROM receipt_product_matches m
+              WHERE m.campaign_id = c.id) AS analyzed_tickets,
+            (SELECT COUNT(*) FROM receipt_product_matches m
+              WHERE m.campaign_id = c.id AND m.status = 'MATCHED') AS matched_tickets,
+            (SELECT COUNT(*) FROM collection_reward_claims cr
+              WHERE cr.campaign_id = c.id AND cr.status = 'DELIVERED') AS awarded_cards
+           FROM store_product_campaigns c
+          WHERE c.store_id = $1
+          ORDER BY (c.archived_at IS NOT NULL) ASC, c.active DESC, c.created_at DESC`,
+        [storeId],
+      );
+      return result.rows;
+    });
+    return json({ success: true, campaigns: campaigns.map(productCampaignView) });
+  }
+  if (store.archived_at) return error('Restaura el comercio antes de añadir campañas', 409);
+  const input = normalizeProductCampaignInput(await readJson(request));
+  const campaignId = uuid();
+  const created = await withDatabase(env, (client) => inTransaction(client, async () => {
+    const values = productCampaignValues(input);
+    const result = await client.query<ProductCampaignRow>(
+      `INSERT INTO store_product_campaigns
+         (id, store_id, name, active, product_terms, required_tickets,
+          installation_id, family_id, card_id, starts_on, ends_on,
+          max_awards_total, created_by, activated_at)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13,
+         CASE WHEN $4 = TRUE THEN NOW() ELSE NULL END)
+       RETURNING *`,
+      [campaignId, storeId, ...values, managerEmail],
+    );
+    await client.query(
+      `INSERT INTO product_campaign_audit_log
+         (id, campaign_id, store_id, action, manager_email, changes)
+       VALUES ($1, $2, $3, 'CREATED', $4, $5::jsonb)`,
+      [uuid(), campaignId, storeId, managerEmail, JSON.stringify(input)],
+    );
+    return result.rows[0]!;
+  }));
+  return json({ success: true, campaign: productCampaignView(created) }, 201);
+}
+
+async function handleAdminProductCampaign(
+  request: Request,
+  env: Env,
+  storeId: string,
+  campaignId: string,
+): Promise<Response> {
+  const managerEmail = managerIdentity(request, env);
+  if (!managerEmail) return error('Acceso de gestor requerido', 401);
+  if (request.method === 'PATCH') {
+    const input = normalizeProductCampaignInput(await readJson(request));
+    const updated = await withDatabase(env, (client) => inTransaction(client, async () => {
+      const current = await client.query<ProductCampaignRow>(
+        `SELECT c.* FROM store_product_campaigns c JOIN stores s ON s.id = c.store_id
+          WHERE c.id = $1 AND c.store_id = $2 AND c.archived_at IS NULL
+            AND s.archived_at IS NULL LIMIT 1`,
+        [campaignId, storeId],
+      );
+      if (!current.rows[0]) return null;
+      const values = productCampaignValues(input);
+      const result = await client.query<ProductCampaignRow>(
+        `UPDATE store_product_campaigns SET name = $3, active = $4,
+            product_terms = $5::jsonb, required_tickets = $6,
+            installation_id = $7, family_id = $8, card_id = $9,
+            starts_on = $10, ends_on = $11, max_awards_total = $12,
+            activated_at = CASE
+              WHEN $4 = TRUE AND active = FALSE THEN NOW()
+              WHEN $4 = FALSE THEN NULL ELSE activated_at END,
+            updated_at = NOW()
+          WHERE id = $1 AND store_id = $2 RETURNING *`,
+        [campaignId, storeId, ...values],
+      );
+      await client.query(
+        `INSERT INTO product_campaign_audit_log
+           (id, campaign_id, store_id, action, manager_email, changes)
+         VALUES ($1, $2, $3, 'UPDATED', $4, $5::jsonb)`,
+        [uuid(), campaignId, storeId, managerEmail, JSON.stringify({ before: productCampaignView(current.rows[0]), after: input })],
+      );
+      return result.rows[0]!;
+    }));
+    if (!updated) return error('Campaña no encontrada o archivada', 404);
+    return json({ success: true, campaign: productCampaignView(updated) });
+  }
+
+  const removed = await withDatabase(env, (client) => inTransaction(client, async () => {
+    const current = await client.query<ProductCampaignRow>(
+      'SELECT * FROM store_product_campaigns WHERE id = $1 AND store_id = $2 LIMIT 1',
+      [campaignId, storeId],
+    );
+    if (!current.rows[0]) return null;
+    const dependencies = await client.query<{ matches: number; claims: number }>(
+      `SELECT
+         (SELECT COUNT(*) FROM receipt_product_matches WHERE campaign_id = $1) AS matches,
+         (SELECT COUNT(*) FROM collection_reward_claims WHERE campaign_id = $1) AS claims`,
+      [campaignId],
+    );
+    const hasHistory = Number(dependencies.rows[0]?.matches || 0) > 0 ||
+      Number(dependencies.rows[0]?.claims || 0) > 0;
+    if (hasHistory) {
+      const result = await client.query<ProductCampaignRow>(
+        `UPDATE store_product_campaigns SET active = FALSE,
+            archived_at = COALESCE(archived_at, NOW()), updated_at = NOW()
+          WHERE id = $1 RETURNING *`, [campaignId],
+      );
+      await client.query(
+        `INSERT INTO product_campaign_audit_log
+           (id, campaign_id, store_id, action, manager_email, changes)
+         VALUES ($1, $2, $3, 'ARCHIVED', $4, $5::jsonb)`,
+        [uuid(), campaignId, storeId, managerEmail, JSON.stringify(dependencies.rows[0] || {})],
+      );
+      return { mode: 'ARCHIVED' as const, row: result.rows[0]! };
+    }
+    await client.query('DELETE FROM store_product_campaigns WHERE id = $1', [campaignId]);
+    await client.query(
+      `INSERT INTO product_campaign_audit_log
+         (id, campaign_id, store_id, action, manager_email, changes)
+       VALUES ($1, $2, $3, 'DELETED', $4, '{}')`,
+      [uuid(), campaignId, storeId, managerEmail],
+    );
+    return { mode: 'DELETED' as const, row: current.rows[0] };
+  }));
+  if (!removed) return error('Campaña no encontrada', 404);
+  return json({ success: true, mode: removed.mode, campaign: productCampaignView(removed.row) });
 }
 
 async function storeDependencyCounts(client: DbClient, storeId: string): Promise<StoreDependencyCounts> {
@@ -4747,6 +5192,19 @@ async function handleFetch(request: Request, env: Env, context: ExecutionContext
     if (request.method === 'DELETE' && trainingSampleMatch?.[1] && trainingSampleMatch[2]) {
       return await handleAdminTrainingDelete(request, env, trainingSampleMatch[1], trainingSampleMatch[2]);
     }
+    const productCampaignCollectionMatch = url.pathname.match(
+      /^\/api\/admin\/stores\/([^/]+)\/product-campaigns$/,
+    );
+    if (productCampaignCollectionMatch?.[1] && ['GET', 'POST'].includes(request.method)) {
+      return await handleAdminProductCampaigns(request, env, productCampaignCollectionMatch[1]);
+    }
+    const productCampaignMatch = url.pathname.match(
+      /^\/api\/admin\/stores\/([^/]+)\/product-campaigns\/([^/]+)$/,
+    );
+    if (productCampaignMatch?.[1] && productCampaignMatch[2] &&
+        ['PATCH', 'DELETE'].includes(request.method)) {
+      return await handleAdminProductCampaign(request, env, productCampaignMatch[1], productCampaignMatch[2]);
+    }
     const storeMatch = url.pathname.match(/^\/api\/admin\/stores\/([^/]+)$/);
     if (request.method === 'PATCH' && storeMatch?.[1]) return await handleAdminStoreUpdate(request, env, storeMatch[1]);
     if (request.method === 'DELETE' && storeMatch?.[1]) return await handleAdminStoreDelete(request, env, storeMatch[1]);
@@ -4844,6 +5302,12 @@ async function handleFetch(request: Request, env: Env, context: ExecutionContext
       STORE_COLLECTION_TARGET_REQUIRED: 'Selecciona la instalación y la familia de cartas de Rtales',
       STORE_COLLECTION_RULE_REQUIRED: 'Añade al menos un hito de puntos o activa el premio diario',
       STORE_COLLECTION_CATEGORY_REQUIRED: 'Indica la categoría que se utilizará para el premio diario',
+      PRODUCT_CAMPAIGN_NAME_INVALID: 'El nombre de la campaña debe tener entre 2 y 120 caracteres',
+      PRODUCT_CAMPAIGN_TERMS_INVALID: 'Añade al menos un producto reconocible, uno por línea',
+      PRODUCT_CAMPAIGN_NUMBER_INVALID: 'Revisa el número de tickets o el límite de cartas',
+      PRODUCT_CAMPAIGN_DATE_INVALID: 'Indica una fecha válida para la campaña',
+      PRODUCT_CAMPAIGN_PERIOD_INVALID: 'La fecha de inicio debe ser anterior a la fecha de fin',
+      PRODUCT_CAMPAIGN_REWARD_REQUIRED: 'Selecciona la instalación, la familia y la carta que se entregará',
     };
     return error(validationErrors[message] || 'No se pudo completar la operación', validationErrors[message] ? 400 : 500);
   }
@@ -4911,6 +5375,36 @@ async function requeueDueCollectionRewards(env: Env): Promise<void> {
   await Promise.all(claims.map(({ id, status }) => env.REWARD_JOBS.send(status === 'REVOKE_PENDING'
     ? { kind: 'REVOKE_COLLECTION_REWARD', claimId: id }
     : { kind: 'DELIVER_COLLECTION_REWARD', claimId: id })));
+}
+
+async function requeuePendingProductAnalyses(env: Env): Promise<void> {
+  const ids = await withDatabase(env, async (client) => {
+    const result = await client.query<{ id: string }>(
+      `SELECT DISTINCT r.id
+         FROM receipts r
+         JOIN player_sessions s ON s.id = r.session_id
+         JOIN store_product_campaigns c ON c.store_id = r.store_id
+          AND c.installation_id = COALESCE(s.installation_id, '')
+        WHERE c.active = TRUE AND c.archived_at IS NULL AND c.activated_at IS NOT NULL
+          AND c.activated_at <= COALESCE(
+            CASE WHEN r.status = 'REWARDED' THEN r.rewarded_at ELSE r.reviewed_at END,
+            r.created_at)
+          AND (r.purchase_date IS NULL OR c.starts_on IS NULL OR c.starts_on <= r.purchase_date)
+          AND (r.purchase_date IS NULL OR c.ends_on IS NULL OR c.ends_on >= r.purchase_date)
+          AND (r.status = 'REWARDED' OR (r.status = 'AUTO_REJECTED' AND EXISTS (
+            SELECT 1 FROM json_each(r.validation_reasons)
+             WHERE value IN ('DAILY_STORE_LIMIT', 'USER_POINTS_LIMIT', 'USER_DAILY_POINTS_LIMIT')
+          )))
+          AND NOT EXISTS (
+            SELECT 1 FROM receipt_product_matches m
+             WHERE m.receipt_id = r.id AND m.campaign_id = c.id
+          )
+        ORDER BY r.updated_at ASC LIMIT 50`,
+    );
+    return result.rows.map((row) => row.id);
+  });
+  await Promise.all(ids.map((receiptId) =>
+    env.OCR_JOBS.send({ kind: 'ANALYZE_RECEIPT_PRODUCTS', receiptId })));
 }
 
 export function dailyCollectionRankingQuery(input: {
@@ -5145,6 +5639,9 @@ export default {
     for (const message of batch.messages) {
       try {
         if (message.body.kind === 'OCR_RECEIPT') await processOcr(env, message.body.receiptId);
+        else if (message.body.kind === 'ANALYZE_RECEIPT_PRODUCTS') {
+          await processReceiptProductCampaigns(env, message.body.receiptId);
+        }
         else if (message.body.kind === 'DELIVER_COLLECTION_REWARD') {
           const retryDelaySeconds = await processCollectionRewardClaim(env, message.body.claimId);
           if (retryDelaySeconds !== null) {
@@ -5176,6 +5673,14 @@ export default {
           } else {
             message.retry({ delaySeconds: ocrRetryDelaySeconds(message.attempts) });
           }
+        } else if (message.body.kind === 'ANALYZE_RECEIPT_PRODUCTS') {
+          const failure = classifyOcrFailure(caught);
+          if (!failure.retryable || message.attempts >= ocrMaxAttempts(env.OCR_MAX_ATTEMPTS)) {
+            await recordProductCampaignAnalysisFailure(env, message.body.receiptId, failure.error);
+            message.ack();
+          } else {
+            message.retry({ delaySeconds: ocrRetryDelaySeconds(message.attempts) });
+          }
         } else if (message.body.kind === 'DELIVER_COLLECTION_REWARD' || message.body.kind === 'REVOKE_COLLECTION_REWARD') {
           const claimId = message.body.claimId;
           await withDatabase(env, (client) => client.query(
@@ -5198,6 +5703,7 @@ export default {
     context.waitUntil(Promise.all([
       requeueDueOutbox(env),
       requeueDueCollectionRewards(env),
+      requeuePendingProductAnalyses(env),
       resolveDailyCollectionWinners(env),
       requeueStuckOcr(env),
       releaseStuckRewardSessions(env),

@@ -249,7 +249,7 @@ function repairJsonLike(candidate: string): string {
   return normalized;
 }
 
-function parseJsonObject(value: string): Record<string, unknown> {
+export function parseJsonObject(value: string): Record<string, unknown> {
   for (const candidate of jsonObjectCandidates(value)) {
     const variants = [candidate, escapeJsonControlCharacters(candidate), repairJsonLike(candidate)];
     for (const variant of new Set(variants)) {

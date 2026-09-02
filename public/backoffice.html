@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Revisión antifraude de tickets</title>
-    <link rel="stylesheet" href="/styles.css?v=collection-rewards-1" />
+    <link rel="stylesheet" href="/styles.css?v=product-campaigns-1" />
   </head>
   <body class="backoffice-body">
     <header class="admin-header">
@@ -174,6 +174,7 @@
         <nav class="store-dialog-tabs" aria-label="Edición del comercio">
           <button class="active" data-store-panel="details" type="button">Datos</button>
           <button id="store-training-tab" data-store-panel="training" type="button">Entrenamiento <span id="training-tab-count">0</span></button>
+          <button id="store-campaigns-tab" data-store-panel="campaigns" type="button">Campañas <span id="campaigns-tab-count">0</span></button>
         </nav>
         <section id="store-details-panel" class="store-dialog-panel active">
           <p class="store-archived-notice" id="store-archived-notice" hidden>Este comercio está archivado. Su histórico se conserva y no puede modificarse hasta que se restaure.</p>
@@ -273,6 +274,35 @@
             <div class="dialog-actions"><button class="secondary-button" id="generate-ocr-profile" type="button">Generar desde ejemplos evaluados</button><button class="primary-button" id="save-ocr-profile" type="button">Guardar perfil</button></div>
           </section>
         </section>
+        <section id="store-campaigns-panel" class="store-dialog-panel product-campaigns-panel" hidden>
+          <div class="product-campaigns-heading">
+            <div><strong>Campañas por productos</strong><p>Busca productos en tickets válidos y entrega una carta cuando el usuario reúne el número de tickets configurado.</p></div>
+            <button class="primary-button compact-button" id="new-product-campaign" type="button">Nueva campaña</button>
+          </div>
+          <p class="product-campaigns-note">Cada ticket cuenta una sola vez para una campaña, aunque incluya varias unidades. La detección de productos no bloquea los puntos normales.</p>
+          <div id="product-campaign-list" class="product-campaign-list"></div>
+          <p id="product-campaigns-error" class="form-error" role="alert"></p>
+        </section>
+      </form>
+    </dialog>
+    <dialog id="product-campaign-dialog" class="product-campaign-dialog">
+      <form id="product-campaign-form">
+        <div class="dialog-heading"><div><p class="eyebrow">Campaña del comercio</p><h2 id="product-campaign-title">Nueva campaña</h2></div><button class="icon-button" id="close-product-campaign" type="button" aria-label="Cerrar">×</button></div>
+        <input name="id" type="hidden" />
+        <label>Nombre de la campaña<input name="name" maxlength="120" required placeholder="Ej. Monster · 3 tickets" /></label>
+        <label>Productos reconocibles<textarea name="productTerms" rows="5" required placeholder="Un texto por línea&#10;MONSTER&#10;MONSTER ENERGY&#10;MNSTR ENERGY"></textarea><small>Incluye las denominaciones o abreviaturas que aparecen realmente en los tickets de este comercio.</small></label>
+        <div class="product-campaign-grid">
+          <label>Tickets necesarios<input name="requiredTickets" type="number" min="1" max="1000" value="3" required /><small>Un ticket válido cuenta como máximo una vez.</small></label>
+          <label>Máximo total de cartas<input name="maxAwardsTotal" type="number" min="0" max="1000000" value="0" required /><small>0 = sin límite.</small></label>
+          <label>Inicio opcional<input name="startsOn" type="date" /></label>
+          <label>Fin opcional<input name="endsOn" type="date" /></label>
+          <label>Instalación de Rtales<select name="installationId" required><option value="">Selecciona una instalación</option></select></label>
+          <label>Familia de cartas<select name="familyId" required><option value="">Selecciona una familia</option></select></label>
+          <label class="product-campaign-wide">Carta que se entregará<select name="cardId" required><option value="">Selecciona una carta</option></select></label>
+        </div>
+        <label class="switch-row"><span><strong>Campaña activa</strong><small>Solo se analizarán tickets validados después de crear la campaña.</small></span><input name="active" type="checkbox" checked /></label>
+        <p id="product-campaign-form-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button class="secondary-button" id="cancel-product-campaign" type="button">Cancelar</button><button class="primary-button" type="submit">Guardar campaña</button></div>
       </form>
     </dialog>
     <dialog id="store-delete-dialog" class="store-delete-dialog">
@@ -372,6 +402,6 @@
         <div id="ticket-user-detail-body"></div>
       </div>
     </dialog>
-    <script type="module" src="/backoffice.js?v=user-card-history-1"></script>
+    <script type="module" src="/backoffice.js?v=product-campaigns-1"></script>
   </body>
 </html>

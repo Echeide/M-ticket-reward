@@ -131,6 +131,7 @@ test('collection milestones cannot cross Rtales installations', async () => {
 test('collection reward audit view preserves delivery and failure evidence', () => {
   const view = adminCollectionRewardClaimView({
     id: 'claim-1', store_id: 'store-1', external_user_id: 'user-1', receipt_id: null,
+    campaign_id: null,
     rule_type: 'DAILY_WINNER', rule_key: 'CATEGORY:HIPERDINO', period_key: '2026-08-26',
     installation_id: 'installation-1', family_id: 'family-1', requested_card_id: 'card-1',
     status: 'DELIVERED', idempotency_key: 'key-1', rtales_result_id: 'result-1',

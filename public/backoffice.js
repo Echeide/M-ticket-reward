@@ -1,12 +1,15 @@
+const localPreviewToken = location.hostname === 'localhost'
+  ? new URLSearchParams(location.search).get('adminToken') || ''
+  : '';
 const state = {
-  rows: [], stores: [], spaces: [], installations: [], tiers: [], ticketUsers: [], settings: [], adminUsers: [], trainingSamples: [], collectionCatalog: [], collectionCatalogError: '', trainingProfile: null, selected: null,
+  rows: [], stores: [], spaces: [], installations: [], tiers: [], ticketUsers: [], settings: [], adminUsers: [], trainingSamples: [], productCampaigns: [], collectionCatalog: [], collectionCatalogError: '', trainingProfile: null, selected: null,
   currentAdmin: null,
   pagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
   ticketUserPagination: { page: 1, pageSize: 50, total: 0, totalPages: 1, hasPrevious: false, hasNext: false },
   reviewing: false, storeDeletionPreview: null,
   trainingEvaluationRunning: false,
   trainingEvaluationSampleId: '',
-  token: sessionStorage.getItem('admin-token') || '',
+  token: sessionStorage.getItem('admin-token') || localPreviewToken,
 };
 let storeLogoPreviewObjectUrl = '';
 let trainingDraftFiles = [];
@@ -98,9 +101,11 @@ function receiptReviewLabel(receipt) {
 function isOperator() {
   return state.currentAdmin?.role === 'OPERATOR';
 }
-if (!state.token && location.hostname === 'localhost') {
-  state.token = prompt('Token de gestor local') || '';
-  if (state.token) sessionStorage.setItem('admin-token', state.token);
+if (localPreviewToken) {
+  sessionStorage.setItem('admin-token', localPreviewToken);
+  const cleanUrl = new URL(location.href);
+  cleanUrl.searchParams.delete('adminToken');
+  history.replaceState(null, '', `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
 }
 
 function headers(extra = {}) {
@@ -272,9 +277,13 @@ function collectionRewardStatus(reward) {
 }
 
 function collectionRewardReason(reward) {
-  return reward.ruleType === 'DAILY_WINNER'
-    ? `Ganador diario · ${String(reward.ruleKey || '').replace(/^CATEGORY:/, '') || 'categoría'}`
-    : `Hito de ${reward.ruleKey} puntos`;
+  if (reward.ruleType === 'DAILY_WINNER') {
+    return `Ganador diario · ${String(reward.ruleKey || '').replace(/^CATEGORY:/, '') || 'categoría'}`;
+  }
+  if (reward.ruleType === 'PRODUCT_CAMPAIGN') {
+    return `Campaña de producto · ${reward.campaignName || 'campaña'}`;
+  }
+  return `Hito de ${reward.ruleKey} puntos`;
 }
 
 function collectionRewardDate(reward) {
@@ -347,6 +356,166 @@ function renderCollectionConfig(config = {}) {
     : state.collectionCatalogError
       ? `No se pudo cargar el catálogo de Rtales: ${state.collectionCatalogError}`
       : 'Rtales no ofrece ninguna instalación con cartas disponible para esta credencial.';
+}
+
+function productCampaignRewardLabel(campaign) {
+  const installation = state.collectionCatalog.find((item) => item.installationId === campaign.installationId);
+  const family = installation?.families?.find((item) => item.id === campaign.familyId);
+  const card = family?.cards?.find((item) => item.id === campaign.cardId);
+  return {
+    installation: installation ? `${installation.spaceName} · ${installation.applicationName || 'Tickets'}` : campaign.installationId,
+    family: family?.name || campaign.familyId,
+    card: card ? `${card.number ? `${card.number} · ` : ''}${card.name || card.code || card.id}` : campaign.cardId,
+  };
+}
+
+function populateProductCampaignFamilies(selectedFamilyId = '', selectedCardId = '') {
+  const form = document.querySelector('#product-campaign-form');
+  const installation = state.collectionCatalog.find((item) => item.installationId === form.elements.installationId.value);
+  const families = installation?.families || [];
+  form.elements.familyId.replaceChildren(
+    new Option('Selecciona una familia', ''),
+    ...families.map((family) => new Option(family.name || family.id, family.id)),
+  );
+  if (selectedFamilyId && !families.some((family) => family.id === selectedFamilyId)) {
+    form.elements.familyId.append(new Option(`Familia configurada · ${selectedFamilyId}`, selectedFamilyId));
+  }
+  form.elements.familyId.value = selectedFamilyId || families[0]?.id || '';
+  populateProductCampaignCards(selectedCardId);
+}
+
+function populateProductCampaignCards(selectedCardId = '') {
+  const form = document.querySelector('#product-campaign-form');
+  const installation = state.collectionCatalog.find((item) => item.installationId === form.elements.installationId.value);
+  const family = installation?.families?.find((item) => item.id === form.elements.familyId.value);
+  const cards = family?.cards || [];
+  form.elements.cardId.replaceChildren(
+    new Option('Selecciona una carta', ''),
+    ...cards.map((card) => new Option(`${card.number ? `${card.number} · ` : ''}${card.name || card.code || card.id}`, card.id)),
+  );
+  if (selectedCardId && !cards.some((card) => card.id === selectedCardId)) {
+    form.elements.cardId.append(new Option(`Carta configurada · ${selectedCardId}`, selectedCardId));
+  }
+  form.elements.cardId.value = selectedCardId || '';
+}
+
+function renderProductCampaigns() {
+  const list = document.querySelector('#product-campaign-list');
+  document.querySelector('#campaigns-tab-count').textContent = String(
+    state.productCampaigns.filter((campaign) => !campaign.archived).length,
+  );
+  if (!state.productCampaigns.length) {
+    list.innerHTML = '<div class="product-campaign-empty">Este comercio todavía no tiene campañas de productos.</div>';
+    return;
+  }
+  list.innerHTML = state.productCampaigns.map((campaign) => {
+    const reward = productCampaignRewardLabel(campaign);
+    const period = campaign.startsOn || campaign.endsOn
+      ? `${campaign.startsOn ? formatSpanishDate(campaign.startsOn) : 'Sin inicio'} – ${campaign.endsOn ? formatSpanishDate(campaign.endsOn) : 'Sin fin'}`
+      : 'Sin periodo limitado';
+    return `<article class="product-campaign-card ${campaign.archived ? 'archived' : ''}">
+      <span class="product-campaign-main">
+        <span class="product-campaign-title-row"><strong>${escapeHtml(campaign.name)}</strong><span class="status-chip ${campaign.archived ? 'archived' : campaign.active ? 'rewarded' : 'duplicate'}">${campaign.archived ? 'ARCHIVADA' : campaign.active ? 'ACTIVA' : 'INACTIVA'}</span></span>
+        <span class="product-campaign-terms">${campaign.productTerms.map((term) => `<small>${escapeHtml(term)}</small>`).join('')}</span>
+        <small>${campaign.requiredTickets} ticket${campaign.requiredTickets === 1 ? '' : 's'} · ${escapeHtml(reward.card)} · ${escapeHtml(reward.family)}</small>
+        <small>${escapeHtml(period)} · ${campaign.maxAwardsTotal ? `máximo ${campaign.maxAwardsTotal} cartas` : 'sin límite total'}</small>
+        <span class="product-campaign-stats"><span><strong>${campaign.analyzedTickets}</strong> analizados</span><span><strong>${campaign.matchedTickets}</strong> coincidencias</span><span><strong>${campaign.awardedCards}</strong> cartas entregadas</span></span>
+      </span>
+      <span class="product-campaign-actions">${!campaign.archived && !isOperator() ? `<button class="secondary-button compact-button edit-product-campaign" data-id="${escapeHtml(campaign.id)}" type="button">Editar</button><button class="text-button delete-product-campaign" data-id="${escapeHtml(campaign.id)}" type="button">Eliminar</button>` : ''}</span>
+    </article>`;
+  }).join('');
+  list.querySelectorAll('.edit-product-campaign').forEach((button) => button.addEventListener('click', () => {
+    const campaign = state.productCampaigns.find((item) => item.id === button.dataset.id);
+    if (campaign) openProductCampaignDialog(campaign);
+  }));
+  list.querySelectorAll('.delete-product-campaign').forEach((button) => button.addEventListener('click', () => {
+    deleteProductCampaign(button.dataset.id).catch((error) => {
+      document.querySelector('#product-campaigns-error').textContent = error.message;
+    });
+  }));
+}
+
+async function loadProductCampaigns() {
+  const storeId = document.querySelector('#store-form').elements.id.value;
+  if (!storeId) return;
+  if (!state.collectionCatalog.length) await loadCollectionCatalog().catch(() => undefined);
+  const payload = await request(`/api/admin/stores/${storeId}/product-campaigns`);
+  state.productCampaigns = Array.isArray(payload.campaigns) ? payload.campaigns : [];
+  document.querySelector('#product-campaigns-error').textContent = '';
+  renderProductCampaigns();
+}
+
+function openProductCampaignDialog(campaign = null) {
+  const form = document.querySelector('#product-campaign-form');
+  const store = state.stores.find((item) => item.id === document.querySelector('#store-form').elements.id.value);
+  form.reset();
+  form.elements.id.value = campaign?.id || '';
+  form.elements.name.value = campaign?.name || '';
+  form.elements.productTerms.value = (campaign?.productTerms || []).join('\n');
+  form.elements.requiredTickets.value = campaign?.requiredTickets || 3;
+  form.elements.maxAwardsTotal.value = campaign?.maxAwardsTotal || 0;
+  form.elements.startsOn.value = campaign?.startsOn || '';
+  form.elements.endsOn.value = campaign?.endsOn || '';
+  form.elements.active.checked = campaign?.active ?? true;
+  const selectedInstallation = campaign?.installationId || store?.collectionConfig?.installationId || state.collectionCatalog[0]?.installationId || '';
+  form.elements.installationId.replaceChildren(
+    new Option('Selecciona una instalación', ''),
+    ...state.collectionCatalog.map((item) => new Option(`${item.spaceName} · ${item.applicationName || 'Tickets'}`, item.installationId)),
+  );
+  if (selectedInstallation && !state.collectionCatalog.some((item) => item.installationId === selectedInstallation)) {
+    form.elements.installationId.append(new Option(`Instalación configurada · ${selectedInstallation}`, selectedInstallation));
+  }
+  form.elements.installationId.value = selectedInstallation;
+  populateProductCampaignFamilies(
+    campaign?.familyId || store?.collectionConfig?.familyId || '',
+    campaign?.cardId || '',
+  );
+  document.querySelector('#product-campaign-title').textContent = campaign ? 'Editar campaña' : 'Nueva campaña';
+  document.querySelector('#product-campaign-form-error').textContent = '';
+  document.querySelector('#product-campaign-dialog').showModal();
+}
+
+async function saveProductCampaign(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const storeId = document.querySelector('#store-form').elements.id.value;
+  const campaignId = form.elements.id.value;
+  const submit = form.querySelector('button[type="submit"]');
+  const errorNode = document.querySelector('#product-campaign-form-error');
+  submit.disabled = true;
+  errorNode.textContent = '';
+  try {
+    await request(`/api/admin/stores/${storeId}/product-campaigns${campaignId ? `/${campaignId}` : ''}`, {
+      method: campaignId ? 'PATCH' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: form.elements.name.value,
+        productTerms: form.elements.productTerms.value.split(/\n+/).map((item) => item.trim()).filter(Boolean),
+        requiredTickets: Number(form.elements.requiredTickets.value),
+        maxAwardsTotal: Number(form.elements.maxAwardsTotal.value || 0),
+        startsOn: form.elements.startsOn.value,
+        endsOn: form.elements.endsOn.value,
+        installationId: form.elements.installationId.value,
+        familyId: form.elements.familyId.value,
+        cardId: form.elements.cardId.value,
+        active: form.elements.active.checked,
+      }),
+    });
+    document.querySelector('#product-campaign-dialog').close();
+    await loadProductCampaigns();
+  } catch (error) {
+    errorNode.textContent = error instanceof Error ? error.message : 'No se pudo guardar la campaña';
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function deleteProductCampaign(campaignId) {
+  const campaign = state.productCampaigns.find((item) => item.id === campaignId);
+  if (!campaign || !confirm(`¿Eliminar la campaña «${campaign.name}»? Si ya tiene actividad, se archivará para conservar el histórico.`)) return;
+  const storeId = document.querySelector('#store-form').elements.id.value;
+  await request(`/api/admin/stores/${storeId}/product-campaigns/${campaignId}`, { method: 'DELETE' });
+  await loadProductCampaigns();
 }
 
 function renderStores() {
@@ -850,11 +1019,14 @@ function openStoreDialog(id = '') {
   setStoreLogoPreview(store?.logoUrl || '');
   clearTrainingDrafts();
   state.trainingSamples = [];
+  state.productCampaigns = [];
   renderOcrProfile(store?.ocrProfile || {});
   document.querySelector('#training-samples').replaceChildren();
   document.querySelector('#training-summary').replaceChildren();
   document.querySelector('#training-tab-count').textContent = '0';
+  document.querySelector('#campaigns-tab-count').textContent = '0';
   document.querySelector('#store-training-tab').disabled = !store;
+  document.querySelector('#store-campaigns-tab').disabled = !store;
   setStorePanel('details');
   document.querySelector('#store-dialog-title').textContent = store?.archived
     ? 'Comercio archivado' : readOnly ? 'Consultar comercio' : store ? 'Editar comercio' : 'Añadir comercio';
@@ -870,6 +1042,7 @@ function openStoreDialog(id = '') {
   document.querySelector('.training-batch-actions').hidden = readOnly;
   document.querySelector('#generate-ocr-profile').hidden = readOnly;
   document.querySelector('#save-ocr-profile').hidden = readOnly;
+  document.querySelector('#new-product-campaign').hidden = readOnly;
   document.querySelector('#delete-store').hidden = !store || isOperator() || Boolean(store.archived);
   document.querySelector('#restore-store').hidden = !store?.archived || isOperator();
   document.querySelector('#store-dialog').showModal();
@@ -881,8 +1054,10 @@ function setStorePanel(panel) {
   });
   document.querySelector('#store-details-panel').hidden = panel !== 'details';
   document.querySelector('#store-training-panel').hidden = panel !== 'training';
+  document.querySelector('#store-campaigns-panel').hidden = panel !== 'campaigns';
   document.querySelector('#store-details-panel').classList.toggle('active', panel === 'details');
   document.querySelector('#store-training-panel').classList.toggle('active', panel === 'training');
+  document.querySelector('#store-campaigns-panel').classList.toggle('active', panel === 'campaigns');
 }
 
 function setStoreLogoPreview(source = '', objectUrl = false) {
@@ -1955,7 +2130,22 @@ document.querySelectorAll('[data-store-panel]').forEach((button) => button.addEv
       document.querySelector('#training-form-error').textContent = error.message;
     });
   }
+  if (button.dataset.storePanel === 'campaigns') {
+    await loadProductCampaigns().catch((error) => {
+      document.querySelector('#product-campaigns-error').textContent = error.message;
+    });
+  }
 }));
+document.querySelector('#new-product-campaign').addEventListener('click', () => openProductCampaignDialog());
+document.querySelector('#product-campaign-form').addEventListener('submit', saveProductCampaign);
+document.querySelector('#product-campaign-form [name="installationId"]').addEventListener('change', () => {
+  populateProductCampaignFamilies();
+});
+document.querySelector('#product-campaign-form [name="familyId"]').addEventListener('change', () => {
+  populateProductCampaignCards();
+});
+document.querySelector('#close-product-campaign').addEventListener('click', () => document.querySelector('#product-campaign-dialog').close());
+document.querySelector('#cancel-product-campaign').addEventListener('click', () => document.querySelector('#product-campaign-dialog').close());
 document.querySelector('#training-files').addEventListener('change', (event) => {
   const selected = [...event.currentTarget.files].slice(0, Math.max(0, 20 - trainingDraftFiles.length));
   trainingDraftFiles.push(...selected.map((file) => ({
@@ -1997,6 +2187,7 @@ document.querySelector('#generate-ocr-profile').addEventListener('click', genera
 document.querySelector('#save-ocr-profile').addEventListener('click', saveOcrProfile);
 document.querySelector('#ocr-profile-enabled').addEventListener('change', updateOcrProfileStatus);
 closeDialogOnBackdrop(document.querySelector('#store-dialog'), clearTrainingDrafts);
+closeDialogOnBackdrop(document.querySelector('#product-campaign-dialog'));
 closeDialogOnBackdrop(document.querySelector('#store-delete-dialog'), () => {
   state.storeDeletionPreview = null;
 });

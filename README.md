@@ -11,6 +11,7 @@ Aplicación externa para escanear tickets de comercios asociados, extraer sus da
 - imágenes privadas en Cloudflare R2, agrupadas por usuario mediante prefijos;
 - outbox y Cloudflare Queue para premios y reintentos;
 - backoffice filtrable y exportable a CSV, con historial de cartas y premios diarios por usuario e instalación;
+- campañas de producto por comercio, con detección OCR separada, progreso por tickets distintos y cartas concretas;
 - auditoría de confirmaciones y revocaciones.
 
 ## Desarrollo
@@ -89,6 +90,15 @@ INSERT INTO stores (id, code, name)
 VALUES ('10000000-0000-4000-8000-000000000001', 'DEMO', 'Tienda asociada');
 ```
 
+### Campañas de productos
+
+La tercera pestaña de la ficha del comercio permite crear campañas con denominaciones
+de producto, número de tickets requerido, periodo, instalación, familia y carta. El
+análisis se ejecuta únicamente después de validar el ticket y nunca bloquea sus puntos.
+Para considerar una coincidencia se exige confianza alta y una línea literal que
+contenga una de las denominaciones configuradas. Cada ticket cuenta una sola vez por
+campaña, la entrega es idempotente y una revocación por fraude recalcula el progreso.
+
 ## Producción
 
 Antes de desplegar:
@@ -103,4 +113,4 @@ Antes de desplegar:
 
 ## Política inicial
 
-Los puntos se conceden automáticamente tras confirmar los datos de un ticket que supera las reglas automáticas. La revisión humana es posterior: el gestor solo marca el ticket como revisado sin fraude o revoca el premio ya concedido. Cada comercio puede activar opcionalmente cartas por hitos de puntos y la campaña puede premiar al líder diario de una categoría. Las entregas tienen límites globales y por usuario e instalación, son idempotentes y se revierten junto con un ticket invalidado. La identidad, los duplicados, los strikes y los bloqueos siguen siendo globales para la misma persona aunque participe desde varias instalaciones de Rtales.
+Los puntos se conceden automáticamente tras confirmar los datos de un ticket que supera las reglas automáticas. La revisión humana es posterior: el gestor solo marca el ticket como revisado sin fraude o revoca el premio ya concedido. Cada comercio puede activar opcionalmente cartas por hitos de puntos y la campaña puede premiar al líder diario de una categoría. También puede entregar una carta concreta cuando un usuario acumula varios tickets válidos con un producto configurado. Las entregas tienen límites globales y por usuario e instalación, son idempotentes y se revierten junto con un ticket invalidado. La identidad, los duplicados, los strikes y los bloqueos siguen siendo globales para la misma persona aunque participe desde varias instalaciones de Rtales.

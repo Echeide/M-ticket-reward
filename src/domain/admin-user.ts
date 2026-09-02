@@ -31,7 +31,7 @@ export function adminRouteAllowed(role: AdminRole, method: string, pathname: str
     if (['/api/admin/session', '/api/admin/receipts', '/api/admin/receipts.csv', '/api/admin/spaces',
       '/api/admin/stores', '/api/admin/settings'].includes(pathname)) return true;
     if (/^\/api\/admin\/receipts\/[^/]+(?:\/image)?$/.test(pathname)) return true;
-    if (/^\/api\/admin\/stores\/[^/]+\/(?:logo|ocr-profile|training)$/.test(pathname)) return true;
+    if (/^\/api\/admin\/stores\/[^/]+\/(?:logo|ocr-profile|training|product-campaigns)$/.test(pathname)) return true;
     if (/^\/api\/admin\/stores\/[^/]+\/training\/[^/]+\/image$/.test(pathname)) return true;
   }
   if (method === 'POST' && /^\/api\/admin\/receipts\/[^/]+\/(?:reprocess|review)$/.test(pathname)) {

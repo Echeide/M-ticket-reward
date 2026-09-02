@@ -43,6 +43,8 @@ test('operator routes are limited to review and read-only store and settings acc
   assert.equal(adminRouteAllowed('OPERATOR', 'POST', '/api/admin/receipts/ticket-id/reprocess'), true);
   assert.equal(adminRouteAllowed('OPERATOR', 'GET', '/api/admin/stores'), true);
   assert.equal(adminRouteAllowed('OPERATOR', 'GET', '/api/admin/stores/store-id/training'), true);
+  assert.equal(adminRouteAllowed('OPERATOR', 'GET', '/api/admin/stores/store-id/product-campaigns'), true);
+  assert.equal(adminRouteAllowed('OPERATOR', 'POST', '/api/admin/stores/store-id/product-campaigns'), false);
   assert.equal(adminRouteAllowed('OPERATOR', 'GET', '/api/admin/settings'), true);
   assert.equal(adminRouteAllowed('OPERATOR', 'POST', '/api/admin/stores'), false);
   assert.equal(adminRouteAllowed('OPERATOR', 'GET', '/api/admin/stores/store-id/deletion-preview'), false);

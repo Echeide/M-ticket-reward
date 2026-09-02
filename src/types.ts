@@ -1,4 +1,6 @@
-export type OcrJobMessage = { kind: 'OCR_RECEIPT'; receiptId: string };
+export type OcrJobMessage =
+  | { kind: 'OCR_RECEIPT'; receiptId: string }
+  | { kind: 'ANALYZE_RECEIPT_PRODUCTS'; receiptId: string };
 export type RewardJobMessage = { kind: 'DELIVER_REWARD'; outboxId: string };
 export type CollectionRewardJobMessage = { kind: 'DELIVER_COLLECTION_REWARD'; claimId: string };
 export type CollectionRevokeJobMessage = { kind: 'REVOKE_COLLECTION_REWARD'; claimId: string };
