@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import {
+  normalizeConfirmedProductCampaignIds,
   normalizeProductCampaignInput,
   normalizeProductCampaignMatches,
 } from '../src/domain/product-campaign';
@@ -69,6 +70,15 @@ test('product campaigns reject impossible dates', () => {
     endsOn: '',
     maxAwardsTotal: 0,
   }), /PRODUCT_CAMPAIGN_DATE_INVALID/);
+});
+
+test('manual product confirmations accept unique campaign UUIDs only', () => {
+  assert.deepEqual(normalizeConfirmedProductCampaignIds([
+    'd4bbddbf-0989-4e64-86be-7d63b3c9306c',
+    'd4bbddbf-0989-4e64-86be-7d63b3c9306c',
+  ]), ['d4bbddbf-0989-4e64-86be-7d63b3c9306c']);
+  assert.throws(() => normalizeConfirmedProductCampaignIds(['not-a-campaign']),
+    /PRODUCT_CAMPAIGN_CONFIRMATION_INVALID/);
 });
 
 test('product matches require high confidence and literal configured evidence', () => {

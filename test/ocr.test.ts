@@ -546,6 +546,50 @@ test('OCR provider reads nested and streamed Workers AI responses', async () => 
   );
 });
 
+test('OCR selects the verified orientation for a landscape ticket', async () => {
+  let calls = 0;
+  const transforms: unknown[] = [];
+  const env = {
+    OCR_MODE: 'workers-ai',
+    OCR_PROVIDER: 'workers-ai',
+    OCR_MODEL: '@cf/moondream/moondream3.1-9B-A2B',
+    OCR_TIMEOUT_MS: '5000',
+    AI: {
+      async run() {
+        calls += 1;
+        const answer = calls === 1
+          ? { isReceipt: true, confidence: 0.9, rawText: 'PROMOCIONES' }
+          : validExtraction;
+        return { answer: JSON.stringify(answer) };
+      },
+    },
+    IMAGES: {
+      info: async () => ({ width: 1200, height: 900, format: 'image/webp' }),
+      input: () => {
+        const transformer = {
+          transform(options: unknown) {
+            transforms.push(options);
+            return transformer;
+          },
+          output: () => ({ response: () => new Response(new Uint8Array([4, 5, 6])) }),
+        };
+        return transformer;
+      },
+    },
+  } as unknown as Env;
+
+  const result = await readReceipt(env, new Uint8Array([1, 2, 3]).buffer, 'image/webp');
+
+  assert.equal(calls, 2);
+  assert.equal(result.attemptCount, 2);
+  assert.equal(result.receipt.ticketNumber, validExtraction.ticketNumber);
+  assert.deepEqual(result.verificationIssues, []);
+  assert.deepEqual(transforms, [
+    { rotate: 90, sharpen: 1 },
+    { rotate: 270, sharpen: 1 },
+  ]);
+});
+
 test('OCR retries an incomplete reading with focused regions', async () => {
   const requests: Record<string, unknown>[] = [];
   const answers = [

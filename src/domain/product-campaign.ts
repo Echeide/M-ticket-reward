@@ -19,6 +19,16 @@ export type ProductCampaignMatch = {
   evidenceText: string;
 };
 
+export function normalizeConfirmedProductCampaignIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const ids = [...new Set(value.map((item) => String(item || '').trim()).filter(Boolean))];
+  if (ids.length > 20 || ids.some((id) =>
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))) {
+    throw new Error('PRODUCT_CAMPAIGN_CONFIRMATION_INVALID');
+  }
+  return ids;
+}
+
 function boundedInteger(value: unknown, minimum: number, maximum: number): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {

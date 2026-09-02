@@ -1769,6 +1769,29 @@ function highlightSelectedRow() {
   });
 }
 
+function updateManualProductCampaignVisibility() {
+  const storeId = document.querySelector('#manual-store')?.value || '';
+  const purchaseDate = document.querySelector('#manual-purchase-date')?.value || '';
+  let visible = 0;
+  document.querySelectorAll('.manual-product-campaign-option').forEach((option) => {
+    const insidePeriod = (!option.dataset.startsOn || option.dataset.startsOn <= purchaseDate) &&
+      (!option.dataset.endsOn || option.dataset.endsOn >= purchaseDate);
+    const applicable = Boolean(purchaseDate) && option.dataset.storeId === storeId && insidePeriod;
+    option.hidden = !applicable;
+    const checkbox = option.querySelector('input');
+    checkbox.disabled = !applicable;
+    if (!applicable) checkbox.checked = false;
+    if (applicable) visible += 1;
+  });
+  const empty = document.querySelector('#manual-product-campaigns-empty');
+  if (empty) {
+    empty.hidden = visible > 0;
+    empty.textContent = purchaseDate && storeId
+      ? 'No hay campañas de producto aplicables a este comercio y fecha.'
+      : 'Selecciona comercio y fecha para comprobar las campañas aplicables.';
+  }
+}
+
 async function select(id, suppliedReceipt = null) {
   if (!state.stores.length) await loadFilterStores();
   const selected = suppliedReceipt || (await request(`/api/admin/receipts/${encodeURIComponent(id)}`)).receipt;
@@ -1786,6 +1809,14 @@ async function select(id, suppliedReceipt = null) {
   const declared = receipt.declared || {};
   const declaredStore = state.stores.find((store) => store.id === declared.storeId);
   const hasDeclaration = Boolean(declared.ticketNumber || declared.totalCents || declared.storeId);
+  const manualProductCampaigns = Array.isArray(receipt.manualProductCampaigns)
+    ? receipt.manualProductCampaigns : [];
+  const manualProductCampaignOptions = manualProductCampaigns.map((campaign) => `
+    <label class="manual-product-campaign-option" data-store-id="${escapeHtml(campaign.storeId)}"
+      data-starts-on="${escapeHtml(campaign.startsOn)}" data-ends-on="${escapeHtml(campaign.endsOn)}" hidden>
+      <input class="manual-product-campaign" type="checkbox" value="${escapeHtml(campaign.id)}" disabled />
+      <span><strong>${escapeHtml(campaign.name)}</strong><small>Confirmo que el ticket muestra ${escapeHtml(campaign.productTerms.join(' / '))} en una línea de artículo.</small></span>
+    </label>`).join('');
   const activeStoreOptions = state.stores.filter((store) => store.active).map((store) =>
     `<option value="${escapeHtml(store.id)}" ${store.id === receipt.fields.storeId ? 'selected' : ''}>${escapeHtml(store.name)}</option>`).join('');
   const deliveryCanResume = receipt.reward.delivery?.resumableInNewSession === true;
@@ -1804,7 +1835,9 @@ async function select(id, suppliedReceipt = null) {
           <strong>Decisión del staff</strong>
           <h3>¿Qué decisión tomamos sobre este ticket?</h3>
           <p>Validar corregirá los datos y calculará los puntos; rechazar cerrará el ticket sin sanción; confirmar fraude aplicará un strike al usuario.</p>
-          <div class="manual-correction"><strong>Datos válidos del ticket</strong><label>Comercio<select id="manual-store"><option value="">Selecciona un comercio</option>${activeStoreOptions}</select></label><label>Número de ticket <small>o indica la hora si no existe</small><input id="manual-ticket-number" value="${escapeHtml(receipt.fields.ticketNumber)}" /></label><label>Fecha<input id="manual-purchase-date" type="date" value="${escapeHtml(receipt.fields.purchaseDate)}" /></label><label>Hora de compra<input id="manual-purchase-time" type="time" value="${escapeHtml((receipt.fields.purchaseDateTime || '').slice(11, 16))}" /></label><label>Importe (€)<input id="manual-total" type="number" min="0.01" step="0.01" value="${(receipt.fields.totalCents / 100).toFixed(2)}" /></label></div>
+          <div class="manual-correction"><strong>Datos válidos del ticket</strong><label>Comercio<select id="manual-store"><option value="">Selecciona un comercio</option>${activeStoreOptions}</select></label><label>Número de ticket <small>o indica la hora si no existe</small><input id="manual-ticket-number" value="${escapeHtml(receipt.fields.ticketNumber)}" /></label><label>Fecha<input id="manual-purchase-date" type="date" value="${escapeHtml(receipt.fields.purchaseDate)}" /></label><label>Hora de compra<input id="manual-purchase-time" type="time" value="${escapeHtml((receipt.fields.purchaseDateTime || '').slice(11, 16))}" /></label><label>Importe (€)<input id="manual-total" type="number" min="0.01" step="0.01" value="${(receipt.fields.totalCents / 100).toFixed(2)}" /></label>
+            <section class="manual-product-campaigns"><strong>Productos de campañas activas</strong><p>Marca únicamente productos visibles en las líneas de artículos del ticket.</p><div>${manualProductCampaignOptions}</div><small id="manual-product-campaigns-empty"></small></section>
+          </div>
           <label class="review-note">Motivo de la decisión<textarea id="review-reason" rows="3" placeholder="Obligatorio para dejar trazabilidad"></textarea></label>
           <div class="review-actions decision-actions">
             <button class="primary-button" id="manual-approve">Validar y asignar puntos</button>
@@ -1873,6 +1906,9 @@ async function select(id, suppliedReceipt = null) {
   document.querySelector('#confirm-rejection')?.addEventListener('click', () => review('CONFIRM_REJECTION'));
   document.querySelector('#confirm-fraud')?.addEventListener('click', () => review('CONFIRM_FRAUD'));
   document.querySelector('#manual-approve')?.addEventListener('click', () => review('MANUAL_APPROVE'));
+  document.querySelector('#manual-store')?.addEventListener('change', updateManualProductCampaignVisibility);
+  document.querySelector('#manual-purchase-date')?.addEventListener('change', updateManualProductCampaignVisibility);
+  updateManualProductCampaignVisibility();
   document.querySelector('#delete-ticket')?.addEventListener('click', deleteSelected);
   if (reprocessable) document.querySelector('#reprocess-ticket').addEventListener('click', reprocessSelected);
 }
@@ -1950,6 +1986,10 @@ async function review(action) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         action, reason,
+        ...(action === 'MANUAL_APPROVE' ? {
+          confirmedCampaignIds: [...document.querySelectorAll('.manual-product-campaign:checked')]
+            .map((checkbox) => checkbox.value),
+        } : {}),
         ...(action === 'MANUAL_APPROVE' ? { fields: {
           storeId: document.querySelector('#manual-store').value,
           ticketNumber: document.querySelector('#manual-ticket-number').value,

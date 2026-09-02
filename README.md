@@ -98,6 +98,10 @@ análisis se ejecuta únicamente después de validar el ticket y nunca bloquea s
 Para considerar una coincidencia se exige confianza alta y una línea literal que
 contenga una de las denominaciones configuradas. Cada ticket cuenta una sola vez por
 campaña, la entrega es idempotente y una revocación por fraude recalcula el progreso.
+Los tickets fotografiados en horizontal se prueban en ambas orientaciones verticales
+antes de aplicar los recortes de cabecera y totales. Durante una validación manual, el
+staff también puede confirmar productos de campañas que correspondan al comercio,
+instalación y fecha; la decisión queda registrada junto a la revisión del ticket.
 
 ## Producción
 

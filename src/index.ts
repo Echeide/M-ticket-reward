@@ -91,6 +91,7 @@ import {
 import { OcrReadError, readReceipt } from './integrations/ocr';
 import { readProductCampaignMatches } from './integrations/product-ocr';
 import {
+  normalizeConfirmedProductCampaignIds,
   normalizeProductCampaignInput,
   type ProductCampaignInput,
 } from './domain/product-campaign';
@@ -378,6 +379,20 @@ export type ProductCampaignRow = {
   matched_tickets?: number;
   awarded_cards?: number;
 };
+
+type ManualProductCampaignRow = Pick<ProductCampaignRow,
+  'id' | 'store_id' | 'name' | 'product_terms' | 'starts_on' | 'ends_on'>;
+
+function manualProductCampaignView(row: ManualProductCampaignRow) {
+  return {
+    id: row.id,
+    storeId: row.store_id,
+    name: row.name,
+    productTerms: Array.isArray(row.product_terms) ? row.product_terms : [],
+    startsOn: row.starts_on || '',
+    endsOn: row.ends_on || '',
+  };
+}
 
 function productCampaignView(row: ProductCampaignRow) {
   return {
@@ -2837,7 +2852,7 @@ async function handleAdminList(request: Request, env: Env): Promise<Response> {
 async function handleAdminReceipt(request: Request, env: Env, receiptId: string): Promise<Response> {
   const manager = managerIdentity(request, env);
   if (!manager) return error('Acceso de gestor requerido', 401);
-  const receipt = await withDatabase(env, async (client) => {
+  const detail = await withDatabase(env, async (client) => {
     const result = await client.query<ReceiptRow>(
       `SELECT r.*, COALESCE(u.display_name, s.display_name) AS user_display_name,
               COALESCE(u.email, s.user_email) AS user_email,
@@ -2857,10 +2872,27 @@ async function handleAdminReceipt(request: Request, env: Env, receiptId: string)
         WHERE r.id = $1 LIMIT 1`,
       [receiptId],
     );
-    return result.rows[0];
+    const receipt = result.rows[0];
+    if (!receipt) return null;
+    const campaigns = await client.query<ManualProductCampaignRow>(
+      `SELECT id, store_id, name, product_terms, starts_on, ends_on
+         FROM store_product_campaigns
+        WHERE installation_id = $1 AND active = TRUE AND archived_at IS NULL
+          AND activated_at IS NOT NULL
+        ORDER BY name ASC`,
+      [receipt.user_installation_id || ''],
+    );
+    return { receipt, campaigns: campaigns.rows };
   });
-  if (!receipt) return error('Ticket no encontrado', 404);
-  return json({ success: true, manager, receipt: receiptView(receipt, true) });
+  if (!detail) return error('Ticket no encontrado', 404);
+  return json({
+    success: true,
+    manager,
+    receipt: {
+      ...receiptView(detail.receipt, true),
+      manualProductCampaigns: detail.campaigns.map(manualProductCampaignView),
+    },
+  });
 }
 
 async function handleAdminSpaces(request: Request, env: Env): Promise<Response> {
@@ -3313,6 +3345,7 @@ async function handleAdminReview(
   const body = await readJson(request);
   const action = String(body.action || '').toUpperCase();
   const reason = String(body.reason || '').trim().slice(0, 500);
+  const confirmedCampaignIds = normalizeConfirmedProductCampaignIds(body.confirmedCampaignIds);
   if (!['CLEAR', 'REOPEN', 'REVOKE', 'MANUAL_APPROVE', 'CONFIRM_REJECTION', 'CONFIRM_FRAUD'].includes(action)) return error('Acción no válida', 400);
   let outboxId = '';
   const response = await withDatabase(env, (client) => inTransaction(client, async () => {
@@ -3401,6 +3434,24 @@ async function handleAdminReview(
       );
       const store = storeResult.rows[0];
       if (!store) return error('El comercio seleccionado no está activo', 400);
+      if (confirmedCampaignIds.length && !receipt.external_user_id) {
+        return error('El usuario no tiene una identidad estable para recibir cartas', 409);
+      }
+      const confirmedCampaigns = confirmedCampaignIds.length
+        ? await client.query<ProductCampaignRow>(
+          `SELECT c.* FROM store_product_campaigns c
+             JOIN player_sessions s ON s.id = $4
+            WHERE c.id = ANY($1::text[]) AND c.store_id = $2
+              AND c.installation_id = COALESCE(s.installation_id, '')
+              AND c.active = TRUE AND c.archived_at IS NULL AND c.activated_at IS NOT NULL
+              AND (c.starts_on IS NULL OR c.starts_on <= $3)
+              AND (c.ends_on IS NULL OR c.ends_on >= $3)`,
+          [confirmedCampaignIds, store.id, purchaseDate, receipt.session_id],
+        )
+        : { rows: [], rowCount: 0 };
+      if (confirmedCampaigns.rows.length !== confirmedCampaignIds.length) {
+        return error('Alguna campaña seleccionada no corresponde al comercio, instalación o fecha del ticket', 409);
+      }
       const fields: ReceiptFields = {
         storeId: store.id, storeName: store.name, ticketNumber, purchaseDate, purchaseDateTime, totalCents, currency,
       };
@@ -3447,6 +3498,11 @@ async function handleAdminReview(
             totalCents: receipt.total_cents, currency: receipt.currency,
             reasons: receipt.validation_reasons },
           corrected: fields,
+          confirmedProductCampaigns: confirmedCampaigns.rows.map((campaign) => ({
+            id: campaign.id,
+            name: campaign.name,
+            productTerms: campaign.product_terms,
+          })),
         })],
       );
       await client.query(
@@ -3460,6 +3516,22 @@ async function handleAdminReview(
           currency, fingerprint, identityKey, JSON.stringify(correctedOcr),
           JSON.stringify(rewardReasons), points, managerEmail],
       );
+      for (const campaign of confirmedCampaigns.rows) {
+        const productText = campaign.product_terms.join(' / ').slice(0, 200);
+        await client.query(
+          `INSERT INTO receipt_product_matches
+             (receipt_id, campaign_id, external_user_id, status, confidence,
+              product_text, evidence_text, provider, model, duration_ms, last_error)
+           VALUES ($1, $2, $3, 'MATCHED', 1, $4, $5, 'staff', $6, 0, NULL)
+           ON CONFLICT(receipt_id, campaign_id) DO UPDATE SET
+             external_user_id = excluded.external_user_id, status = 'MATCHED', confidence = 1,
+             product_text = excluded.product_text, evidence_text = excluded.evidence_text,
+             provider = 'staff', model = excluded.model, duration_ms = 0,
+             last_error = NULL, updated_at = NOW()`,
+          [receiptId, campaign.id, receipt.external_user_id, productText,
+            `Producto confirmado manualmente: ${productText}`.slice(0, 500), managerEmail],
+        );
+      }
       if (outboxId) {
         await client.query(
           `INSERT INTO reward_outbox (id, receipt_id, operation, idempotency_key, payload)
@@ -5308,6 +5380,7 @@ async function handleFetch(request: Request, env: Env, context: ExecutionContext
       PRODUCT_CAMPAIGN_DATE_INVALID: 'Indica una fecha válida para la campaña',
       PRODUCT_CAMPAIGN_PERIOD_INVALID: 'La fecha de inicio debe ser anterior a la fecha de fin',
       PRODUCT_CAMPAIGN_REWARD_REQUIRED: 'Selecciona la instalación, la familia y la carta que se entregará',
+      PRODUCT_CAMPAIGN_CONFIRMATION_INVALID: 'La selección manual de campañas no es válida',
     };
     return error(validationErrors[message] || 'No se pudo completar la operación', validationErrors[message] ? 400 : 500);
   }

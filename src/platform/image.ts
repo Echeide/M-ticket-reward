@@ -25,6 +25,12 @@ export type StoredLogo = {
   height: number;
 };
 
+export type OcrImageCandidate = {
+  bytes: ArrayBuffer;
+  contentType: string;
+  rotation: 0 | 90 | 270;
+};
+
 async function transform(env: Env, bytes: ArrayBuffer, quality: number): Promise<ArrayBuffer> {
   const result = await env.IMAGES
     .input(new Blob([bytes]).stream())
@@ -105,6 +111,31 @@ export async function prepareOcrImage(env: Env, image: ArrayBuffer): Promise<Arr
     .transform({ width: 1200, height: 2000, fit: 'scale-down', sharpen: 1 })
     .output({ format: 'image/webp', quality: 70 });
   return result.response().arrayBuffer();
+}
+
+export async function prepareOcrImageCandidates(
+  env: Env,
+  image: ArrayBuffer,
+  contentType: string,
+): Promise<OcrImageCandidate[]> {
+  if (!env.IMAGES) return [{ bytes: image, contentType, rotation: 0 }];
+  const info = await env.IMAGES.info(new Blob([image]).stream());
+  if (!('width' in info) || info.format === 'image/svg+xml') throw new Error('IMAGE_INVALID');
+  if (info.width <= info.height) return [{ bytes: image, contentType, rotation: 0 }];
+
+  const rotate = async (rotation: 90 | 270): Promise<OcrImageCandidate> => {
+    const result = await env.IMAGES
+      .input(new Blob([image]).stream())
+      .transform({ rotate: rotation, sharpen: 1 })
+      .output({ format: 'image/webp', quality: 82 });
+    return {
+      bytes: await result.response().arrayBuffer(),
+      contentType: 'image/webp',
+      rotation,
+    };
+  };
+  const rotated = await Promise.all([rotate(90), rotate(270)]);
+  return [{ bytes: image, contentType, rotation: 0 }, ...rotated];
 }
 
 export async function prepareOcrRegions(

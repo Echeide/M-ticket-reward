@@ -7,7 +7,7 @@ import {
 import { classifyOcrFailure } from '../domain/ocr-failure';
 import { profileHasGuidance, ticketNumberPatternFromExample } from '../domain/ocr-profile';
 import { findMatchingStore, type StoreIdentity } from '../domain/store';
-import { prepareOcrRegions } from '../platform/image';
+import { prepareOcrImageCandidates, prepareOcrRegions } from '../platform/image';
 import type { Env } from '../types';
 import {
   createOcrProvider,
@@ -762,12 +762,52 @@ export async function readReceipt(
   const preflightCalls = preflight ? 1 : 0;
   const metrics: OcrCallMetrics = { calls: preflightCalls };
   try {
-    const initial = await extractParsedReceipt(provider, {
-      bytes, contentType, prompt: extractionPrompt(storeReference, false, hints),
-    }, metrics);
+    const imageCandidates = await prepareOcrImageCandidates(env, bytes, contentType);
+    const initialCandidates: Array<{
+      response: OcrProviderResponse;
+      receipt: OcrReceipt;
+      issues: string[];
+      bytes: ArrayBuffer;
+      contentType: string;
+    }> = [];
+    let candidateError: unknown;
+    for (const candidate of imageCandidates) {
+      try {
+        const extracted = await extractParsedReceipt(provider, {
+          bytes: candidate.bytes,
+          contentType: candidate.contentType,
+          prompt: extractionPrompt(storeReference, false, hints),
+        }, metrics);
+        const candidateReceipt = preferVerifiedIdentity(
+          recoverProfileTicketNumber(extracted.receipt, authorizedStores),
+        );
+        const candidateIssues = verifyOcr(candidateReceipt);
+        initialCandidates.push({
+          ...extracted,
+          receipt: candidateReceipt,
+          issues: candidateIssues,
+          bytes: candidate.bytes,
+          contentType: candidate.contentType,
+        });
+        if (candidateReceipt.isReceipt && candidateIssues.length === 0) break;
+      } catch (caught) {
+        candidateError = caught;
+      }
+    }
+    if (!initialCandidates.length) throw candidateError || new Error('OCR_PROCESSING_FAILED');
+    initialCandidates.sort((left, right) => {
+      const issueDifference = left.issues.length - right.issues.length;
+      if (issueDifference) return issueDifference;
+      const fieldScore = (value: OcrReceipt) => Number(Boolean(value.ticketNumber)) +
+        Number(Boolean(value.purchaseDate)) + Number(Boolean(value.totalCents)) +
+        Number(Boolean(findMatchingStore(authorizedStores, value)));
+      return fieldScore(right.receipt) - fieldScore(left.receipt) ||
+        right.receipt.confidence - left.receipt.confidence;
+    });
+    const initial = initialCandidates[0]!;
     const response = initial.response;
-    let receipt = preferVerifiedIdentity(recoverProfileTicketNumber(initial.receipt, authorizedStores));
-    let issues = verifyOcr(receipt);
+    let receipt = initial.receipt;
+    let issues = initial.issues;
     let durationMs = preflight ? Date.now() - startedAt : response.durationMs;
 
     // A confident negative classification must not trigger the expensive header and totals passes.
@@ -791,7 +831,7 @@ export async function readReceipt(
       const focusedStoreReference = authorizedStoreReference(
         matchedStore ? [matchedStore] : declaredStore ? [declaredStore] : authorizedStores,
       );
-      const regions = await prepareOcrRegions(env, bytes);
+      const regions = await prepareOcrRegions(env, initial.bytes);
       const [headerResult, totalsResult] = await Promise.allSettled([
         // The full-image call already has a retry. Region failures are fail-open:
         // a timeout or malformed crop must not discard useful evidence from the initial read.

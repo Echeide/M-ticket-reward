@@ -1,6 +1,7 @@
 import type { ProductCampaignMatch } from '../domain/product-campaign';
 import { normalizeProductCampaignMatches } from '../domain/product-campaign';
 import type { Env } from '../types';
+import { prepareOcrImageCandidates } from '../platform/image';
 import { parseJsonObject } from './ocr';
 import { createOcrProvider } from './ocr-provider';
 
@@ -49,15 +50,38 @@ export async function readProductCampaignMatches(
       provider: 'mock', model: 'mock', durationMs: 0,
     };
   }
-  const response = await createOcrProvider(env).extract({
-    bytes,
-    contentType,
-    prompt: productCampaignPrompt(campaigns),
+  const provider = createOcrProvider(env);
+  const candidates = await prepareOcrImageCandidates(env, bytes, contentType);
+  const startedAt = Date.now();
+  const results: Array<{ matches: ProductCampaignMatch[]; provider: string; model: string }> = [];
+  let candidateError: unknown;
+  for (const candidate of candidates) {
+    try {
+      const response = await provider.extract({
+        bytes: candidate.bytes,
+        contentType: candidate.contentType,
+        prompt: productCampaignPrompt(campaigns),
+      });
+      results.push({
+        matches: normalizeProductCampaignMatches(parseJsonObject(response.text), campaigns),
+        provider: response.provider,
+        model: response.model,
+      });
+    } catch (caught) {
+      candidateError = caught;
+    }
+  }
+  if (!results.length) throw candidateError || new Error('OCR_PROCESSING_FAILED');
+  const matches = campaigns.map((campaign) => {
+    const options = results.map((result) => result.matches.find((match) =>
+      match.campaignId === campaign.id)).filter((match): match is ProductCampaignMatch => Boolean(match));
+    return options.find((match) => match.matched) ||
+      options.sort((left, right) => right.confidence - left.confidence)[0]!;
   });
   return {
-    matches: normalizeProductCampaignMatches(parseJsonObject(response.text), campaigns),
-    provider: response.provider,
-    model: response.model,
-    durationMs: response.durationMs,
+    matches,
+    provider: results[0]!.provider,
+    model: results[0]!.model,
+    durationMs: Date.now() - startedAt,
   };
 }
